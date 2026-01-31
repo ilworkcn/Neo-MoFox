@@ -63,7 +63,6 @@ components：基本插件组件管理
         router.py
         service.py
         plugin.py
-        prompt.py
         tool.py
     managers：组件应用管理，实际能力调用
         **init**.py：导出
