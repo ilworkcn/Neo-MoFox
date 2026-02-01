@@ -2001,30 +2001,171 @@ result = await my_service.fetch_data("example_query")
 ```
 
 #### Router
-router是路由组件，用于利用FastAPI对外界提供HTTP接口。
+router是路由组件，用于对外界提供HTTP接口。
 
 经典流程：
-插件定义router -> 注册到核心的组件管理器 -> 注册到router manager -> 启动HTTP服务器 -> 处理HTTP请求 -> 返回响应
+插件定义router -> 注册到核心的组件管理器 -> 启动系统服务器 ->  系统HTTP服务器将Router的端点包含进去->  处理HTTP请求 -> 返回响应
 
 基类：
 ```python
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from abc import ABC, abstractmethod
-from fastapi import APIRouter
 
 class BaseRouter(ABC):
-    router_name: str = ""  # 路由名称
-    router_description: str = ""   # 路由描述
+    """
+    对外暴露HTTP接口的基类。
+    插件路由类应继承本类,并实现 register_endpoints 方法注册API路由。
+    """
 
-    def __init__(self, plugin: BasePlugin):
+    router_name: str
+    router_description: str
+    
+    # 新增:CORS配置(类属性)
+    cors_origins: list[str] | None = None  # 允许的源,None表示使用全局默认
+    cors_methods: list[str] | None = None  # 允许的方法,None表示使用全局默认
+    cors_allow_credentials: bool = True    # 是否允许凭证
+    cors_enabled: bool = True              # 是否启用CORS
+    
+    # 新增:自定义路由路径(如果设置,则挂载到此路径;否则使用默认路径)
+    custom_route_path: str | None = None   # 例如: "/custom/path" 或 "" (根路径)
+
+    def __init__(self,plugin: BasePlugin):
         self.plugin = plugin
-        self.router = APIRouter()
+
+        # 创建独立的 FastAPI 子应用(实例属性)
+        self.app = FastAPI(
+            title=f"{self.router_name}",
+            description=self.router_description,
+            version=1.0,
+        )
+
+        # 应用 CORS 配置
+        self._apply_cors_config()
+        
+        # 注册端点
+        self.register_endpoints()
+
+    def _apply_cors_config(self):
+        """应用CORS配置"""
+        if not self.cors_enabled:
+            return
+        
+        # 如果没有配置CORS origins，则不添加CORS中间件，使用服务器默认配置
+        if not self.cors_origins:
+            return
+        
+        methods = self.cors_methods or ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+        
+        # 应用CORS中间件
+        self.app.add_middleware(
+            CORSMiddleware,
+            allow_origins=self.cors_origins,
+            allow_credentials=self.cors_allow_credentials,
+            allow_methods=methods,
+            allow_headers=["*"],
+            max_age=600,
+        )
 
     @abstractmethod
-    def setup_routes(self) -> None:
+    def register_endpoints(self) -> None:
         """
-        设置路由的抽象方法，子类必须实现
+        子类需要实现的方法。
+        在此方法中定义插件的HTTP接口。
+        注意:现在使用 self.app 而非 self.router
         """
         ...
+```
+
+组件注册:
+:::warning
+下面的_register_router方法展示了如何注册Router组件并将其HTTP端点挂载到主FastAPI应用中,但因为它是直接在旧版本component_registry的逻辑基础上修改,所以我不知道适不适用于新版本,酌情参考。
+:::
+```python
+def _register_router(self, info: ComponentInfo, cls: ComponentClassType) -> bool:
+    """注册 Router 组件并将其 HTTP 端点挂载到主 FastAPI 应用"""
+    if not bot_config.plugin_http_system.enable_plugin_http_endpoints:
+        logger.info("插件HTTP端点功能已禁用,跳过路由注册")
+        return True
+
+    try:
+        from src.common.server import get_global_server
+        router_class = cast(type[BaseRouter], cls) # 类型转换,以便后续使用
+        _assign_plugin_attrs(router_class, info.plugin_name, self.get_plugin_config(info.plugin_name) or {}) #为组件类动态赋予插件相关属性。
+
+        # 实例化组件(现在返回配置好CORS的FastAPI应用)
+        component_instance = router_class()
+        server = get_global_server()
+        
+        # 确定路由前缀
+        if router_class.custom_route_path is not None:
+            # 使用自定义路径(可以是""表示根路径)
+            prefix = router_class.custom_route_path
+            if prefix and not prefix.startswith("/"):
+                prefix = f"/{prefix}"
+            logger.info(f"组件 '{info.name}' 使用自定义路径: {prefix or '(根路径)'}")
+        else:
+            # 默认路径: /plugin-api/{plugin_name}/{component_name}
+            prefix = f"/plugin-api/{info.plugin_name}/{info.name}"
+            logger.info(f"组件 '{info.name}' 使用默认路径: {prefix}")
+        
+        # 检查路径冲突
+        if self._check_route_conflict(prefix, info.name):
+            logger.error(f"路由冲突: {prefix}")
+            return False
+        
+        # 使用 mount 挂载子应用而非 include_router
+        server.app.mount(prefix, component_instance.app, name=info.name)
+        
+        # 注册路由前缀,以便冲突检查
+        self._registered_routes[prefix] = info.name
+
+        logger.debug(f"路由组件 '{info.name}' 已挂载到: {prefix}")
+        return True
+    except Exception as e:
+        logger.error(f"注册路由组件时出错: {e}", exc_info=True)
+        return False
+```
+
+示例1:简单路由:
+```python
+class MyAPIRouter(BaseRouter):
+    router_name = "my_api"
+    router_description = "自定义API接口"
+    
+    def register_endpoints(self) -> None:
+        @self.app.get("/status")
+        async def get_status():
+            return {"status": "ok"}
+        
+        @self.app.post("/data")
+        async def post_data(data: dict):
+            return {"received": data}
+
+# 结果: 挂载到 /plugin-api/{plugin_name}/my_api/status 和 /plugin-api/{plugin_name}/my_api/data
+# CORS使用服务器默认配置
+```
+
+示例2:自定义CORS和路径:
+```python
+class CustomAPIRouter(BaseRouter):
+    router_name = "custom_api"
+    router_description = "自定义API"
+    
+    # 自定义CORS
+    cors_origins = ["https://myapp.com", "https://admin.myapp.com"]
+    cors_methods = ["GET", "POST", "PUT"]
+    
+    # 自定义路径(挂载到根目录下的v1/api)
+    custom_route_path = "/v1/api"
+    
+    def register_endpoints(self) -> None:
+        @self.app.get("/users")
+        async def get_users():
+            return []
+
+# 结果: 挂载到 /v1/api/users
+# CORS只允 许来自 myapp.com 和 admin.myapp.com 的请求
 ```
 
 #### Plugin
