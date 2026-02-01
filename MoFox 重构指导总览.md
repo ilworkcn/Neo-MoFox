@@ -2018,9 +2018,8 @@ class BaseRouter(ABC):
     插件路由类应继承本类,并实现 register_endpoints 方法注册API路由。
     """
 
-    component_name: str
-    component_description: str
-    component_version: str = "1.0.0"
+    router_name: str
+    router_description: str
     
     # 新增:CORS配置(类属性)
     cors_origins: list[str] | None = None  # 允许的源,None表示使用全局默认
@@ -2036,9 +2035,9 @@ class BaseRouter(ABC):
 
         # 创建独立的 FastAPI 子应用(实例属性)
         self.app = FastAPI(
-            title=f"{self.component_name}",
-            description=self.component_description,
-            version=self.component_version,
+            title=f"{self.router_name}",
+            description=self.router_description,
+            version=1.0,
         )
 
         # 应用 CORS 配置
