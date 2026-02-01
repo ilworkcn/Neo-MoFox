@@ -2012,7 +2012,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from abc import ABC, abstractmethod
 
-class BaseRouterComponent(ABC):
+class BaseRouter(ABC):
     """
     对外暴露HTTP接口的基类。
     插件路由类应继承本类,并实现 register_endpoints 方法注册API路由。
@@ -2021,9 +2021,6 @@ class BaseRouterComponent(ABC):
     component_name: str
     component_description: str
     component_version: str = "1.0.0"
-
-    # 使用 FastAPI 实例替代 APIRouter
-    app: FastAPI
     
     # 新增:CORS配置(类属性)
     cors_origins: list[str] | None = None  # 允许的源,None表示使用全局默认
@@ -2034,12 +2031,10 @@ class BaseRouterComponent(ABC):
     # 新增:自定义路由路径(如果设置,则挂载到此路径;否则使用默认路径)
     custom_route_path: str | None = None   # 例如: "/custom/path" 或 "" (根路径)
 
-    def __init__(self, plugin_config: dict | None = None):
-        if plugin_config is None:
-            plugin_config = getattr(self.__class__, "plugin_config", {})
-        self.plugin_config = plugin_config or {}
+    def __init__(self,plugin: BasePlugin):
+        self.plugin = plugin
 
-        # 创建独立的 FastAPI 子应用
+        # 创建独立的 FastAPI 子应用(实例属性)
         self.app = FastAPI(
             title=f"{self.component_name}",
             description=self.component_description,
@@ -2081,16 +2076,6 @@ class BaseRouterComponent(ABC):
         注意:现在使用 self.app 而非 self.router
         """
         ...
-
-    @classmethod
-    def get_router_info(cls) -> "RouterInfo":
-        """构造 RouterInfo"""
-        from .component_types import ComponentType, RouterInfo
-        return RouterInfo(
-            name=cls.component_name,
-            description=getattr(cls, "component_description", "路由组件"),
-            component_type=ComponentType.ROUTER,
-        )
 ```
 
 组件注册:
@@ -2106,7 +2091,7 @@ def _register_router(self, info: ComponentInfo, cls: ComponentClassType) -> bool
 
     try:
         from src.common.server import get_global_server
-        router_class = cast(type[BaseRouterComponent], cls) # 类型转换,以便后续使用
+        router_class = cast(type[BaseRouter], cls) # 类型转换,以便后续使用
         _assign_plugin_attrs(router_class, info.plugin_name, self.get_plugin_config(info.plugin_name) or {}) #为组件类动态赋予插件相关属性。
 
         # 实例化组件(现在返回配置好CORS的FastAPI应用)
