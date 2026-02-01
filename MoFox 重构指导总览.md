@@ -1,7 +1,7 @@
 # MoFox Core 重构架构文档
 
 ```toml
-version = 1
+version = 2
 ```
 
 MoFox src目录将被严格分为三个层级：
