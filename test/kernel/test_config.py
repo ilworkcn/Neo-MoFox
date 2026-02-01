@@ -478,3 +478,77 @@ enable_logging = true
         assert default_config.settings.string_list == []
         assert default_config.settings.int_dict == {}
         assert default_config.settings.optional_value is None
+
+
+class TestAutoUpdate:
+    """测试 load(auto_update=True) 的自动签名更新能力。"""
+
+    def test_load_auto_update_rewrites_signature_and_preserves_values(self) -> None:
+        class AppConfig(ConfigBase):
+            @config_section("database")
+            class DatabaseSection(SectionBase):
+                """数据库配置"""
+
+                host: str = Field(default="localhost", description="数据库主机")
+                port: int = Field(default=5432, description="数据库端口")
+
+            @config_section("features")
+            class FeaturesSection(SectionBase):
+                """功能开关配置"""
+
+                enable_cache: bool = Field(default=True, description="启用缓存")
+                enable_logging: bool = Field(default=False, description="启用日志")
+
+            database: DatabaseSection = Field(default_factory=DatabaseSection)
+            features: FeaturesSection = Field(default_factory=FeaturesSection)
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            config_file = Path(temp_dir) / "app_config.toml"
+            # - port 在文件中是字符串（类型不一致）应被规范化为 int
+            # - 额外字段/额外节应被移除
+            # - enable_cache 的用户值应被保留（false）
+            config_file.write_text(
+                """
+[database]
+host = \"db.example.com\"
+port = \"3306\"
+legacy = 1
+
+[features]
+enable_cache = false
+
+[unused]
+foo = \"bar\"
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            cfg = AppConfig.load(config_file, auto_update=True)
+
+            assert cfg.database.host == "db.example.com"
+            assert cfg.database.port == 3306
+            assert cfg.features.enable_cache is False
+            assert cfg.features.enable_logging is False
+
+            updated = config_file.read_text(encoding="utf-8")
+
+            # 文档注释应存在
+            assert "# 数据库配置" in updated
+            assert "# 数据库主机" in updated
+            assert "# 数据库端口" in updated
+            assert "# 功能开关配置" in updated
+
+            # 签名注释应存在
+            assert "# signature:" in updated
+
+            # 多余节/字段被移除
+            assert "[unused]" not in updated
+            assert "legacy" not in updated
+
+            # 值已被修正/保留
+            assert 'host = "db.example.com"' in updated
+            assert "port = 3306" in updated
+            assert "enable_cache = false" in updated
+        finally:
+            shutil.rmtree(temp_dir)
