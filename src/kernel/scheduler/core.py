@@ -12,7 +12,6 @@
 """
 
 import asyncio
-import time
 import uuid
 import weakref
 from collections import defaultdict

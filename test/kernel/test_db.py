@@ -810,7 +810,7 @@ async def test_engine_initialization_error():
     """测试引擎初始化失败时的错误处理"""
     from src.kernel.db.core.engine import get_engine, close_engine
     from src.kernel.db.core.exceptions import DatabaseInitializationError
-    from unittest.mock import patch, AsyncMock
+    from unittest.mock import patch
 
     # 关闭现有引擎
     await close_engine()
@@ -824,7 +824,6 @@ async def test_engine_initialization_error():
             await get_engine()
 
     # 清理：重置引擎状态以便后续测试
-    import asyncio
     from src.kernel.db.core import engine as engine_module
     engine_module._engine = None
     engine_module._engine_lock = None
@@ -1447,7 +1446,7 @@ async def test_query_filter_isnull_false():
 def test_model_helper_with_empty_model():
     """测试辅助函数处理只有一个列的模型"""
     from sqlalchemy import Integer
-    from sqlalchemy.orm import Mapped, mapped_column, declarative_base
+    from sqlalchemy.orm import mapped_column, declarative_base
     from src.kernel.db.api.crud import _get_model_column_names, _get_model_value_fetcher
 
     # 创建一个只有一列的模型
@@ -1471,7 +1470,7 @@ def test_model_helper_with_empty_model():
 async def test_engine_info_error_handling():
     """测试get_engine_info的错误处理"""
     from src.kernel.db.core.engine import get_engine_info, close_engine
-    from unittest.mock import patch, AsyncMock
+    from unittest.mock import patch
 
     # 关闭现有引擎
     await close_engine()
@@ -1486,7 +1485,6 @@ async def test_engine_info_error_handling():
         assert info == {}
 
     # 清理：重置引擎状态
-    import asyncio
     from src.kernel.db.core import engine as engine_module
     engine_module._engine = None
     engine_module._engine_lock = None
@@ -1625,7 +1623,7 @@ async def test_query_builder_chain_calls():
 @pytest.mark.asyncio
 async def test_model_to_dict_fallback_path():
     """测试_model_to_dict的fallback路径"""
-    from src.kernel.db.api.crud import _model_to_dict, _get_model_value_fetcher
+    from src.kernel.db.api.crud import _model_to_dict
     from unittest.mock import patch
 
     engine = await get_engine()
@@ -1654,7 +1652,7 @@ async def test_model_to_dict_fallback_path():
 def test_model_helper_single_column():
     """测试单列模型的辅助函数"""
     from sqlalchemy import Integer
-    from sqlalchemy.orm import Mapped, mapped_column, declarative_base
+    from sqlalchemy.orm import mapped_column, declarative_base
     from src.kernel.db.api.crud import _get_model_column_names, _get_model_value_fetcher
 
     SingleBase = declarative_base()

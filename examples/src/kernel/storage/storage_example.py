@@ -195,7 +195,7 @@ async def main() -> None:
     print("=" * 60)
 
     # 显示存储目录中的文件
-    print(f"\n存储目录中的文件:")
+    print("\n存储目录中的文件:")
     storage_path = Path(temp_dir)
     json_files = list(storage_path.glob("*.json"))
     for json_file in sorted(json_files):

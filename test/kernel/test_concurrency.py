@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import pytest
 from datetime import datetime
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from src.kernel.concurrency import (
     get_task_manager,

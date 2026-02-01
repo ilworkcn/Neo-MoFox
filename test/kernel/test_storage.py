@@ -13,7 +13,7 @@ import shutil
 
 import pytest
 
-from src.kernel.storage import JSONStore, json_store
+from src.kernel.storage import JSONStore
 
 
 class TestJSONStoreInit:

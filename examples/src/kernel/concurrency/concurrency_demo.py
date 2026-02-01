@@ -7,14 +7,12 @@ Concurrency 模块演示脚本
 import sys
 import asyncio
 from pathlib import Path
-import os
 
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent.parent))
 
 from src.kernel.concurrency import (
     get_task_manager,
-    TaskGroup,
     get_watchdog,
 )
 from src.kernel.logger import get_logger, COLOR

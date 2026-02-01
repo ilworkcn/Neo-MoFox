@@ -4,7 +4,7 @@
 提供触发类型、任务状态等枚举类型，以及相关的数据模型。
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any
