@@ -28,7 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.kernel.scheduler import get_unified_scheduler, TriggerType, TaskStatus
+from src.kernel.scheduler import get_unified_scheduler, TriggerType
 from src.kernel.logger import get_logger, COLOR
 
 
@@ -222,7 +222,7 @@ async def main() -> None:
     # 获取任务信息
     task_info = await scheduler.get_task_info(schedule_id_3)
     if task_info:
-        logger.info(f"[OK] 任务信息:")
+        logger.info("[OK] 任务信息:")
         logger.info(f"  - 任务ID: {task_info['schedule_id']}")
         logger.info(f"  - 任务名: {task_info['task_name']}")
         logger.info(f"  - 触发类型: {task_info['trigger_type']}")
@@ -300,7 +300,7 @@ async def main() -> None:
 
     # 显示最终统计
     final_stats = scheduler.get_statistics()
-    logger.info(f"\n最终统计:")
+    logger.info("\n最终统计:")
     logger.info(f"  - 总执行次数: {final_stats['total_executions']}")
     logger.info(f"  - 总失败次数: {final_stats['total_failures']}")
     logger.info(f"  - 总超时次数: {final_stats['total_timeouts']}")

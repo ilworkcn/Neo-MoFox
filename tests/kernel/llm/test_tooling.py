@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.kernel.llm.payload.tooling import (
-    LLMUsable,
     Tool,
     ToolCall,
     ToolExecutor,
@@ -387,7 +386,6 @@ class TestToolExecutor:
         self, sync_execute_func: Mock
     ) -> None:
         """Test executing sync function in thread pool."""
-        from unittest.mock import Mock
 
         executor = ToolExecutor(timeout=30.0)
         tool_call = ToolCall(id="call_1", name="test", args={"arg": "value"})

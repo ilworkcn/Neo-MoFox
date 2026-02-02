@@ -43,10 +43,10 @@ async def main() -> None:
 
     # 获取或创建集合
     collection = await vector_db.get_or_create_collection(name="semantic_cache")
-    logger.info(f"[OK] 成功获取或创建集合: semantic_cache")
+    logger.info("[OK] 成功获取或创建集合: semantic_cache")
 
     collection2 = await vector_db.get_or_create_collection(name="memory")
-    logger.info(f"[OK] 成功获取或创建集合: memory")
+    logger.info("[OK] 成功获取或创建集合: memory")
 
     logger.print_panel("2. 添加向量数据")
 

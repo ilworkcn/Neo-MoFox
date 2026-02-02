@@ -12,10 +12,8 @@ from typing import Any
 import pytest
 
 from src.kernel.llm import (
-    LLMError,
     LLMRateLimitError,
     LLMTimeoutError,
-    LLMTokenLimitError,
     classify_exception,
     MetricsCollector,
     RequestMetrics,

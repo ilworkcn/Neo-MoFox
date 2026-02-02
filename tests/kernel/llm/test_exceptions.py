@@ -370,17 +370,17 @@ class TestExceptionInheritance:
 
         try:
             raise LLMRateLimitError("test")
-        except LLMError as e:
+        except LLMError:
             caught_errors.append("rate_limit")
 
         try:
             raise LLMTimeoutError("test")
-        except LLMError as e:
+        except LLMError:
             caught_errors.append("timeout")
 
         try:
             raise LLMAuthenticationError("test")
-        except LLMError as e:
+        except LLMError:
             caught_errors.append("auth")
 
         assert len(caught_errors) == 3

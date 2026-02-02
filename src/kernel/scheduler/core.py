@@ -18,7 +18,7 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from src.kernel.concurrency import get_task_manager
 from src.kernel.logger import get_logger

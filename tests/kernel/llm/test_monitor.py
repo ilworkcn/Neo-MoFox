@@ -5,9 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from datetime import datetime
-from unittest.mock import patch
 
-import pytest
 
 from src.kernel.llm.monitor import (
     MetricsCollector,

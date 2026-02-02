@@ -6,7 +6,6 @@
 3. 异常分类功能（classify_exception）
 """
 
-import pytest
 
 from src.kernel.llm import (
     LLMError,

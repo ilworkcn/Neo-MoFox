@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock
@@ -11,7 +10,7 @@ import pytest
 
 from src.kernel.llm.exceptions import LLMResponseConsumedError
 from src.kernel.llm.model_client.base import StreamEvent
-from src.kernel.llm.payload import LLMPayload, Text, ToolCall
+from src.kernel.llm.payload import LLMPayload, Text
 from src.kernel.llm.request import LLMRequest
 from src.kernel.llm.response import LLMResponse, _ToolCallAccumulator
 from src.kernel.llm.roles import ROLE
@@ -505,7 +504,7 @@ class TestLLMResponseSend:
         self, mock_model_set: list[dict[str, Any]], sample_payloads: list[LLMPayload]
     ) -> None:
         """Test that send creates a new request with current payloads."""
-        from unittest.mock import Mock, patch
+        from unittest.mock import patch
 
         response = LLMResponse(
             _stream=None,

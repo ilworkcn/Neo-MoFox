@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 
@@ -160,7 +160,7 @@ class ToolExecutor:
 
             return ToolResult(result, call_id=tool_call.id, name=tool_call.name)
 
-        except asyncio.TimeoutError as e:
+        except asyncio.TimeoutError:
             error_result = {
                 "error": "tool_execution_timeout",
                 "tool_name": tool_call.name,

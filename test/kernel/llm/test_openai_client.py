@@ -4,10 +4,7 @@
 """
 
 import asyncio
-import base64
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
-from uuid import uuid4
 
 import pytest
 

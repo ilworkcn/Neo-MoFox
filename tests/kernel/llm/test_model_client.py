@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import base64
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch

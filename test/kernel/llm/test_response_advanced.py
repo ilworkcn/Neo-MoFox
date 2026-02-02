@@ -7,7 +7,6 @@
 4. 各种边缘情况
 """
 
-import asyncio
 import pytest
 
 from src.kernel.llm.model_client.base import StreamEvent

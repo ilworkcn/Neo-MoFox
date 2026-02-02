@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -14,9 +13,8 @@ from src.kernel.llm.exceptions import (
     LLMRateLimitError,
     LLMTimeoutError,
 )
-from src.kernel.llm.model_client.base import ChatModelClient, StreamEvent
+from src.kernel.llm.model_client.base import StreamEvent
 from src.kernel.llm.payload import LLMPayload, Text, Tool, ToolResult
-from src.kernel.llm.policy.base import ModelStep
 from src.kernel.llm.request import LLMRequest
 from src.kernel.llm.roles import ROLE
 
