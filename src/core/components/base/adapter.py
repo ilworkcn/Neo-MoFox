@@ -1,4 +1,281 @@
-"""Adapter base for components."""
+"""适配器组件基类。
 
-class AdapterBase:
-    pass
+本模块提供 BaseAdapter 类，定义适配器组件的基本行为。
+Adapter 负责与外部平台通信，实现消息的接收和发送。
+继承自 mofox_wire.AdapterBase，添加插件生命周期、自动重连等特性。
+"""
+
+import asyncio
+from abc import abstractmethod
+from typing import TYPE_CHECKING, Any
+
+from mofox_wire import AdapterBase as MofoxAdapterBase
+from mofox_wire import CoreSink, MessageEnvelope, ProcessCoreSink
+
+from src.kernel.concurrency import get_task_manager
+
+if TYPE_CHECKING:
+    from src.core.components.base.plugin import BasePlugin
+
+
+class BaseAdapter(MofoxAdapterBase):
+    """适配器组件基类。
+
+    Adapter 负责与外部平台通信，是 Bot 与平台之间的桥梁。
+    相比 mofox_wire.AdapterBase，增加了以下特性：
+    1. 插件生命周期管理 (on_adapter_loaded, on_adapter_unloaded)
+    2. 自动重连与健康检查
+    3. 子进程启动支持
+
+    Class Attributes:
+        adapter_name: 适配器名称
+        adapter_version: 适配器版本
+        adapter_description: 适配器描述
+        platform: 平台标识（如 "qq", "telegram", "discord"）
+        run_in_subprocess: 是否在子进程中运行
+
+    Examples:
+        >>> class MyAdapter(BaseAdapter):
+        ...     adapter_name = "my_adapter"
+        ...     adapter_version = "1.0.0"
+        ...     platform = "test"
+        ...     run_in_subprocess = False
+        ...
+        ...     async def from_platform_message(self, raw: Any):
+        ...         # 解析平台消息并返回 MessageEnvelope
+        ...         return envelope
+    """
+
+    # 适配器元数据
+    adapter_name: str = "unknown_adapter"
+    adapter_version: str = "0.0.1"
+    adapter_description: str = "无描述"
+
+    platform: str = ""
+    run_in_subprocess: bool = False
+
+    # 组件级依赖（精确到组件签名）
+    dependencies: list[str] = []  # 例如 ["other_plugin:service:message_queue"]
+
+    def __init__(
+        self,
+        core_sink: CoreSink,
+        plugin: "BasePlugin | None" = None,
+        **kwargs: Any,
+    ) -> None:
+        """初始化适配器组件。
+
+        Args:
+            core_sink: 核心消息接收器
+            plugin: 所属插件实例（可选）
+            **kwargs: 传递给 AdapterBase 的其他参数
+        """
+        super().__init__(core_sink, **kwargs)
+        self.plugin = plugin
+        self._health_check_task_info: Any | None = None
+        self._running = False
+
+    @classmethod
+    def from_process_queues(
+        cls,
+        to_core_queue: Any,
+        from_core_queue: Any,
+        plugin: "BasePlugin | None" = None,
+        **kwargs: Any,
+    ) -> "BaseAdapter":
+        """子进程入口便捷构造。
+
+        使用 multiprocessing.Queue 与核心建立 ProcessCoreSink 通讯。
+
+        Args:
+            to_core_queue: 发往核心的 multiprocessing.Queue
+            from_core_queue: 核心回传的 multiprocessing.Queue
+            plugin: 可选插件实例
+            **kwargs: 透传给适配器构造函数
+
+        Returns:
+            BaseAdapter: 适配器实例
+        """
+        sink = ProcessCoreSink(to_core_queue=to_core_queue, from_core_queue=from_core_queue)
+        return cls(core_sink=sink, plugin=plugin, **kwargs)
+
+    async def start(self) -> None:
+        """启动适配器。
+
+        调用生命周期钩子并启动健康检查。
+
+        Examples:
+            >>> await adapter.start()
+        """
+        # 调用生命周期钩子
+        await self.on_adapter_loaded()
+
+        # 调用父类启动
+        await super().start()
+
+        # 启动健康检查
+        tm = get_task_manager()
+        self._health_check_task_info = tm.create_task(
+            self._health_check_loop(),
+            name=f"{self.adapter_name}_health_check",
+        )
+
+        self._running = True
+
+    async def stop(self) -> None:
+        """停止适配器。
+
+        停止健康检查并调用生命周期钩子。
+
+        Examples:
+            >>> await adapter.stop()
+        """
+        self._running = False
+
+        # 停止健康检查
+        if self._health_check_task_info:
+            tm = get_task_manager()
+            try:
+                tm.cancel_task(self._health_check_task_info.task_id)
+            except Exception:
+                pass
+            self._health_check_task_info = None
+
+        # 调用父类停止
+        await super().stop()
+
+        # 调用生命周期钩子
+        await self.on_adapter_unloaded()
+
+    async def on_adapter_loaded(self) -> None:
+        """适配器加载时的钩子。
+
+        子类可重写以执行初始化逻辑。
+
+        Examples:
+            >>> async def on_adapter_loaded(self) -> None:
+            ...     # 初始化连接
+            ...     pass
+        """
+        pass
+
+    async def on_adapter_unloaded(self) -> None:
+        """适配器卸载时的钩子。
+
+        子类可重写以执行清理逻辑。
+
+        Examples:
+            >>> async def on_adapter_unloaded(self) -> None:
+            ...     # 清理资源
+            ...     pass
+        """
+        pass
+
+    async def _health_check_loop(self) -> None:
+        """健康检查循环。
+
+        定期执行健康检查，失败时尝试重连。
+        """
+        interval = 30  # 默认 30 秒
+
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+
+                # 执行健康检查
+                is_healthy = await self.health_check()
+
+                if not is_healthy:
+                    await self.reconnect()
+
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                # 忽略健康检查异常
+                pass
+
+    async def health_check(self) -> bool:
+        """健康检查。
+
+        子类可重写以实现自定义检查逻辑。
+        默认检查连接状态。
+
+        Returns:
+            bool: 是否健康
+
+        Examples:
+            >>> async def health_check(self) -> bool:
+            ...     # 检查 WebSocket 连接状态
+            ...     return self.is_connected()
+        """
+        return self.is_connected()
+
+    async def reconnect(self) -> None:
+        """重新连接。
+
+        子类可重写以实现自定义重连逻辑。
+        默认停止后重新启动。
+
+        Examples:
+            >>> async def reconnect(self) -> None:
+            ...     await self.stop()
+            ...     await asyncio.sleep(2)
+            ...     await self.start()
+        """
+        await self.stop()
+        await asyncio.sleep(2)
+        await self.start()
+
+    @abstractmethod
+    async def from_platform_message(self, raw: Any) -> MessageEnvelope:
+        """将平台原始消息转换为 MessageEnvelope。
+
+        此方法由 mofox_wire.AdapterBase 定义，必须实现。
+
+        Args:
+            raw: 平台原始消息对象
+
+        Returns:
+            MessageEnvelope: 符合 mofox_wire 标准的消息信封
+
+        Examples:
+            >>> async def from_platform_message(self, raw: Any):
+            ...     from mofox_wire import MessageEnvelope, MessageDirection
+            ...
+            ...     # 解析平台消息
+            ...     message_id = raw.get("message_id")
+            ...     user_id = raw.get("user_id")
+            ...     content = raw.get("content")
+            ...
+            ...     return MessageEnvelope(
+            ...         direction=MessageDirection.UPWARD,
+            ...         message_info={
+            ...             "platform": self.platform,
+            ...             "user_id": user_id,
+            ...             "message_id": message_id,
+            ...         },
+            ...         message_segment=[{"type": "text", "data": content}],
+            ...         raw_message=raw,
+            ...     )
+        """
+        ...
+
+    async def _send_platform_message(self, envelope: MessageEnvelope) -> None:
+        """发送消息到平台。
+
+        如果使用了自动传输配置，此方法会自动处理。
+        否则子类需要重写此方法。
+
+        Args:
+            envelope: 要发送的消息信封
+
+        Raises:
+            NotImplementedError: 如果未配置自动传输且未重写此方法
+        """
+        # 如果配置了自动传输，调用父类方法
+        if hasattr(self, "_transport_config") and self._transport_config:  # type: ignore
+            await super()._send_platform_message(envelope)  # type: ignore
+        else:
+            raise NotImplementedError(
+                f"适配器 {self.adapter_name} 未配置自动传输，必须重写 _send_platform_message 方法"
+            )
