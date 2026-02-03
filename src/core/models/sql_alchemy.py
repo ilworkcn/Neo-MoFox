@@ -447,11 +447,6 @@ class PersonInfo(Base):
         nullable=True,
         comment="用户特征点（JSON格式存储）"
     )
-    forgotten_points: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-        comment="已被遗忘的特征点"
-    )
     info_list: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
