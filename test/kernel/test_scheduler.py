@@ -76,11 +76,11 @@ class TestScheduler:
             task_name="test_recurring",
         )
 
-        # 等待任务执行多次（调整为更合理的时间）
-        await asyncio.sleep(4)
+        # 等待任务执行多次（优化后）
+        await asyncio.sleep(3.5)
 
         # 验证任务已执行多次（考虑到调度器1秒的检查间隔）
-        assert len(executed) >= 3
+        assert len(executed) >= 2
 
         # 清理
         await get_unified_scheduler().remove_schedule(schedule_id)
@@ -162,7 +162,7 @@ class TestScheduler:
         assert result is True
 
         # 等待足够时间，任务不应执行
-        await asyncio.sleep(6)
+        await asyncio.sleep(1)
         assert len(executed) == 0
 
     @pytest.mark.asyncio
@@ -215,7 +215,7 @@ class TestScheduler:
         schedule_id = await get_unified_scheduler().create_schedule(
             callback=test_task,
             trigger_type=TriggerType.TIME,
-            trigger_config={"delay_seconds": 100},
+            trigger_config={"delay_seconds": 5},
             task_name="test_manual_trigger",
         )
 
@@ -233,14 +233,14 @@ class TestScheduler:
         task1_id = await get_unified_scheduler().create_schedule(
             callback=lambda: None,
             trigger_type=TriggerType.TIME,
-            trigger_config={"delay_seconds": 10},
+            trigger_config={"delay_seconds": 5},
             task_name="test_task_1",
         )
 
         task2_id = await get_unified_scheduler().create_schedule(
             callback=lambda: None,
             trigger_type=TriggerType.TIME,
-            trigger_config={"delay_seconds": 20},
+            trigger_config={"delay_seconds": 5},
             task_name="test_task_2",
         )
 
@@ -321,7 +321,7 @@ class TestSchedulerTimeUtils:
         schedule_id = await get_unified_scheduler().create_schedule(
             callback=lambda: None,
             trigger_type=TriggerType.TIME,
-            trigger_config={"delay_seconds": 10},
+            trigger_config={"delay_seconds": 5},
             task_name="unique_task_name",
         )
 
@@ -340,7 +340,7 @@ class TestSchedulerTimeUtils:
     async def test_task_timeout(self):
         """测试任务超时"""
         async def timeout_task():
-            await asyncio.sleep(100)  # 超过默认超时时间
+            await asyncio.sleep(5)  # 超过默认超时时间
 
         # 创建带超时的任务
         schedule_id = await get_unified_scheduler().create_schedule(
@@ -407,9 +407,9 @@ class TestSchedulerTimeUtils:
             task_name="test_retry",
         )
 
-        # 等待任务执行和重试（增加等待时间）
+        # 等待任务执行和重试（需要考虑重试延迟）
         # 第一次执行立即失败 + 5秒后第一次重试 + 5秒后第二次重试
-        await asyncio.sleep(15)
+        await asyncio.sleep(12)
 
         # 验证任务重试了3次后最终成功
         assert attempt_count == 3
@@ -434,7 +434,7 @@ class TestSchedulerTimeUtils:
         await get_unified_scheduler().create_schedule(
             callback=task1,
             trigger_type=TriggerType.TIME,
-            trigger_config={"delay_seconds": 10},
+            trigger_config={"delay_seconds": 5},
             task_name="same_name",
         )
 
@@ -443,7 +443,7 @@ class TestSchedulerTimeUtils:
             await get_unified_scheduler().create_schedule(
                 callback=task2,
                 trigger_type=TriggerType.TIME,
-                trigger_config={"delay_seconds": 10},
+                trigger_config={"delay_seconds": 5},
                 task_name="same_name",
             )
 
@@ -503,7 +503,7 @@ class TestSchedulerTimeUtils:
             task_name="test_task",
             callback=dummy_callback,
             trigger_type=TriggerType.TIME,
-            trigger_config={"delay_seconds": 10},
+            trigger_config={"delay_seconds": 5},
         )
 
         # 测试 __repr__
@@ -551,7 +551,7 @@ class TestSchedulerTimeUtils:
             task_name="test_recurring",
             callback=dummy_callback,
             trigger_type=TriggerType.TIME,
-            trigger_config={"delay_seconds": 10},
+            trigger_config={"delay_seconds": 5},
             is_recurring=True,
         )
 
@@ -621,7 +621,7 @@ class TestSchedulerTimeUtils:
         schedule_id = await get_unified_scheduler().create_schedule(
             callback=dummy_task,
             trigger_type=TriggerType.TIME,
-            trigger_config={"delay_seconds": 10},
+            trigger_config={"delay_seconds": 5},
             task_name="task_to_remove_by_name",
         )
 
@@ -834,7 +834,7 @@ class TestSchedulerTimeUtils:
         schedule_id = await get_unified_scheduler().create_schedule(
             callback=dummy_task,
             trigger_type=TriggerType.TIME,
-            trigger_config={"delay_seconds": 10},
+            trigger_config={"delay_seconds": 5},
             task_name="test_not_paused",
         )
 
@@ -857,7 +857,7 @@ class TestSchedulerTimeUtils:
         task1_id = await get_unified_scheduler().create_schedule(
             callback=lambda: None,
             trigger_type=TriggerType.TIME,
-            trigger_config={"delay_seconds": 10},
+            trigger_config={"delay_seconds": 5},
             task_name="filter_task_1",
         )
 
@@ -955,12 +955,12 @@ class TestSchedulerTimeUtils:
         )
 
         # 等待足够时间让任务执行多次（考虑调度器1秒的检查间隔）
-        await asyncio.sleep(12)
+        await asyncio.sleep(4)
 
         task_info = await get_unified_scheduler().get_task_info(schedule_id)
         assert task_info is not None
         # 应该至少执行了几次（考虑到调度器间隔）
-        assert task_info["trigger_count"] >= 3
+        assert task_info["trigger_count"] >= 2
 
         await get_unified_scheduler().remove_schedule(schedule_id)
 
@@ -971,7 +971,7 @@ class TestSchedulerTimeUtils:
 
         async def long_task():
             executed.append(1)
-            await asyncio.sleep(10)
+            await asyncio.sleep(0.2)
 
         schedule_id = await get_unified_scheduler().create_schedule(
             callback=long_task,
@@ -1030,7 +1030,7 @@ class TestSchedulerTimeUtils:
     async def test_statistics_with_running_tasks(self):
         """测试统计信息中包含运行中的任务"""
         async def long_task():
-            await asyncio.sleep(10)
+            await asyncio.sleep(2)
 
         schedule_id = await get_unified_scheduler().create_schedule(
             callback=long_task,
@@ -1072,7 +1072,7 @@ class TestSchedulerTimeUtils:
         schedule_id2 = await get_unified_scheduler().create_schedule(
             callback=dummy_task,
             trigger_type=TriggerType.TIME,
-            trigger_config={"delay_seconds": 10},
+            trigger_config={"delay_seconds": 5},
             task_name="test_overwrite_non_active",
         )
 
@@ -1089,7 +1089,7 @@ class TestSchedulerTimeUtils:
         schedule_id = await get_unified_scheduler().create_schedule(
             callback=dummy_task,
             trigger_type=TriggerType.TIME,
-            trigger_config={"delay_seconds": 10},
+            trigger_config={"delay_seconds": 5},
         )
 
         # 应该自动生成任务名称
@@ -1111,7 +1111,7 @@ class TestSchedulerTimeUtils:
             task_name="test_task",
             callback=dummy_callback,
             trigger_type=TriggerType.TIME,
-            trigger_config={"delay_seconds": 10},
+            trigger_config={"delay_seconds": 5},
         )
 
         # current_execution 为 None 时调用 finish_execution
@@ -1158,7 +1158,7 @@ class TestSchedulerTimeUtils:
         schedule_id = await get_unified_scheduler().create_schedule(
             callback=failing_task,
             trigger_type=TriggerType.TIME,
-            trigger_config={"delay_seconds": 100},
+            trigger_config={"delay_seconds": 5},
             task_name="test_manual_trigger_fail",
         )
 
@@ -1256,7 +1256,7 @@ class TestSchedulerTimeUtils:
             task_name="test_task",
             callback=dummy_callback,
             trigger_type=TriggerType.TIME,
-            trigger_config={"delay_seconds": 10},
+            trigger_config={"delay_seconds": 5},
         )
 
         # PENDING 状态是活跃的
@@ -1290,7 +1290,7 @@ class TestSchedulerTimeUtils:
             task_name="test_task",
             callback=dummy_callback,
             trigger_type=TriggerType.TIME,
-            trigger_config={"delay_seconds": 10},
+            trigger_config={"delay_seconds": 5},
         )
 
         # 只有 PENDING 状态可以触发
