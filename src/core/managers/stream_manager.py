@@ -20,7 +20,8 @@ from src.kernel.db import CRUDBase, QueryBuilder
 from src.kernel.logger import get_logger
 
 if TYPE_CHECKING:
-    from src.core.models import Message, ChatStream, StreamContext
+    from src.core.models.message import Message
+    from src.core.models.stream import ChatStream, StreamContext
     from src.core.models.sql_alchemy import Messages
 
 

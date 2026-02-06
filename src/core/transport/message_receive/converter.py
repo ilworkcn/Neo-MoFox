@@ -16,7 +16,7 @@ from typing import Any
 
 from mofox_wire import MessageEnvelope, MessageInfoPayload, SegPayload
 
-from src.core.models import Message, MessageType
+from src.core.models.message import Message, MessageType
 from src.core.transport.message_receive.utils import (
     extract_stream_id,
     infer_chat_type,

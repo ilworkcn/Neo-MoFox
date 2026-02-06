@@ -5,14 +5,17 @@ Service 是"暴露的功能"，供其他插件或组件调用。
 管理器提供动态实例创建和方法调用接口，支持同步和异步调用。
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from src.kernel.logger import get_logger
 
-from src.core.components import get_global_registry, ComponentType
+from src.core.components.registry import get_global_registry
+from src.core.components.types import ComponentType
 
 if TYPE_CHECKING:
-    from src.core.components import BaseService
+    from src.core.components.base.service import BaseService
 
 
 logger = get_logger("service_manager")
@@ -35,7 +38,7 @@ class ServiceManager:
         """初始化 Service 管理器。"""
         logger.info("Service 管理器初始化完成")
 
-    def get_all_services(self) -> dict[str, type["BaseService"]]:
+    def get_all_services(self) -> dict[str, type[BaseService]]:
         """获取所有已注册的 Service 组件。
 
         Returns:
@@ -49,7 +52,7 @@ class ServiceManager:
 
     def get_services_for_plugin(
         self, plugin_name: str
-    ) -> dict[str, type["BaseService"]]:
+    ) -> dict[str, type[BaseService]]:
         """获取指定插件的所有 Service 组件。
 
         Args:
@@ -64,7 +67,7 @@ class ServiceManager:
         registry = get_global_registry()
         return registry.get_by_plugin_and_type(plugin_name, ComponentType.SERVICE)
 
-    def get_service_class(self, signature: str) -> type["BaseService"] | None:
+    def get_service_class(self, signature: str) -> type[BaseService] | None:
         """通过签名获取 Service 类。
 
         Args:
@@ -79,7 +82,7 @@ class ServiceManager:
         registry = get_global_registry()
         return registry.get(signature)
 
-    def get_service(self, signature: str) -> "BaseService | None":
+    def get_service(self, signature: str) -> BaseService | None:
         """获取 Service 实例。
 
         创建新的 Service 实例（非单例模式）。

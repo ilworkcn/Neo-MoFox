@@ -5,6 +5,8 @@ Router 提供基于 FastAPI 的 HTTP 路由接口。
 管理器维护 Router 组件的全局集合，并处理路由的动态挂载和卸载。
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -12,12 +14,14 @@ if TYPE_CHECKING:
 
 from src.kernel.logger import get_logger
 
-from src.core.components import get_global_registry, ComponentType
+from src.core.components.registry import get_global_registry
+from src.core.components.types import ComponentType
 
-from src.core.transport import get_http_server
+from src.core.transport.router import get_http_server
 
 if TYPE_CHECKING:
-    from src.core.components import BaseRouter, BasePlugin
+    from src.core.components.base.router import BaseRouter
+    from src.core.components.base.plugin import BasePlugin
 
 
 logger = get_logger("router_manager")
@@ -42,10 +46,10 @@ class RouterManager:
 
     def __init__(self) -> None:
         """初始化 Router 管理器。"""
-        self._mounted_routers: dict[str, "BaseRouter"] = {}
+        self._mounted_routers: dict[str, BaseRouter] = {}
         logger.info("Router 管理器初始化完成")
 
-    def get_all_routers(self) -> dict[str, type["BaseRouter"]]:
+    def get_all_routers(self) -> dict[str, type[BaseRouter]]:
         """获取所有已注册的 Router 组件。
 
         Returns:
@@ -57,7 +61,7 @@ class RouterManager:
         registry = get_global_registry()
         return registry.get_by_type(ComponentType.ROUTER)
 
-    def get_routers_for_plugin(self, plugin_name: str) -> dict[str, type["BaseRouter"]]:
+    def get_routers_for_plugin(self, plugin_name: str) -> dict[str, type[BaseRouter]]:
         """获取指定插件的所有 Router 组件。
 
         Args:
@@ -72,7 +76,7 @@ class RouterManager:
         registry = get_global_registry()
         return registry.get_by_plugin_and_type(plugin_name, ComponentType.ROUTER)
 
-    def get_router_class(self, signature: str) -> type["BaseRouter"] | None:
+    def get_router_class(self, signature: str) -> type[BaseRouter] | None:
         """通过签名获取 Router 类。
 
         Args:
@@ -87,7 +91,7 @@ class RouterManager:
         registry = get_global_registry()
         return registry.get(signature)
 
-    def get_mounted_router(self, signature: str) -> "BaseRouter | None":
+    def get_mounted_router(self, signature: str) -> BaseRouter | None:
         """获取已挂载的 Router 实例。
 
         Args:
@@ -101,7 +105,7 @@ class RouterManager:
         """
         return self._mounted_routers.get(signature)
 
-    def get_all_mounted_routers(self) -> dict[str, "BaseRouter"]:
+    def get_all_mounted_routers(self) -> dict[str, BaseRouter]:
         """获取所有已挂载的 Router 实例。
 
         Returns:
@@ -115,8 +119,8 @@ class RouterManager:
     async def mount_router(
         self,
         signature: str,
-        plugin: "BasePlugin",
-    ) -> "BaseRouter":
+        plugin: BasePlugin,
+    ) -> BaseRouter:
         """挂载单个 Router。
 
         创建 Router 实例，挂载到 HTTP 服务器，并调用启动钩子。
@@ -231,7 +235,7 @@ class RouterManager:
 
         logger.info(f"Router 已卸载: {signature}")
 
-    async def mount_plugin_routers(self, plugin: "BasePlugin") -> list["BaseRouter"]:
+    async def mount_plugin_routers(self, plugin: BasePlugin) -> list[BaseRouter]:
         """挂载插件的所有 Router 组件。
 
         Args:
@@ -385,7 +389,7 @@ class RouterManager:
             if (info := self.get_router_info(signature)) is not None
         ]
 
-    async def reload_router(self, signature: str, plugin: "BasePlugin") -> "BaseRouter":
+    async def reload_router(self, signature: str, plugin: BasePlugin) -> BaseRouter:
         """重新加载 Router。
 
         先卸载再挂载，用于热重载。
@@ -448,7 +452,7 @@ def initialize_router_manager() -> None:
     get_event_bus().subscribe(EventType.ON_ALL_PLUGIN_LOADED, on_all_plugins_loaded)
 
 
-async def on_all_plugins_loaded(_: str, params: dict) -> tuple["EventDecision", dict]:
+async def on_all_plugins_loaded(_: str, params: dict) -> tuple[EventDecision, dict]:
     """所有插件加载完毕后，挂载所有注册的 Router。
 
     Args:

@@ -4,11 +4,13 @@
 每个插件的配置通过插件名称进行标识和缓存。
 """
 
+from __future__ import annotations
+
 from typing import Type
 
 
 from src.kernel.logger import get_logger
-from src.core.components import BaseConfig
+from src.core.components.base.config import BaseConfig
 
 
 logger = get_logger("config_manager")

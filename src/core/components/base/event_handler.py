@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from src.core.components.types import EventType
 
 if TYPE_CHECKING:
-    from src.core.components import BasePlugin
+    from src.core.components.base.plugin import BasePlugin
 
 
 class BaseEventHandler(ABC):

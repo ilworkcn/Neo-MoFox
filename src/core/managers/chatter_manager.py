@@ -5,15 +5,17 @@ Chatter 是 Bot 的智能核心，定义对话逻辑和 LLMUsable 过滤。
 管理器维护 Chatter 组件的全局集合，并提供查询接口。
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from src.kernel.logger import get_logger
 
-from src.core.components import get_global_registry
+from src.core.components.registry import get_global_registry
 from src.core.components.types import ChatType, ComponentType, parse_signature
 
 if TYPE_CHECKING:
-    from src.core.components import BaseChatter
+    from src.core.components.base.chatter import BaseChatter
 
 
 logger = get_logger("chatter_manager")
@@ -36,9 +38,9 @@ class ChatterManager:
 
     def __init__(self) -> None:
         """初始化 Chatter 管理器。"""
-        self._active_chatters: dict[str, "BaseChatter"] = {}
+        self._active_chatters: dict[str, BaseChatter] = {}
 
-    def get_all_chatters(self) -> dict[str, type["BaseChatter"]]:
+    def get_all_chatters(self) -> dict[str, type[BaseChatter]]:
         """获取所有已注册的 Chatter 组件。
 
         Returns:
@@ -50,7 +52,7 @@ class ChatterManager:
         registry = get_global_registry()
         return registry.get_by_type(ComponentType.CHATTER)
 
-    def get_chatters_for_plugin(self, plugin_name: str) -> dict[str, type["BaseChatter"]]:
+    def get_chatters_for_plugin(self, plugin_name: str) -> dict[str, type[BaseChatter]]:
         """获取指定插件的所有 Chatter 组件。
 
         Args:
@@ -65,7 +67,7 @@ class ChatterManager:
         registry = get_global_registry()
         return registry.get_by_plugin_and_type(plugin_name, ComponentType.CHATTER)
 
-    def get_chatter_class(self, signature: str) -> type["BaseChatter"] | None:
+    def get_chatter_class(self, signature: str) -> type[BaseChatter] | None:
         """通过签名获取 Chatter 类。
 
         Args:
@@ -80,7 +82,7 @@ class ChatterManager:
         registry = get_global_registry()
         return registry.get(signature)
 
-    def get_active_chatters(self) -> dict[str, "BaseChatter"]:
+    def get_active_chatters(self) -> dict[str, BaseChatter]:
         """获取当前活跃的 Chatter 实例。
 
         Returns:
@@ -91,7 +93,7 @@ class ChatterManager:
         """
         return self._active_chatters.copy()
 
-    def register_active_chatter(self, stream_id: str, chatter: "BaseChatter") -> None:
+    def register_active_chatter(self, stream_id: str, chatter: BaseChatter) -> None:
         """注册活跃的 Chatter 实例。
 
         Args:

@@ -6,6 +6,8 @@
 支持系统事件（EventType 枚举）和插件自定义事件（字符串）。
 """
 
+from __future__ import annotations
+
 import asyncio
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
@@ -16,7 +18,8 @@ from src.kernel.logger import get_logger
 from src.kernel.event import get_event_bus, EventDecision
 from src.kernel.concurrency import get_task_manager
 
-from src.core.components import BaseEventHandler, EventType
+from src.core.components.base.event_handler import BaseEventHandler
+from src.core.components.types import EventType
 
 logger = get_logger("event_manager")
 

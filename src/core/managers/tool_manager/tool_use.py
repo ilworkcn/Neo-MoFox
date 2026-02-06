@@ -11,7 +11,7 @@ from src.kernel.logger import get_logger
 from src.core.components.registry import get_global_registry
 
 if TYPE_CHECKING:
-    from src.core.components import BasePlugin
+    from src.core.components.base.plugin import BasePlugin
     from src.core.managers.tool_manager.tool_history import ToolHistory
     from src.core.models.message import Message
 

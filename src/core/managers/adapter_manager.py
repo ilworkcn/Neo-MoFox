@@ -4,22 +4,24 @@
 管理所有已启动的适配器实例，提供统一的接口进行操作。
 """
 
+from __future__ import annotations
+
 import asyncio
 from typing import TYPE_CHECKING
 
 from src.kernel.event import get_event_bus, EventDecision
 from src.kernel.logger import get_logger
-from src.core.components import (
-    get_global_registry,
-    get_global_state_manager,
+from src.core.components.registry import get_global_registry
+from src.core.components.state_manager import get_global_state_manager
+from src.core.components.types import (
     ComponentState,
     EventType,
     ComponentType,
 )
 
 if TYPE_CHECKING:
-    from src.core.components import BaseAdapter
-    from src.core.managers import PluginManager
+    from src.core.components.base.adapter import BaseAdapter
+    from src.core.managers.plugin_manager import PluginManager
 
 logger = get_logger("adapter_manager")
 

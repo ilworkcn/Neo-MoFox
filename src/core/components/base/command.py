@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from src.core.components.types import ChatType, PermissionLevel
 
 if TYPE_CHECKING:
-    from src.core.components import BasePlugin
+    from src.core.components.base.plugin import BasePlugin
 
 
 @dataclass

@@ -7,7 +7,8 @@
 
 import asyncio
 from typing import Any
-from src.core.components import ComponentState, get_global_registry
+from src.core.components.types import ComponentState
+from src.core.components.registry import get_global_registry
 
 
 class StateManager:

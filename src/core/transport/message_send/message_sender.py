@@ -11,7 +11,7 @@ from mofox_wire import MessageEnvelope
 from src.kernel.logger import get_logger
 
 if TYPE_CHECKING:
-    from src.core.models import Message
+    from src.core.models.message import Message
 
 logger = get_logger("message_sender")
 

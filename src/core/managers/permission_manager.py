@@ -14,11 +14,11 @@ from src.kernel.db import CRUDBase
 from src.kernel.logger import get_logger
 
 from src.core.utils.user_query_helper import get_user_query_helper
-from src.core.components import PermissionLevel
+from src.core.components.types import PermissionLevel
 from src.core.models.sql_alchemy import PermissionGroups, CommandPermissions
 
 if TYPE_CHECKING:
-    from src.core.components import BaseCommand
+    from src.core.components.base.command import BaseCommand
     from src.core.config import CoreConfig
 
 

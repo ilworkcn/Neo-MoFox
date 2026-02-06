@@ -5,17 +5,22 @@ Action 是"主动的响应"，通过 LLM Tool Calling 调用。
 管理器维护 Action 组件的全局集合，并根据聊天上下文过滤可用的 Action。
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING, Any
 
 from src.kernel.logger import get_logger
 from src.kernel.llm import LLMUsable
 from src.kernel.concurrency import get_task_manager
 
-from src.core.components import get_global_registry, ChatType, ComponentType
+from src.core.components.registry import get_global_registry
+from src.core.components.types import ChatType, ComponentType
 
 if TYPE_CHECKING:
-    from src.core.components import BaseAction, BasePlugin
-    from src.core.models import Message, ChatStream, StreamContext
+    from src.core.components.base.action import BaseAction
+    from src.core.components.base.plugin import BasePlugin
+    from src.core.models.message import Message
+    from src.core.models.stream import ChatStream, StreamContext
 
 
 logger = get_logger("action_manager")

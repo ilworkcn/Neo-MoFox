@@ -7,11 +7,11 @@
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from src.core.components import ChatType
+from src.core.components.types import ChatType
 from src.kernel.llm import LLMUsable
 
 if TYPE_CHECKING:
-    from src.core.components import BasePlugin
+    from src.core.components.base.plugin import BasePlugin
 
 
 class BaseCollection(ABC, LLMUsable):

@@ -18,8 +18,8 @@ from src.core.transport.distribution.tick import ConversationTick
 from src.kernel.logger import get_logger, COLOR
 
 if TYPE_CHECKING:
-    from src.core.models import StreamContext
-    from src.core.transport import StreamLoopManager
+    from src.core.models.stream import StreamContext
+    from src.core.transport.distribution import StreamLoopManager
 
 logger = get_logger("conversation_loop", display="会话循环", color=COLOR.MAGENTA)
 

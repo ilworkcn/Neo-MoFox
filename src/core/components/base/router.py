@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 
 if TYPE_CHECKING:
-    from src.core.components import BasePlugin
+    from src.core.components.base.plugin import BasePlugin
 
 
 class BaseRouter(ABC):

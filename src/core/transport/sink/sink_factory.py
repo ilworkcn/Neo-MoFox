@@ -14,7 +14,7 @@ from src.kernel.logger import get_logger
 from src.core.transport.sink.core_sink_impl import InProcessCoreSinkImpl
 
 if TYPE_CHECKING:
-    from src.core.components import BaseAdapter
+    from src.core.components.base.adapter import BaseAdapter
 
 logger = get_logger("sink_factory")
 

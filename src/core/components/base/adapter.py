@@ -15,7 +15,7 @@ from mofox_wire import CoreSink, MessageEnvelope
 from src.kernel.concurrency import get_task_manager
 
 if TYPE_CHECKING:
-    from src.core.components import BasePlugin
+    from src.core.components.base.plugin import BasePlugin
 
 
 class BaseAdapter(AdapterBase):

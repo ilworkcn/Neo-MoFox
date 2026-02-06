@@ -15,18 +15,14 @@ from src.kernel.llm import LLMUsable
 from src.kernel.concurrency import get_task_manager
 
 from src.core.components.types import ComponentType, ComponentSignature, parse_signature
-
-# 将常用组件基类导入移至顶层，避免在热路径中重复导入
-from src.core.components import (
-    get_global_registry,
-    BaseAction,
-    BaseTool,
-    BaseCollection,
-)
+from src.core.components.registry import get_global_registry
+from src.core.components.base.action import BaseAction
+from src.core.components.base.tool import BaseTool
+from src.core.components.base.collection import BaseCollection
 
 
 if TYPE_CHECKING:
-    from src.core.components import BasePlugin
+    from src.core.components.base.plugin import BasePlugin
 
 logger = get_logger("collection_manager")
 

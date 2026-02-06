@@ -4,6 +4,8 @@
 连接 AdapterManager 和 MessageReceiver。
 """
 
+from __future__ import annotations
+
 import inspect
 from typing import TYPE_CHECKING, Dict, Any
 from mofox_wire import MessageEnvelope
@@ -11,7 +13,7 @@ from mofox_wire import MessageEnvelope
 from src.kernel.logger import get_logger
 
 if TYPE_CHECKING:
-    from src.core.transport import MessageReceiver
+    from src.core.transport.message_receive import MessageReceiver
 
 logger = get_logger("sink_manager")
 
@@ -31,7 +33,7 @@ class SinkManager:
         >>> await sink_mgr.setup_adapter_sink("my_plugin:adapter:qq")
     """
 
-    def __init__(self, receiver: "MessageReceiver") -> None:
+    def __init__(self, receiver: MessageReceiver) -> None:
         """初始化 Sink 管理器。
 
         Args:

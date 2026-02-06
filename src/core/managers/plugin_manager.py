@@ -6,6 +6,8 @@
 src.core.components.loader.PluginLoader 负责。
 """
 
+from __future__ import annotations
+
 import importlib.util
 import inspect
 import shutil
@@ -15,17 +17,12 @@ import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from src.core.components.types import ComponentState, ComponentType
 from src.kernel.logger import get_logger
 
-from src.core.components.loader import (
-    PluginManifest,
-    get_plugin_class,
-)
-from src.core.components import get_global_registry, get_global_state_manager
-from src.core.components.types import ComponentState, ComponentType, build_signature
-
 if TYPE_CHECKING:
-    from src.core.components import BasePlugin
+    from src.core.components.base.plugin import BasePlugin
+    from src.core.components.loader import PluginManifest
 
 
 logger = get_logger("plugin_manager")
@@ -81,6 +78,8 @@ class PluginManager:
             return False
 
         # 3. 查找 @register_plugin 注册的插件类
+        from src.core.components.loader import get_plugin_class
+
         plugin_class = get_plugin_class(plugin_name)
         if not plugin_class:
             error_msg = "插件类未注册（未使用 @register_plugin 装饰器）"
@@ -128,6 +127,9 @@ class PluginManager:
         # 6.1 门控 Collection 内部组件：未解包前默认不可用
         try:
             from src.core.managers.collection_manager import get_collection_manager
+            from src.core.components.registry import get_global_registry
+            from src.core.components.state_manager import get_global_state_manager
+            from src.core.components.types import ComponentType
 
             registry = get_global_registry()
             collections = registry.get_by_plugin_and_type(
@@ -148,6 +150,13 @@ class PluginManager:
         self._loaded_plugins[plugin_name] = plugin_instance
         self._manifests[plugin_name] = manifest
         self._plugin_paths[plugin_name] = plugin_path
+
+        from src.core.components.state_manager import get_global_state_manager
+        from src.core.components.types import (
+            ComponentState,
+            ComponentType,
+            build_signature,
+        )
 
         state_manager = get_global_state_manager()
         await state_manager.set_state_async(
@@ -200,6 +209,12 @@ class PluginManager:
                 logger.error(
                     f"调用插件 '{plugin_name}' 的 on_plugin_unloaded 钩子时出错: {e}"
                 )
+            from src.core.components.state_manager import get_global_state_manager
+            from src.core.components.types import (
+                ComponentState,
+                ComponentType,
+                build_signature,
+            )
 
             # 更新状态
             state_manager = get_global_state_manager()
@@ -235,6 +250,10 @@ class PluginManager:
 
     async def _unregister_plugin_components(self, plugin_name: str) -> None:
         """从全局注册表中注销某插件的所有组件，并更新状态。"""
+        from src.core.components.registry import get_global_registry
+        from src.core.components.state_manager import get_global_state_manager
+        from src.core.components.types import build_signature
+
         registry = get_global_registry()
         state_manager = get_global_state_manager()
 
@@ -530,6 +549,10 @@ class PluginManager:
         Args:
             plugin_instance: 插件实例
         """
+        from src.core.components.registry import get_global_registry
+        from src.core.components.state_manager import get_global_state_manager
+        from src.core.components.types import build_signature
+
         registry = get_global_registry()
         state_manager = get_global_state_manager()
 
@@ -594,8 +617,9 @@ class PluginManager:
                 (组件类型, 组件名称, 依赖列表)
         """
         # 动态导入基类以避免循环导入
+        from src.core.components.types import ComponentType
         from src.core.components.base.action import BaseAction
-        from src.core.components import BaseAdapter
+        from src.core.components.base.adapter import BaseAdapter
         from src.core.components.base.chatter import BaseChatter
         from src.core.components.base.collection import BaseCollection
         from src.core.components.base.command import BaseCommand

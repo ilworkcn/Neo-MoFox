@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from src.core.components import EventType
+from src.core.components.types import EventType
 from src.kernel.event import EventDecision, get_event_bus
 from src.kernel.logger import get_logger, COLOR
 

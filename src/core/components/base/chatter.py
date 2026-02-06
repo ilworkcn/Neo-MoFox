@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncGenerator
 
 from src.core.components.types import ChatType
-from src.core.components import BaseAction, BaseTool, BaseCollection
 from src.core.managers import (
     get_collection_manager,
     get_tool_use,
@@ -20,9 +19,12 @@ from src.kernel.concurrency import get_task_manager
 from src.kernel.logger import get_logger, COLOR
 
 if TYPE_CHECKING:
-    from src.core.components import BasePlugin
-    from src.core.models import Message
-    from src.kernel.llm import LLMUsable
+    from src.core.components.base.action import BaseAction
+    from src.core.components.base.tool import BaseTool
+    from src.core.components.base.collection import BaseCollection
+    from src.core.components.base.plugin import BasePlugin
+    from src.core.models.message import Message
+    from src.kernel.llm.payload.tooling import LLMUsable
 
 
 @dataclass
@@ -184,7 +186,7 @@ class BaseChatter(ABC):
             >>> [MyAction, MyTool, MyCollection]
         """
         from src.core.components.types import ComponentType, ComponentState
-        from src.core.components import get_global_state_manager
+        from src.core.components.state_manager import get_global_state_manager
 
         usables: list[type["LLMUsable"]] = []
 

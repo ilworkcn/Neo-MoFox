@@ -5,15 +5,18 @@ Command 组件使用 Trie 树进行命令匹配，支持多级命令和参数解
 管理器维护 Command 组件的全局集合，并提供命令解析和执行接口。
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from src.kernel.logger import get_logger
 
-from src.core.components import ComponentType, get_global_registry
+from src.core.components.types import ComponentType
+from src.core.components.registry import get_global_registry
 
 if TYPE_CHECKING:
-    from src.core.components import BaseCommand
-    from src.core.models import Message
+    from src.core.components.base.command import BaseCommand
+    from src.core.models.message import Message
 
 
 logger = get_logger("command_manager")
@@ -51,7 +54,7 @@ class CommandManager:
         self._command_prefixes = prefixes
         logger.info(f"设置命令前缀: {prefixes}")
 
-    def get_all_commands(self) -> dict[str, type["BaseCommand"]]:
+    def get_all_commands(self) -> dict[str, type[BaseCommand]]:
         """获取所有已注册的 Command 组件。
 
         Returns:
@@ -65,7 +68,7 @@ class CommandManager:
 
     def get_commands_for_plugin(
         self, plugin_name: str
-    ) -> dict[str, type["BaseCommand"]]:
+    ) -> dict[str, type[BaseCommand]]:
         """获取指定插件的所有 Command 组件。
 
         Args:
@@ -80,7 +83,7 @@ class CommandManager:
         registry = get_global_registry()
         return registry.get_by_plugin_and_type(plugin_name, ComponentType.COMMAND)
 
-    def get_command_class(self, signature: str) -> type["BaseCommand"] | None:
+    def get_command_class(self, signature: str) -> type[BaseCommand] | None:
         """通过签名获取 Command 类。
 
         Args:
@@ -118,7 +121,7 @@ class CommandManager:
 
     def match_command(
         self, text: str
-    ) -> tuple[str, type["BaseCommand"] | None, list[str]]:
+    ) -> tuple[str, type[BaseCommand] | None, list[str]]:
         """匹配命令。
 
         解析文本并查找匹配的 Command 组件。
@@ -165,7 +168,7 @@ class CommandManager:
 
     async def execute_command(
         self,
-        message: "Message",
+        message: Message,
         text: str | None = None,
     ) -> tuple[bool, str]:
         """执行命令。

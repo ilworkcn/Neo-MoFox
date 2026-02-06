@@ -65,7 +65,7 @@ def _get_zip_root_prefix(zf: zipfile.ZipFile) -> str:
     return ""
 
 if TYPE_CHECKING:
-    from src.core.components import BasePlugin
+    from src.core.components.base.plugin import BasePlugin
     from src.core.managers import PluginManager
 
 # 全局插件注册表

@@ -8,7 +8,7 @@ Service 暴露特定功能供其他插件或组件调用。
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from src.core.components import BasePlugin
+    from src.core.components.base.plugin import BasePlugin
 
 
 class BaseService:
