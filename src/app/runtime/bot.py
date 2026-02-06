@@ -76,6 +76,7 @@ class Bot:
         # Core 层组件（延迟初始化）
         self.plugin_loader: Any = None
         self.plugin_manager: Any = None
+        self.http_server: Any = None
         self.load_order: list[str] = []
         self.manifests: dict[str, Any] = {}
         self.load_results: dict[str, bool] = {}
@@ -246,6 +247,16 @@ class Bot:
         initialize_event_manager()
 
         self.ui.update_phase_status("核心管理器", "已初始化")
+        
+        # Step 3: 启动 HTTP 服务器
+        from src.core.transport.router.http_server import get_http_server
+        
+        host = "127.0.0.1"
+        port = 8000
+        
+        self.http_server = get_http_server(host=host, port=port)
+        await self.http_server.start()
+        self.ui.update_phase_status("HTTP服务器", "已启动")
 
     async def _discover_plugins(self) -> None:
         """发现插件并解析依赖"""
@@ -472,11 +483,17 @@ class Bot:
             await self.scheduler.stop()
             self._stats["scheduler_running"] = False
 
-            # 4. 停止 WatchDog
+            # 4. 停止 HTTP 服务器
+            if self.http_server and self.http_server.is_running():
+                if self.logger:
+                    self.logger.info("停止 HTTP 服务器...")
+                await self.http_server.stop()
+
+            # 5. 停止 WatchDog
             if self.watchdog:
                 self.watchdog.stop()
 
-            # 5. 停止任务管理器（取消所有活动任务）
+            # 6. 停止任务管理器（取消所有活动任务）
             active_tasks = self.task_manager.get_active_tasks()
             for task_info in active_tasks:
                 self.task_manager.cancel_task(task_info.task_id)
@@ -487,18 +504,18 @@ class Bot:
             # 清理已完成的任务
             self.task_manager.cleanup_tasks()
 
-            # 6. 关闭数据库
+            # 7. 关闭数据库
             from src.kernel.db import close_engine
 
             await close_engine()
             self._stats["db_connected"] = False
 
-            # 7. 关闭向量数据库
+            # 8. 关闭向量数据库
             from src.kernel.vector_db import close_all_vector_db_services
 
             await close_all_vector_db_services()
 
-            # 8. 关闭日志系统（停止事件广播）
+            # 9. 关闭日志系统（停止事件广播）
             from src.kernel.logger import shutdown_logger_system
 
             shutdown_logger_system()

@@ -71,7 +71,6 @@ class HTTPServer:
         self._running: bool = False
         self._server_task: asyncio.Task | None = None
 
-        logger.info(f"HTTP 服务器初始化: {host}:{port}")
 
     async def start(self) -> None:
         """启动服务器。
@@ -92,7 +91,7 @@ class HTTPServer:
             app=self.app,
             host=self.host,
             port=self.port,
-            log_level="info",
+            log_level="error",
         )
 
         self.server = uvicorn.Server(config)

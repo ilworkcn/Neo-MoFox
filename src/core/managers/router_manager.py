@@ -174,7 +174,7 @@ class RouterManager:
     async def unmount_router(self, signature: str) -> None:
         """卸载单个 Router。
 
-        调用关闭钩子并从管理器中移除。
+        调用关闭钩子，从HTTP服务器卸载路由，并从管理器中移除。
 
         Args:
             signature: Router 组件签名
@@ -192,6 +192,38 @@ class RouterManager:
             await router_instance.shutdown()
         except Exception as e:
             logger.error(f"Router 关闭钩子执行失败 ({signature}): {e}")
+
+        # 从 HTTP 服务器卸载路由
+        # 注意：通过直接修改 app.routes 列表卸载 Mount 路由是可行的，
+        # 因为 Starlette 会在每次请求时遍历 routes 列表进行匹配。
+        # 但需要注意路径匹配的准确性（尾部斜杠等）。
+        try:
+            http_server = get_http_server()
+            route_path = router_instance.get_route_path()
+            
+            # 查找并移除对应的 Mount 路由
+            from starlette.routing import Mount
+            
+            # 标准化路径（移除尾部斜杠以精确匹配）
+            normalized_path = route_path.rstrip("/")
+            
+            routes_to_remove = [
+                route for route in http_server.app.routes
+                if isinstance(route, Mount) and route.path.rstrip("/") == normalized_path
+            ]
+            
+            if not routes_to_remove:
+                logger.warning(f"未找到匹配的 Mount 路由: {route_path}")
+            
+            for route in routes_to_remove:
+                http_server.app.routes.remove(route)
+                logger.debug(f"已从HTTP服务器移除路由: {route.path}")
+                
+            # 清理路由器（触发重新构建路由表）
+            # 注意：Starlette/FastAPI 会在下次请求时自动重建路由表，无需手动触发
+            
+        except Exception as e:
+            logger.error(f"从HTTP服务器卸载路由失败 ({signature}): {e}")
 
         # 移除实例
         self._mounted_routers.pop(signature, None)
