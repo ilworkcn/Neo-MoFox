@@ -1,5 +1,5 @@
 from enum import Enum
-from src.kernel.llm import LLMContextManager, LLMRequest, ModelSet
+from src.kernel.llm import LLMContextManager, LLMRequest, ModelSet, ToolRegistry, LLMUsable, ToolExecutor, ToolCall, ToolResult
 from src.core.config import get_model_config
 
 class TaskType(Enum):
@@ -11,7 +11,7 @@ class TaskType(Enum):
     VOICE = "voice"
     VIDEO = "video"
     TOOL_USE = "tool_use"
-
+    
 def create_llm_request(
     model_set: ModelSet,
     request_name: str = "",
@@ -44,3 +44,10 @@ def get_model_set_by_task(name: str) -> ModelSet:
     """
     return get_model_config().get_task(name)
 
+def create_tool_registry(tools: list[type[LLMUsable]] | None = None) -> ToolRegistry:
+    """创建工具注册表实例"""
+    registry = ToolRegistry()
+    if tools:
+        for tool in tools:
+            registry.register(tool)
+    return registry

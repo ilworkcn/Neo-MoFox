@@ -40,7 +40,9 @@ def _image_to_data_url(value: str) -> str:
     return f"data:image/png;base64,{b64}"
 
 
-def _payloads_to_openai_messages(payloads: list[LLMPayload]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _payloads_to_openai_messages(
+    payloads: list[LLMPayload],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     messages: list[dict[str, Any]] = []
     tools: list[dict[str, Any]] = []
 
@@ -67,15 +69,6 @@ def _payloads_to_openai_messages(payloads: list[LLMPayload]) -> tuple[list[dict[
 
                 if isinstance(part, Text) and content_text is None:
                     content_text = part.text
-
-                # 兜底：允许用户塞入自定义对象，带 call_id/to_text
-                if tool_call_id is None and hasattr(part, "call_id"):
-                    tool_call_id = getattr(part, "call_id")
-                if content_text is None and hasattr(part, "to_text"):
-                    try:
-                        content_text = part.to_text()   # type: ignore[attr-defined]
-                    except Exception:
-                        pass
 
             if content_text is None:
                 content_text = ""
@@ -160,7 +153,9 @@ class OpenAIChatClient:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._clients: dict[tuple[str, str | None, int, float | None], Any] = {}
-        self._sync_clients: dict[tuple[str, str | None, float | None, bool, bool], Any] = {}
+        self._sync_clients: dict[
+            tuple[str, str | None, float | None, bool, bool], Any
+        ] = {}
         self._sync_http_executors: dict[int, ThreadPoolExecutor] = {}
 
     def _get_loop_key(self) -> int:
@@ -187,25 +182,32 @@ class OpenAIChatClient:
             if cached is not None:
                 return cached
 
-
         from openai import AsyncOpenAI
         import httpx
-
 
         class _LoggingAsyncTransport(httpx.AsyncBaseTransport):
             def __init__(self, inner: "httpx.AsyncBaseTransport") -> None:
                 self._inner = inner
 
-            async def handle_async_request(self, request: "httpx.Request") -> "httpx.Response":
+            async def handle_async_request(
+                self, request: "httpx.Request"
+            ) -> "httpx.Response":
                 response = await self._inner.handle_async_request(request)
                 return response
 
         limits = None
         headers = None
 
-        base_transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0") if force_ipv4 else httpx.AsyncHTTPTransport()
+        base_transport = (
+            httpx.AsyncHTTPTransport(local_address="0.0.0.0")
+            if force_ipv4
+            else httpx.AsyncHTTPTransport()
+        )
         transport = _LoggingAsyncTransport(base_transport)
-        http_client_kwargs: dict[str, Any] = {"transport": transport, "trust_env": trust_env}
+        http_client_kwargs: dict[str, Any] = {
+            "transport": transport,
+            "trust_env": trust_env,
+        }
         if limits:
             http_client_kwargs["limits"] = limits
         if headers:
@@ -244,7 +246,11 @@ class OpenAIChatClient:
         from openai import OpenAI
         import httpx
 
-        transport = httpx.HTTPTransport(local_address="0.0.0.0") if force_ipv4 else httpx.HTTPTransport()
+        transport = (
+            httpx.HTTPTransport(local_address="0.0.0.0")
+            if force_ipv4
+            else httpx.HTTPTransport()
+        )
         http_client = httpx.Client(transport=transport, trust_env=trust_env)
 
         kwargs: dict[str, Any] = {"api_key": api_key, "http_client": http_client}
@@ -277,7 +283,9 @@ class OpenAIChatClient:
         request_name: str,
         model_set: Any,
         stream: bool,
-    ) -> tuple[str | None, list[dict[str, Any]] | None, AsyncIterator[StreamEvent] | None]:
+    ) -> tuple[
+        str | None, list[dict[str, Any]] | None, AsyncIterator[StreamEvent] | None
+    ]:
         if not isinstance(model_set, dict):
             raise TypeError("OpenAIChatClient 期望 model_set 为单个模型配置 dict")
 
@@ -342,13 +350,19 @@ class OpenAIChatClient:
                 return sync_client.chat.completions.create(**params)
 
             loop = asyncio.get_running_loop()
-            resp = await loop.run_in_executor(self._get_sync_http_executor(), _sync_create)
+            resp = await loop.run_in_executor(
+                self._get_sync_http_executor(), _sync_create
+            )
             msg = resp.choices[0].message
             tool_calls = []
             if getattr(msg, "tool_calls", None):
                 for tc in msg.tool_calls:
                     try:
-                        args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                        args = (
+                            json.loads(tc.function.arguments)
+                            if tc.function.arguments
+                            else {}
+                        )
                     except Exception:
                         args = tc.function.arguments
                     tool_calls.append(
@@ -384,7 +398,11 @@ class OpenAIChatClient:
             if getattr(msg, "tool_calls", None):
                 for tc in msg.tool_calls:
                     try:
-                        args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                        args = (
+                            json.loads(tc.function.arguments)
+                            if tc.function.arguments
+                            else {}
+                        )
                     except Exception:
                         args = tc.function.arguments
                     tool_calls.append(
@@ -429,7 +447,9 @@ class OpenAIChatClient:
                         yield StreamEvent(
                             tool_call_id=getattr(tc, "id", None),
                             tool_name=getattr(fn, "name", None) if fn else None,
-                            tool_args_delta=getattr(fn, "arguments", None) if fn else None,
+                            tool_args_delta=(
+                                getattr(fn, "arguments", None) if fn else None
+                            ),
                         )
 
                 function_call_delta = getattr(delta, "function_call", None)

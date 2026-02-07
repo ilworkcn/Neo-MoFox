@@ -2,7 +2,7 @@
 
 from .action import BaseAction
 from .adapter import BaseAdapter
-from .chatter import BaseChatter, Failure, Success, Wait
+from .chatter import BaseChatter, Failure, Success, Wait, Stop
 from .collection import BaseCollection
 from .command import BaseCommand, CommandNode
 from .config import BaseConfig
@@ -28,4 +28,5 @@ __all__ = [
     "Failure",
     "Success",
     "Wait",
+    "Stop",
 ]

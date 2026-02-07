@@ -524,7 +524,7 @@ def init_model_config(config_path: str) -> ModelConfig:
         path.write_text(toml_content, encoding="utf-8")
 
     # 从文件加载配置
-    _global_model_config = ModelConfig.load(config_path)
+    _global_model_config = ModelConfig.load(config_path, auto_update=True)
 
     return _global_model_config
 

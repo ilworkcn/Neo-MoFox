@@ -122,6 +122,10 @@ class ToolRegistry:
         """根据名称获取工具类。"""
         return self._tools.get(name)
 
+    def get_all(self) -> list[type[LLMUsable]]:
+        """获取所有注册的工具类"""
+        return list(self._tools.values())
+    
     def list_all(self) -> list[dict[str, Any]]:
         """获取所有已注册工具的 schema 列表。"""
         return [Tool(tool).to_openai_tool() for tool in self._tools.values()]

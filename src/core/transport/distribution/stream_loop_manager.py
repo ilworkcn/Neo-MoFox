@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, AsyncGenerator
 
 from src.kernel.logger import get_logger, COLOR
 
@@ -26,8 +26,6 @@ logger = get_logger("stream_loop_manager", display="流循环", color=COLOR.MAGE
 # ============================================================================
 
 _DEFAULT_MAX_CONCURRENT_STREAMS = 10
-_DEFAULT_FORCE_DISPATCH_THRESHOLD = 20
-_DEFAULT_INTERVAL_BASE = 5.0
 
 class StreamLoopManager:
     """流循环管理器 — 基于 Generator + Tick 的事件驱动模式。
@@ -57,11 +55,14 @@ class StreamLoopManager:
         self.max_concurrent_streams = max_concurrent_streams
         self.is_running = False
 
-        # 强制分发策略
-        self.force_dispatch_unread_threshold: int = _DEFAULT_FORCE_DISPATCH_THRESHOLD
-
         # 流启动锁：防止并发启动同一个流的多个任务
         self._stream_start_locks: dict[str, asyncio.Lock] = {}
+
+        # 对话执行生成器：stream_id -> generator
+        self._chatter_genes: dict[str, AsyncGenerator[Any, None]] = {}
+
+        # 等待状态：stream_id -> {"wait_until": float | None, "wait_for_messages": bool}
+        self._wait_states: dict[str, dict[str, Any]] = {}
 
         # 并发控制
         self._processing_semaphore = asyncio.Semaphore(max_concurrent_streams)
@@ -258,115 +259,42 @@ class StreamLoopManager:
         return flushed
 
     # ========================================================================
-    # 内部方法 — 消息处理
+    # 内部方法 — 状态处理
     # ========================================================================
 
-    async def _process_stream_messages(
-        self,
-        stream_id: str,
-        context: "StreamContext",
-    ) -> bool:
-        """处理流消息，调度 Chatter。
-
-        Args:
-            stream_id: 流 ID
-            context: 流上下文
+    def _wait_state_check(self, stream_id: str, context: "StreamContext") -> bool:
+        """检查并更新等待状态。
 
         Returns:
-            bool: 是否处理成功
+            bool: 是否可以继续执行 (True: 满足条件或无等待, False: 仍在等待)
         """
-        from src.core.managers import get_chatter_manager
-
-        chatter_manager = get_chatter_manager()
-
-        # 二次并发保护
-        if context.is_chatter_processing:
-            logger.warning(f"[并发保护] stream={stream_id[:8]}, 二次检查触发")
-            return False
-
-        unread_messages = context.unread_messages
-        if not unread_messages:
-            logger.debug(f"未读消息为空，跳过处理: {stream_id[:8]}")
+        wait_state = self._wait_states.get(stream_id)
+        if not wait_state:
             return True
 
-        context.is_chatter_processing = True
-        try:
-            # 设置触发用户 ID
-            last_msg = unread_messages[-1] if unread_messages else None
-            if last_msg:
-                context.triggering_user_id = last_msg.sender_id
+        wait_until = wait_state.get("wait_until")
+        wait_for_messages = wait_state.get("wait_for_messages", False)
 
-            logger.debug(f"处理 {len(unread_messages)} 条未读消息: {stream_id[:8]}")
+        should_resume = False
+        
+        # 情况 1: time 非 None, 检查时间到了没
+        if wait_until is not None:
+            if time.time() >= wait_until:
+                should_resume = True
+        
+        # 情况 2: time 为 None (或 Stop 状态强制) 且 wait_for_messages 为 True，检查是否有新消息
+        # 注意：如果既有 wait_until 又有 wait_for_messages (如 Stop)，通常任一满足即可?
+        # 根据用户需求："time非None则检查时间到了没，为None则检查是否有新消息"
+        # 为严格遵循指令：
+        elif wait_for_messages:
+            if context.unread_messages:
+                should_resume = True
 
-            # 获取此流的 Chatter
-            chatter = chatter_manager.get_chatter_by_stream(stream_id)
-            if not chatter:
-                from src.core.managers import get_stream_manager
-
-                sm = get_stream_manager()
-                chat_stream = sm._streams.get(stream_id)
-                if not chat_stream:
-                    logger.debug(f"未找到流实例，无法绑定 Chatter: {stream_id[:8]}")
-                    return False
-
-                chatter = chatter_manager.get_or_create_chatter_for_stream(
-                    stream_id,
-                    chat_stream.chat_type,
-                    chat_stream.platform,
-                )
-                if not chatter:
-                    logger.debug(f"未找到绑定的 Chatter: {stream_id[:8]}")
-                    return False
-
-            # 执行 Chatter
-            result_gen = chatter.execute(list(unread_messages))
-            if asyncio.iscoroutine(result_gen):
-                result_gen = await result_gen
-
-            # 消费生成器结果
-            if result_gen is not None:
-                async for result in result_gen:
-                    logger.debug(f"Chatter 结果: {result}")
+        if should_resume:
+            self._wait_states.pop(stream_id, None)
             return True
 
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error(f"处理异常: {stream_id[:8]} - {e}")
-            return False
-        finally:
-            context.is_chatter_processing = False
-
-    # ========================================================================
-    # 内部方法 — 间隔计算与策略
-    # ========================================================================
-
-    async def _calculate_interval(self, stream_id: str, has_messages: bool) -> float:
-        """
-        计算下次 Tick 的等待间隔。5-15秒随机波动。
-        """
-        base = _DEFAULT_INTERVAL_BASE
-
-        # 简单的随机波动
-        jitter = base * 0.3
-        interval = base + (jitter * (0.5 - time.time() % 1))
-        return max(0.5, interval)
-
-    def _needs_force_dispatch(self, context: "StreamContext", unread_count: int) -> bool:
-        """检查是否需要强制分发。
-
-        当未读消息数超过阈值时触发强制分发.
-
-        Args:
-            context: 流上下文
-            unread_count: 未读消息数量
-
-        Returns:
-            bool: 是否需要强制分发
-        """
-        if self.force_dispatch_unread_threshold <= 0:
-            return False
-        return unread_count > self.force_dispatch_unread_threshold
+        return False
 
     # ========================================================================
     # 辅助方法

@@ -6,7 +6,7 @@ Chatter 是 Bot 的智能核心，定义对话逻辑和流程。
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, AsyncGenerator
+from typing import TYPE_CHECKING, Any, AsyncGenerator, cast
 
 from src.core.components.types import ChatType
 from src.core.components.base.action import BaseAction
@@ -34,13 +34,13 @@ if TYPE_CHECKING:
 class Wait:
     """等待结果。
 
-    表示 Chatter 需要等待某些条件（如 LLM 响应）才能继续。
+    表示 Chatter 需要等待一段时间。
 
     Attributes:
-        reason: 等待原因的描述
+        time: 等待时间（秒），如果为 None 则表示无限等待直到有新消息
     """
 
-    reason: str
+    time: float | int | None = None
 
 
 @dataclass
@@ -72,16 +72,27 @@ class Failure:
     error: str
     exception: Exception | None = None
 
+@dataclass
+class Stop:
+    """停止结果。
+
+    表示 Chatter 将在一段时间后重新开始对话。
+
+    Attributes:
+        time: 停止时间（秒）
+    """
+
+    time: float | int
 
 # 类型别名
-ChatterResult = Wait | Success | Failure
+ChatterResult = Wait | Success | Failure | Stop
 
 
 class BaseChatter(ABC):
     """聊天器组件基类。
 
     Chatter 定义 Bot 的对话逻辑和流程。
-    使用生成器模式，通过 yield 返回 Wait/Success/Failure 结果。
+    使用生成器模式，通过 yield 返回 Wait/Success/Failure/Stop 结果。
 
     Class Attributes:
         plugin_name: 所属插件名称（由插件管理器在注册时注入，插件开发者无需填写）
@@ -149,30 +160,25 @@ class BaseChatter(ABC):
 
     @abstractmethod
     async def execute(
-        self, unreads: list["Message"]
+        self
     ) -> AsyncGenerator[ChatterResult, None]:
         """执行聊天器的主要逻辑。
 
         使用生成器模式，通过 yield 返回执行结果。
 
-        Args:
-            unreads: 未读消息列表
-
         Yields:
-            ChatterResult: Wait/Success/Failure 结果
+            ChatterResult: Wait/Success/Failure/Stop 结果
 
         Examples:
-            >>> async def execute(self, unreads: list[Message]) -> AsyncGenerator[ChatterResult, None]:
-            ...     if not unreads:
-            ...         yield Failure("没有新消息")
-            ...         return
-            ...
-            ...     yield Wait("处理消息中")
-            ...
-            ...     # 执行 LLM 调用等操作
-            ...     response = await self._call_llm(unreads)
-            ...
-            ...     yield Success(f"处理完成: {response}")
+            >>> async for result in my_chatter.execute():
+            ...     if isinstance(result, Wait):
+            ...         print(f"等待: {result.reason}")
+            ...     elif isinstance(result, Success):
+            ...         print(f"成功: {result.message}")
+            ...     elif isinstance(result, Failure):
+            ...         print(f"失败: {result.error}")
+            ...     elif isinstance(result, Stop):
+            ...         print(f"停止: {result.time} 秒")
         """
         ...
 
@@ -228,8 +234,8 @@ class BaseChatter(ABC):
         return usables
 
     async def modify_llm_usables(
-        self, llm_usables: list[type["BaseTool | BaseAction | BaseCollection"]]
-    ) -> list[type["BaseTool | BaseAction | BaseCollection"]]:
+        self, llm_usables: list[LLMUsable]
+    ) -> list[type[LLMUsable]]:
         """修改 LLMUsable 组件列表。
 
         调用其go_activate方法进行激活判定，并核对associate_type，返回最终可用的组件列表。
@@ -238,7 +244,7 @@ class BaseChatter(ABC):
             llm_usables: 原始 LLMUsable 组件列表
 
         Returns:
-            list[type["BaseTool" | "BaseAction" | "BaseCollection"]]: 修改后的组件列表
+            list[type[LLMUsable]]: 修改后的组件列表
         """
 
         logger = get_logger("chatter", display="聊天器", color=COLOR.MAGENTA)
@@ -248,9 +254,10 @@ class BaseChatter(ABC):
         chat_context = chat_stream.context
 
         removals: list[tuple[str, str]] = []
-        filtered: list[type["BaseTool | BaseAction | BaseCollection"]] = []
+        filtered: list[type[LLMUsable]] = []
 
         for usable_cls in llm_usables:
+            usable_cls = cast(type["BaseAction|BaseTool|BaseCollection"], usable_cls)  # 类型提示
             signature = usable_cls.get_signature() or usable_cls.__name__
 
             if issubclass(usable_cls, BaseAction) and usable_cls.associated_types:
@@ -267,6 +274,7 @@ class BaseChatter(ABC):
         tasks = []
         signatures = []
         for usable_cls in filtered:
+            usable_cls = cast(type["BaseAction|BaseTool|BaseCollection"], usable_cls)  # 类型提示
             signature = usable_cls.get_signature() or usable_cls.__name__
 
             try:
@@ -336,7 +344,7 @@ class BaseChatter(ABC):
         available = [
             usable_cls
             for usable_cls in filtered
-            if (usable_cls.get_signature() or usable_cls.__name__) not in removal_names
+            if (usable_cls.get_signature() or usable_cls.__name__) not in removal_names # type: ignore
         ]
 
         logger.info(
@@ -347,7 +355,7 @@ class BaseChatter(ABC):
 
     async def exec_llm_usable(
         self,
-        usable_cls: type["BaseTool | BaseAction | BaseCollection"],
+        usable_cls: type[LLMUsable],
         message: "Message",
         **kwargs: Any,
     ) -> tuple[bool, Any]:
@@ -369,6 +377,7 @@ class BaseChatter(ABC):
             ... )
         """
 
+        usable_cls = cast(type["BaseAction|BaseTool|BaseCollection"], usable_cls)  # 类型提示
         sig = usable_cls.get_signature()
         if not sig:
             raise ValueError("LLMUsable 组件未注入插件名称，无法执行")
