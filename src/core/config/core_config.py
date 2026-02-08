@@ -53,12 +53,16 @@ class CoreConfig(ConfigBase):
             description="强制关闭等待时间（秒）",
         )
         llm_preflight_check: bool = Field(
-            default=False,
+            default=True,
             description="启动时执行 LLM 接口连通性预检",
         )
         llm_preflight_timeout: float = Field(
             default=5.0,
             description="LLM 接口预检超时时间（秒）",
+        )
+        tick_interval: float = Field(
+            default=5,
+            description="主循环 tick 间隔（秒），过短可能增加消耗，过长可能降低响应速度",
         )
 
     bot: BotSection = Field(default_factory=BotSection)

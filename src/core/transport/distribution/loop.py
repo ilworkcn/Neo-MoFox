@@ -15,6 +15,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from src.core.config import get_core_config
 from src.core.transport.distribution.tick import ConversationTick
 from src.core.components.base.chatter import Wait, Success, Failure, Stop
 from src.kernel.logger import get_logger, COLOR
@@ -63,7 +64,7 @@ async def conversation_loop(
             )
 
             # 3. 固定等待间隔
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(get_core_config().bot.tick_interval)
 
         except asyncio.CancelledError:
             logger.info(f"[生成器] stream={stream_id[:8]}, 被取消")
