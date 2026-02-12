@@ -73,13 +73,13 @@ class LLMRequest:
 
     def __post_init__(self) -> None:
         if self.payloads is None:
-            object.__setattr__(self, "payloads", [])
+            self.payloads = []
         if self.policy is None:
-            object.__setattr__(self, "policy", RoundRobinPolicy())
+            self.policy = RoundRobinPolicy()
         if self.clients is None:
-            object.__setattr__(self, "clients", ModelClientRegistry())
+            self.clients = ModelClientRegistry()
         if self.context_manager is None:
-            object.__setattr__(self, "context_manager", LLMContextManager())
+            self.context_manager = LLMContextManager()
 
     def add_payload(self, payload: LLMPayload, position=None) -> Self:
         if position is not None:
