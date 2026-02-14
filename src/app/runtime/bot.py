@@ -319,6 +319,20 @@ class Bot:
             connection_timeout=db_cfg.connection_timeout,
             echo=db_cfg.echo,
         )
+
+        from src.core.utils.schema_sync import enforce_database_schema_consistency
+
+        sync_stats = await enforce_database_schema_consistency()
+        if self.logger:
+            self.logger.info(
+                "数据库结构已对齐: "
+                f"tables={sync_stats.tables_checked}, "
+                f"add={sync_stats.columns_added}, "
+                f"drop={sync_stats.columns_removed}, "
+                f"type={sync_stats.columns_type_altered}, "
+                f"nullable={sync_stats.columns_nullability_altered}"
+            )
+
         self._stats["db_connected"] = True
         self.ui.update_phase_status("数据库", "已连接")
 
