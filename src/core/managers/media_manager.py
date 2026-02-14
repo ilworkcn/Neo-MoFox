@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import hashlib
 import time
-from pathlib import Path
 from typing import Any
 
 from src.kernel.logger import get_logger
@@ -51,6 +50,7 @@ class MediaManager:
         """初始化媒体管理器。"""
         self._vlm_model_set = None
         self._initialize_vlm()
+        self._register_prompts()
 
     def _initialize_vlm(self) -> None:
         """初始化 VLM 模型配置。"""
@@ -66,6 +66,31 @@ class MediaManager:
                 logger.info("未配置 VLM 模型，媒体识别功能不可用")
         except Exception as e:
             logger.error(f"初始化 VLM 模型失败: {e}")
+
+    def _register_prompts(self) -> None:
+        """注册媒体识别相关的提示词模板。"""
+        try:
+            from src.core.prompt import PromptTemplate, get_prompt_manager
+            
+            manager = get_prompt_manager()
+            
+            # 注册图片识别提示词
+            image_prompt = PromptTemplate(
+                name="media.image_recognition",
+                template="请简要描述这张图片的内容，用一句话概括。"
+            )
+            manager.register_template(image_prompt)
+            
+            # 注册表情包识别提示词
+            emoji_prompt = PromptTemplate(
+                name="media.emoji_recognition",
+                template="请简要描述这个表情包的内容和含义，用一句话概括。"
+            )
+            manager.register_template(emoji_prompt)
+            
+            logger.debug("媒体识别提示词模板已注册")
+        except Exception as e:
+            logger.warning(f"注册提示词模板失败: {e}")
 
     # ──────────────────────────────────────────
     # 公共 API：媒体识别
@@ -259,6 +284,7 @@ class MediaManager:
         try:
             from src.app.plugin_system.api.llm_api import create_llm_request
             from src.kernel.llm import LLMContextManager, LLMPayload, ROLE, Text, Image
+            from src.core.prompt import get_prompt_manager
             
             # 检查 VLM 模型是否可用
             if not self._vlm_model_set:
@@ -273,11 +299,16 @@ class MediaManager:
                 context_manager=context_manager,
             )
 
-            # 构建提示词
+            # 从提示词管理器获取提示词模板
+            prompt_manager = get_prompt_manager()
             if media_type == "emoji":
-                prompt = "请简要描述这个表情包的内容和含义，用一句话概括。"
+                template = prompt_manager.get_template("media.emoji_recognition")
             else:
-                prompt = "请简要描述这张图片的内容，用一句话概括。"
+                template = prompt_manager.get_template("media.image_recognition")
+            
+            # 构建提示词（模板不需要参数，直接build）
+            if template:
+                prompt = template.build()
 
             # 处理 base64 数据：提取纯净的 base64 内容
             clean_base64 = self._extract_clean_base64(base64_data)
