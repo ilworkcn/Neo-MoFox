@@ -203,8 +203,25 @@ class MessageConverter:
             "time": message.time if isinstance(message.time, float) else time.time(),
         }
 
-        target_user_id = message.extra.get("target_user_id") or message.sender_id
-        target_user_name = message.extra.get("target_user_name") or message.sender_name
+        target_user_id = message.extra.get("target_user_id")
+        target_user_name = message.extra.get("target_user_name")
+
+        stream_info: dict[str, Any] | None = None
+        if message.stream_id and (message.chat_type == "group" or not target_user_id):
+            from src.core.managers.stream_manager import get_stream_manager
+
+            stream_info = await get_stream_manager().get_stream_info(message.stream_id)
+
+        if not target_user_id and message.chat_type != "group" and stream_info:
+            person_id = stream_info.get("person_id")
+            if isinstance(person_id, str) and ":" in person_id:
+                _, parsed_user_id = person_id.split(":", 1)
+                target_user_id = parsed_user_id
+
+        if not target_user_id:
+            target_user_id = message.sender_id
+        if not target_user_name:
+            target_user_name = message.sender_name
         user_info_dict: dict[str, Any] = {
             "platform": message.platform,
             "user_id": target_user_id,
@@ -217,13 +234,9 @@ class MessageConverter:
         group_id = message.extra.get("target_group_id") or message.extra.get("group_id")
         group_name = message.extra.get("target_group_name") or message.extra.get("group_name")
         if message.chat_type == "group" and message.stream_id:
-            if not group_id:
-                from src.core.managers.stream_manager import get_stream_manager
-
-                stream_info = await get_stream_manager().get_stream_info(message.stream_id)
-                if stream_info:
-                    group_id = stream_info.get("group_id") or ""
-                    group_name = stream_info.get("group_name") or ""
+            if not group_id and stream_info:
+                group_id = stream_info.get("group_id") or ""
+                group_name = stream_info.get("group_name") or ""
 
             if group_id:
                 msg_info["group_info"] = {  # type: ignore[typeddict-unknown-key]

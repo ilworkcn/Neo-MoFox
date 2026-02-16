@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import concurrent.futures
 from typing import TYPE_CHECKING, Any, AsyncGenerator, cast
 
 from src.kernel.logger import get_logger, COLOR
@@ -176,13 +177,37 @@ class StreamLoopManager:
                 )
                 context.stream_loop_task = loop_task.task
 
+                event_loop = asyncio.get_running_loop()
+
+                def _restart_stream_in_loop() -> None:
+                    """在线程环境中安全调度流重启。"""
+                    try:
+                        future = asyncio.run_coroutine_threadsafe(
+                            self.restart_stream_loop(stream_id),
+                            event_loop,
+                        )
+
+                        def _consume_result(fut: concurrent.futures.Future[bool]) -> None:
+                            try:
+                                fut.result()
+                            except Exception as e:
+                                logger.error(
+                                    f"[管理器] stream={stream_id[:8]}, WatchDog 重启回调执行失败: {e}"
+                                )
+
+                        future.add_done_callback(_consume_result)
+                    except Exception as e:
+                        logger.error(
+                            f"[管理器] stream={stream_id[:8]}, WatchDog 重启调度失败: {e}"
+                        )
+
                 get_watchdog().register_stream(
                     stream_id=stream_id,
                     tick_interval=tick_interval,
-                    warning_threshold=tick_interval * 2,
-                    restart_threshold=tick_interval * 5,
-                    restart_callback=lambda: self.restart_stream_loop(stream_id),
-                    )
+                    warning_threshold=2.0,
+                    restart_threshold=5.0,
+                    restart_callback=_restart_stream_in_loop,
+                )
                 
                 self._stats["active_streams"] += 1
                 self._stats["total_loops"] += 1

@@ -149,6 +149,8 @@ class ChatStream:
     Attributes:
         stream_id: 聊天流唯一标识符（SHA-256 哈希）
         platform: 平台标识
+        bot_id: 机器人 ID
+        bot_nickname: 机器人昵称
         message: 初始消息
         context: 聊天流上下文
         create_time: 创建时间
@@ -167,6 +169,8 @@ class ChatStream:
         stream_id: str,
         platform: str = "",
         chat_type: str = "private",
+        bot_id: str = "",
+        bot_nickname: str = "",
     ) -> None:
         """初始化聊天流。
 
@@ -174,10 +178,14 @@ class ChatStream:
             stream_id: 聊天流唯一标识符
             platform: 平台标识
             chat_type: 聊天类型（private/group/discuss）
+            bot_id: 机器人 ID
+            bot_nickname: 机器人昵称
         """
         self.stream_id = stream_id
         self.platform = platform
         self.chat_type = chat_type
+        self.bot_id = bot_id
+        self.bot_nickname = bot_nickname
         self.create_time = time.time()
         self.last_active_time = time.time()
 

@@ -189,7 +189,22 @@ class TestChatStream:
         assert stream.stream_id == "test_stream_123"
         assert stream.platform == "qq"
         assert stream.chat_type == "private"
+        assert stream.bot_id == ""
+        assert stream.bot_nickname == ""
         assert isinstance(stream.context, StreamContext)
+
+    def test_create_chat_stream_with_bot_info(self):
+        """测试创建聊天流时保存 bot 信息。"""
+        stream = ChatStream(
+            stream_id="test_stream_123",
+            platform="qq",
+            chat_type="private",
+            bot_id="123456",
+            bot_nickname="MoFoxBot",
+        )
+
+        assert stream.bot_id == "123456"
+        assert stream.bot_nickname == "MoFoxBot"
 
     def test_chat_stream_context_initialization(self):
         """测试聊天流上下文初始化。"""

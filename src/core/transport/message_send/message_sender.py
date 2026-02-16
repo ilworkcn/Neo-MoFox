@@ -79,10 +79,7 @@ class MessageSender:
             >>> success = await sender.send_message(message, "my_plugin:adapter:qq")
         """
         try:
-            # 1. 转换为 MessageEnvelope
-            envelope = await self._converter.message_to_envelope(message)
-
-            # 2. 确定目标 Adapter
+            # 1. 确定目标 Adapter
             if not adapter_signature:
                 adapter_signature = self._infer_adapter_signature(message)
 
@@ -93,7 +90,7 @@ class MessageSender:
                 )
                 return False
 
-            # 3. 获取 Adapter 实例
+            # 2. 获取 Adapter 实例
             if not self._adapter_manager:
                 from src.core.managers.adapter_manager import get_adapter_manager
 
@@ -108,14 +105,20 @@ class MessageSender:
                 )
                 return False
 
-            # 4. 发送
+            # 3. 使用 bot 信息覆盖 sender 字段
+            await self._apply_bot_sender_info(message, adapter)
+
+            # 4. 转换为 MessageEnvelope
+            envelope = await self._converter.message_to_envelope(message)
+
+            # 5. 发送
             await adapter._send_platform_message(envelope)
 
             logger.info(
                 f"消息发送成功: {message.message_id} → {adapter_signature}"
             )
 
-            # 5. 触发发送事件
+            # 6. 触发发送事件
             await self._emit_send_event(message, envelope, adapter_signature)
 
             return True
@@ -129,6 +132,26 @@ class MessageSender:
                 exc_info=True,
             )
             return False
+
+    async def _apply_bot_sender_info(self, message: "Message", adapter: Any) -> None:
+        """在发送前将消息发送者信息设置为 Bot 信息。"""
+        try:
+            bot_info: dict[str, Any] = {}
+            bot_info = await adapter.get_bot_info()
+
+            bot_id = str(bot_info.get("bot_id", "") or "")
+            bot_nickname = str(bot_info.get("bot_nickname", "") or "")
+
+            if bot_id:
+                message.sender_id = bot_id
+            if bot_nickname:
+                message.sender_name = bot_nickname
+                if not message.sender_cardname:
+                    message.sender_cardname = bot_nickname
+        except Exception as e:
+            logger.warning(
+                f"获取 Bot sender 信息失败，保留原 sender: message_id={message.message_id}, error={e}"
+            )
 
     def _infer_adapter_signature(self, message: "Message") -> str | None:
         """推断目标 Adapter 签名。
