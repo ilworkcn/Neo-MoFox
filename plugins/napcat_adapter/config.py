@@ -23,8 +23,8 @@ class NapcatAdapterConfig(BaseConfig):
     class BotSection(SectionBase):
         """Bot 基本配置"""
 
-        qq_id: str = Field(default="", description="Bot 的 QQ 账号 ID")
-        qq_nickname: str = Field(default="", description="Bot 的 QQ 昵称")
+        qq_id: str = Field(description="Bot 的 QQ 账号 ID")
+        qq_nickname: str = Field(description="Bot 的 QQ 昵称")
 
     @config_section("napcat_server")
     class NapcatServerSection(SectionBase):
