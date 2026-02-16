@@ -504,6 +504,7 @@ class StreamManager:
             ChatStream: 新创建的流对象
         """
         from src.core.models.stream import ChatStream
+        from src.core.managers.adapter_manager import get_adapter_manager
         from src.core.utils.user_query_helper import get_user_query_helper
 
         # 生成 stream_id
@@ -540,11 +541,23 @@ class StreamManager:
 
         await self._streams_crud.create(stream_data)
 
+        bot_id = ""
+        bot_nickname = ""
+        try:
+            bot_info = await get_adapter_manager().get_bot_info_by_platform(platform)
+            if bot_info:
+                bot_id = str(bot_info.get("bot_id", "") or "")
+                bot_nickname = str(bot_info.get("bot_nickname", "") or "")
+        except Exception as e:
+            logger.warning(f"获取 Bot 信息失败，将使用空值: platform={platform}, error={e}")
+
         # 创建 ChatStream 对象
         chat_stream = ChatStream(
             stream_id=stream_id,
             platform=platform,
             chat_type=chat_type,
+            bot_id=bot_id,
+            bot_nickname=bot_nickname,
         )
         chat_stream.create_time = now
         chat_stream.last_active_time = now
