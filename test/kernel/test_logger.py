@@ -280,12 +280,18 @@ class TestIntegration:
         assert logger2.get_metadata("key") == "value2"
 
     def test_default_color_parameter(self) -> None:
-        """测试默认颜色参数"""
+        """测试默认颜色按 name 自动映射"""
         console = Console(file=StringIO())
+        clear_all_loggers()
 
-        # 不指定颜色，应该使用默认的 WHITE
+        # 不指定颜色，应该根据 name 映射到默认色表
         logger = get_logger("default_color", console=console)
-        assert logger.color == "white"
+        assert logger.color not in {color.value for color in COLOR}
+
+        # 同名 logger 的默认颜色应稳定一致
+        clear_all_loggers()
+        logger2 = get_logger("default_color", console=console)
+        assert logger2.color == logger.color
 
 
 class TestFileOutput:
@@ -829,6 +835,41 @@ class TestLoggerEdgeCases:
             assert "request_id=12345" in content
             assert "app=test_app" in content
             assert "version=1.0.0" in content
+
+        finally:
+            shutdown_logger_system()
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_file_output_strips_rich_markup(self) -> None:
+        """测试文件输出会去除 Rich markup 标签"""
+        from src.kernel.logger import initialize_logger_system, shutdown_logger_system
+
+        temp_dir = tempfile.mkdtemp()
+
+        try:
+            console = Console(file=StringIO())
+            initialize_logger_system(
+                log_dir=temp_dir,
+                enable_file=True,
+                log_filename="markup_strip",
+            )
+
+            logger = get_logger(
+                "markup_strip",
+                enable_file=True,
+                console=console,
+            )
+
+            logger.info("[bold]Alice[/bold]: [#A6E3A1]hello[/#A6E3A1]")
+
+            log_files = list(Path(temp_dir).glob("markup_strip*.log"))
+            content = log_files[0].read_text(encoding="utf-8")
+
+            assert "Alice: hello" in content
+            assert "[bold]" not in content
+            assert "[/bold]" not in content
+            assert "[#A6E3A1]" not in content
+            assert "[/#A6E3A1]" not in content
 
         finally:
             shutdown_logger_system()

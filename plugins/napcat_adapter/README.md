@@ -70,7 +70,6 @@ NEW_napcat_adapter/
 
 3. **全局封禁**
    - **用户封禁列表**: 无论在群聊还是私聊中都会被过滤
-   - **机器人过滤**: 自动屏蔽其他QQ机器人的消息
 
 #### 📝 配置示例
 
@@ -86,9 +85,6 @@ private_list = ["111111111", "222222222"]
 
 # 全局封禁：这些用户的所有消息都会被过滤
 ban_user_id = ["333333333", "444444444"]
-
-# 屏蔽其他QQ机器人
-ban_qq_bot = true
 ```
 
 #### 🎯 常见使用场景
@@ -121,17 +117,15 @@ ban_qq_bot = true
 | `private_list_type` | string | "blacklist" | 私聊过滤模式："blacklist" 或 "whitelist" |
 | `private_list` | array | [] | 用户QQ号列表 |
 | `ban_user_id` | array | [] | 全局封禁的用户QQ号列表 |
-| `ban_qq_bot` | boolean | false | 是否屏蔽其他QQ机器人消息 |
 
 #### ⚡ 过滤逻辑流程
 
 1. **消息接收** → 检查全局封禁列表
-2. **通过** → 检查是否为机器人消息（如果启用 ban_qq_bot）
-3. **通过** → 根据消息类型应用对应过滤规则：
+2. **通过** → 根据消息类型应用对应过滤规则：
    - **群聊消息**: 应用群聊黑白名单规则
    - **私聊消息**: 应用私聊黑白名单规则
-4. **通过所有过滤** → 正常处理消息
-5. **任一过滤失败** → 丢弃消息，记录调试日志
+3. **通过所有过滤** → 正常处理消息
+4. **任一过滤失败** → 丢弃消息，记录调试日志
 
 #### 🔧 配置文件位置
 
@@ -145,7 +139,6 @@ ban_qq_bot = true
 [DEBUG] napcat_adapter: 群聊 123456789 在黑名单中，消息被过滤
 [DEBUG] napcat_adapter: 私聊用户 111111111 在黑名单中，消息被过滤
 [DEBUG] napcat_adapter: 用户 333333333 在全局封禁列表中，消息被过滤
-[DEBUG] napcat_adapter: 检测到机器人消息 555555555，消息被过滤
 ```
 
 ## 🔑 核心数据结构
@@ -251,7 +244,6 @@ class NapcatAdapter(BaseAdapter):
    - ❌ check_allow_to_chat()
    - ❌ 群组黑名单/白名单
    - ❌ 私聊黑名单/白名单
-   - ❌ QQ机器人检测
 
 9. **其他组件**
    - ❌ 视频处理器
@@ -283,7 +275,6 @@ class NapcatAdapter(BaseAdapter):
    - [ ] `check_allow_to_chat()` - 检查是否允许聊天
    - [ ] 群组白名单/黑名单逻辑
    - [ ] 私聊白名单/黑名单逻辑
-   - [ ] QQ机器人检测（ban_qq_bot）
 
 ### 优先级 2：完善发送处理（参考旧版 send_handler.py）
 

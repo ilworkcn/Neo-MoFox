@@ -140,14 +140,6 @@ class NapcatAdapter(BaseAdapter):
             logger.debug(f"用户 {user_id} 在全局封禁列表中，事件被过滤")
             return False
 
-        # 检查是否屏蔽其他QQ机器人（仅对消息事件生效）
-        if post_type == "message" and features_config.ban_qq_bot:
-            sender_info = raw.get("sender", {})
-            role = sender_info.get("role", "")
-            if role == "admin" or "bot" in str(sender_info).lower():
-                logger.debug(f"检测到机器人消息 {user_id}，事件被过滤")
-                return False
-
         # 获取消息类型（消息事件使用 message_type，通知事件根据 group_id 判断）
         message_type = raw.get("message_type")
         group_id = raw.get("group_id")

@@ -155,15 +155,17 @@ class MessageReceiver:
         platform = str(msg_info.get("platform", "unknown"))
         group_info = msg_info.get("group_info")
         sender_display = escape(message.sender_cardname or message.sender_name or message.sender_id)
+        sender_colored = f"[#89DCEB]{sender_display}[/#89DCEB]"
 
         if group_info:
             stream_name = escape(group_info.get("group_name") or group_info.get("group_id", ""))
-            location = f"[#F092B0]{stream_name}[/#F092B0] | {sender_display}"
+            location = f"[#F092B0]{stream_name}[/#F092B0] | {sender_colored}"
         else:
-            location = f"[#F092B0]{sender_display}[/#F092B0]"
+            location = sender_colored
 
         content_preview = escape((message.processed_plain_text or str(message.content) or "")[:80])
-        logger.info(f"<[b]{escape(platform)}[/b]> {location}: {content_preview}")
+        content_colored = f"[#A6E3A1]{content_preview}[/#A6E3A1]"
+        logger.info(f"<[b]{escape(platform)}[/b]> {location}: {content_colored}")
 
         await self._update_person_info(message)
 

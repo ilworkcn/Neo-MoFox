@@ -62,7 +62,6 @@ class NapcatAdapterConfig(BaseConfig):
             default_factory=list,
             description="全局封禁的用户 ID 列表",
         )
-        ban_qq_bot: bool = Field(default=False, description="是否屏蔽其他 QQ 机器人消息")
         enable_poke: bool = Field(default=True, description="是否启用戳一戳消息处理")
         ignore_non_self_poke: bool = Field(
             default=False,

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import sys
 import threading
 from datetime import datetime
@@ -35,6 +36,52 @@ def _get_event_bus() -> EventBus:
 
 # 日志广播事件名称
 LOG_OUTPUT_EVENT = "log_output"
+
+# get_logger 默认颜色池（仅当未显式传 color 时使用）
+# 使用 16 个十六进制颜色，避免与 COLOR 枚举中的命名颜色重复。
+_DEFAULT_NAME_COLOR_PALETTE: tuple[str, ...] = (
+    "#5E81AC",
+    "#88C0D0",
+    "#81A1C1",
+    "#8FBCBB",
+    "#A3BE8C",
+    "#EBCB8B",
+    "#D08770",
+    "#BF616A",
+    "#B48EAD",
+    "#7AA2F7",
+    "#9ECE6A",
+    "#E0AF68",
+    "#F7768E",
+    "#7DCFFF",
+    "#C0CAF5",
+    "#BB9AF7",
+)
+
+
+def _get_default_logger_color_by_name(name: str) -> str:
+    """根据 logger 名称稳定映射默认颜色。"""
+    normalized_name = (name or "").strip().lower() or "default"
+    digest = hashlib.md5(normalized_name.encode("utf-8")).digest()
+    color_index = digest[0] % len(_DEFAULT_NAME_COLOR_PALETTE)
+    return _DEFAULT_NAME_COLOR_PALETTE[color_index]
+
+
+def _strip_rich_markup(message: str) -> str:
+    """移除 Rich markup 标签，返回纯文本。
+
+    该函数仅用于文件日志输出，避免将控制台样式标签写入日志文件。
+
+    Args:
+        message: 可能包含 Rich markup 的日志消息
+
+    Returns:
+        str: 去除 markup 后的纯文本消息
+    """
+    try:
+        return Text.from_markup(message).plain
+    except Exception:
+        return message
 
 # 全局配置
 _global_config: dict[str, Any] = {
@@ -243,7 +290,8 @@ class Logger:
                 global _global_file_handler
                 if _global_file_handler is not None:
                     # 构建纯文本日志（不带颜色代码）
-                    log_line = f"[{timestamp_short}] {self.display} | {level} | {message}"
+                    plain_message = _strip_rich_markup(message)
+                    log_line = f"[{timestamp_short}] {self.display} | {level} | {plain_message}"
                     if all_metadata:
                         metadata_str = " | ".join([f"{k}={v}" for k, v in all_metadata.items()])
                         log_line += f"\n  {metadata_str}"
@@ -496,7 +544,7 @@ def get_global_log_config() -> dict[str, Any]:
 def get_logger(
     name: str,
     display: str | None = None,
-    color: COLOR | str = COLOR.WHITE,
+    color: COLOR | str | None = None,
     console: Console | None = None,
     enable_file: bool | None = None,
     enable_event_broadcast: bool | None = None,
@@ -509,7 +557,7 @@ def get_logger(
     Args:
         name: 日志记录器名称（唯一标识）
         display: 显示名称，如果为 None 则使用 name
-        color: 日志颜色
+        color: 日志颜色；为 None 时根据 name 自动映射默认颜色
         console: rich.Console 实例
         enable_file: 是否启用文件输出（None 则使用全局配置）
         enable_event_broadcast: 是否启用事件广播（None 则使用全局配置）
@@ -539,11 +587,12 @@ def get_logger(
                     else _global_config["enable_event_broadcast"]
                 )
                 actual_log_level = log_level if log_level is not None else _global_config["log_level"]
+                actual_color = color if color is not None else _get_default_logger_color_by_name(name)
             
             _loggers[name] = Logger(
                 name=name,
                 display=display,
-                color=color,
+                color=actual_color,
                 console=console,
                 enable_file=actual_enable_file,
                 enable_event_broadcast=actual_enable_event_broadcast,
