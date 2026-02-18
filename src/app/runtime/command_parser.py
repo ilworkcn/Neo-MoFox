@@ -326,8 +326,10 @@ class CommandParser:
         table.add_column("任务名称", style="cyan")
         table.add_column("状态", style="yellow")
 
-        for task_name, task_info in tasks.items():
-            status = "运行中" if not task_info.done() else "已完成"
+        for task_info in tasks:
+            # 任务名称优先用 name，没有就退回 task_id
+            task_name = task_info.name or task_info.task_id
+            status = "运行中" if not task_info.is_done() else "已完成"
             table.add_row(task_name, status)
 
         self.bot.ui.console.print(table)

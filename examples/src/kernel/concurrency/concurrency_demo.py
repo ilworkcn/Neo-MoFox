@@ -239,9 +239,3 @@ async def main():
 if __name__ == "__main__":
     # 运行演示
     asyncio.run(main())
-
-
-
-if __name__ == "__main__":
-    # 运行演示
-    asyncio.run(main())
