@@ -184,6 +184,7 @@ class StreamManager:
             stream_id=stream_record.stream_id,
             platform=stream_record.platform,
             chat_type=stream_record.chat_type,
+            group_id=getattr(stream_record, "group_id", None),
         )
         chat_stream.create_time = stream_record.created_at
         chat_stream.last_active_time = stream_record.last_active_time
@@ -624,6 +625,7 @@ class StreamManager:
             stream_id=stream_id,
             platform=platform,
             chat_type=chat_type,
+            group_id=group_id or None,
             bot_id=bot_id,
             bot_nickname=bot_nickname,
         )

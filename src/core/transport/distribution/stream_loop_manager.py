@@ -337,8 +337,10 @@ class StreamLoopManager:
                 if unread_count_now <= unread_count_at_yield:
                     return False
             else:
-                # Wait(seconds): 到达时间阈值后恢复
-                if now < yielded_at + float(wait_time):
+                # Wait(seconds): 时间到达 或 有新未读消息 时恢复
+                time_expired = now >= yielded_at + float(wait_time)
+                has_new_messages = unread_count_now > unread_count_at_yield
+                if not (time_expired or has_new_messages):
                     return False
 
         elif isinstance(last_yield, Stop):
