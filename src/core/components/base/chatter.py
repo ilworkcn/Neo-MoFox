@@ -31,7 +31,8 @@ if TYPE_CHECKING:
     from src.core.components.base.tool import BaseTool
     from src.core.components.base.plugin import BasePlugin
     from src.core.models.message import Message
-    from src.kernel.llm.payload.tooling import LLMUsable
+    from src.kernel.llm import LLMRequest
+    from src.kernel.llm.payload.tooling import LLMUsable, ToolRegistry
 
 
 @dataclass
@@ -415,6 +416,135 @@ class BaseChatter(ABC):
             return await agent_instance.execute(**kwargs)
         else:
             raise ValueError("未知的 LLMUsable 组件类型，无法执行")
+
+    def create_request(
+        self,
+        task: str = "actor",
+        request_name: str = "",
+        max_context: int | None = None,
+    ) -> "LLMRequest":
+        """快速创建 LLM 请求，自动加载任务模型集与上下文管理器。
+
+        封装了「获取模型集 → 创建上下文管理器 → 创建 LLMRequest」的固定样板。
+        request_name 默认取 chatter_name。
+
+        Args:
+            task: 模型任务名称（对应 config/model.toml 中的 task key），默认 "actor"
+            request_name: LLM 请求名称，默认使用 chatter_name
+            max_context: 上下文最大 payload 数，None 时从 core config 读取
+
+        Returns:
+            LLMRequest: 配置好上下文管理器的 LLM 请求对象
+
+        Raises:
+            KeyError: 当 task 在模型配置中不存在时
+        """
+        from src.core.config import get_model_config, get_core_config
+        from src.kernel.llm import LLMRequest, LLMContextManager
+
+        model_set = get_model_config().get_task(task)
+        max_payloads = max_context if max_context is not None else get_core_config().chat.max_context_size
+        context_manager = LLMContextManager(max_payloads=max_payloads)
+
+        _logger = get_logger("chatter")
+        if model_set:
+            first = model_set[0]
+            _logger.debug(
+                f"[{self.chatter_name}] 模型配置(task={task}): "
+                f"provider={first.get('api_provider')}, "
+                f"base_url={first.get('base_url')}, "
+                f"timeout={first.get('timeout')}"
+            )
+
+        return LLMRequest(
+            model_set=model_set,
+            request_name=request_name or self.chatter_name,
+            context_manager=context_manager,
+        )
+
+    async def inject_usables(self, request: Any) -> "ToolRegistry":
+        """将可用工具过滤后注入 LLM 请求，返回工具注册表。
+
+        封装了「get_llm_usables → modify_llm_usables → ToolRegistry → 注入 TOOL payload」
+        的固定四步链，调用方可使用返回的注册表进行后续工具调度。
+
+        Args:
+            request: 已创建的 LLMRequest，工具 schema 将以 TOOL payload 追加其中
+
+        Returns:
+            ToolRegistry: 注册了所有可用工具的注册表
+        """
+        from src.kernel.llm import ToolRegistry, LLMPayload, ROLE
+
+        usables = await self.get_llm_usables()
+        usables = await self.modify_llm_usables(usables)
+
+        registry = ToolRegistry()
+        for usable in usables:
+            registry.register(usable)
+
+        if registry.get_all():
+            request.add_payload(LLMPayload(ROLE.TOOL, registry.get_all()))  # type: ignore[arg-type]
+
+        return registry
+
+    async def run_tool_call(
+        self,
+        call: Any,
+        response: Any,
+        usable_map: "ToolRegistry",
+        trigger_msg: "Message | None",
+    ) -> tuple[bool, bool]:
+        """执行单个普通 tool call 并将 TOOL_RESULT 追加到 response。
+
+        处理「查找工具 → 调用 exec_llm_usable → 异常处理 → 追加 TOOL_RESULT」的固定模式。
+        仅适用于非控制流工具（pass_and_wait / stop_conversation 等应由调用方自行处理）。
+
+        Args:
+            call: LLM 返回的工具调用对象（含 name / id / args）
+            response: 当前 LLM 响应对象，TOOL_RESULT payload 将追加于此
+            usable_map: 工具注册表，用于按名称查找工具类
+            trigger_msg: 触发本次对话的消息；为 None 且工具有效时跳过执行
+
+        Returns:
+            tuple[bool, bool]: (appended, exec_success)
+                appended: 是否向 response 追加了 TOOL_RESULT
+                exec_success: 底层工具是否执行成功；跳过时为 False
+        """
+        from src.kernel.llm import LLMPayload, ROLE, ToolResult
+
+        _logger = get_logger("chatter")
+        args = dict(call.args) if isinstance(call.args, dict) else {}
+        args.pop("reason", None)
+
+        exec_success = False
+        usable_cls = usable_map.get(call.name)
+        if not usable_cls:
+            result_text = f"未知的工具: {call.name}"
+            _logger.warning(result_text)
+        else:
+            # 无触发消息时跳过（保留原有行为，不追加 TOOL_RESULT）
+            if trigger_msg is None:
+                _logger.debug(f"[{self.chatter_name}] 无触发消息，跳过工具调用: {call.name}")
+                return False, False
+            try:
+                exec_success, result = await self.exec_llm_usable(usable_cls, trigger_msg, **args)
+                result_text = str(result) if exec_success else f"执行失败: {result}"
+            except Exception as e:
+                result_text = f"执行异常: {e}"
+                _logger.error(f"执行 {call.name} 异常: {e}", exc_info=True)
+
+        response.add_payload(
+            LLMPayload(
+                ROLE.TOOL_RESULT,
+                ToolResult(  # type: ignore[arg-type]
+                    value=result_text,
+                    call_id=call.id,
+                    name=call.name,
+                ),
+            )
+        )
+        return True, exec_success
 
     async def fetch_unreads(
         self,
