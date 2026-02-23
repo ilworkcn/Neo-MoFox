@@ -194,6 +194,7 @@ def _iter_sections(config_model: type[ConfigBase]) -> list[_SectionInfo]:
                     name=_get_section_name(section_model, field_name),
                     model=section_model,
                     is_list=is_list,
+                    default_factory=model_field.default_factory,
                 )
             )
     # 移除 sections.sort(key=lambda x: x.name)
@@ -205,6 +206,7 @@ class _SectionInfo:
     name: str
     model: type[SectionBase]
     is_list: bool
+    default_factory: Any = None
 
 
 def _get_section_model_from_annotation(
@@ -239,11 +241,21 @@ def _merge_with_model_defaults(
 
         if section.is_list:
             items_out: list[dict[str, Any]] = []
-            if isinstance(raw_section, list):
+            if isinstance(raw_section, list) and len(raw_section) > 0:
+                # 用户已有数据：逐项合并，保留用户值
                 for item in raw_section:
                     if not isinstance(item, dict):
                         continue
                     items_out.append(_merge_section_fields(section.model, item))
+            elif section.default_factory is not None:
+                # 首次创建或 raw 中无此节：从字段 default_factory 获取默认列表项
+                default_list = _eval_default_factory(section.default_factory)
+                if isinstance(default_list, list):
+                    for default_item in default_list:
+                        if isinstance(default_item, SectionBase):
+                            items_out.append(default_item.model_dump())
+                        elif isinstance(default_item, dict):
+                            items_out.append(default_item)
             merged[section.name] = items_out
             continue
 
@@ -268,16 +280,36 @@ def _merge_section_fields(
             if is_list:
                 raw_list = raw_section.get(key)
                 items_out: list[dict[str, Any]] = []
-                if isinstance(raw_list, list):
+                if isinstance(raw_list, list) and len(raw_list) > 0:
+                    # 用户已有数据：逐项合并
                     for item in raw_list:
                         if not isinstance(item, dict):
                             continue
                         items_out.append(_merge_section_fields(nested_model, item))
+                elif field.default_factory is not None:
+                    # 无数据时从字段 default_factory 获取默认列表项
+                    default_list = _eval_default_factory(field.default_factory)
+                    if isinstance(default_list, list):
+                        for default_item in default_list:
+                            if isinstance(default_item, SectionBase):
+                                items_out.append(default_item.model_dump())
+                            elif isinstance(default_item, dict):
+                                items_out.append(default_item)
                 section_out[key] = items_out
             else:
                 raw_nested = raw_section.get(key)
-                if not isinstance(raw_nested, dict):
-                    raw_nested = {}
+                if not isinstance(raw_nested, dict) or len(raw_nested) == 0:
+                    # 无用户数据时，优先使用当前字段的 default_factory 提供的完整对象
+                    if field.default_factory is not None:
+                        default_obj = _eval_default_factory(field.default_factory)
+                        if isinstance(default_obj, SectionBase):
+                            section_out[key] = default_obj.model_dump()
+                            continue
+                        elif isinstance(default_obj, dict):
+                            section_out[key] = default_obj
+                            continue
+                    # 回退到原逻辑：用空字典递归合并
+                    raw_nested = raw_nested if isinstance(raw_nested, dict) else {}
                 section_out[key] = _merge_section_fields(nested_model, raw_nested)
             continue
 
