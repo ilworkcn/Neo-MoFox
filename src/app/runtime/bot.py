@@ -747,25 +747,36 @@ class Bot:
             if self.logger:
                 self.logger.info("停止接受新任务...")
 
-            # 2. 卸载插件
+            # 2. 触发 ON_STOP 事件（让事件处理器在插件卸载前执行清理）
+            try:
+                from src.core.components.types import EventType
+                assert self.event_bus is not None
+                await self.event_bus.publish(EventType.ON_STOP, {})
+                if self.logger:
+                    self.logger.info("已触发 ON_STOP 事件")
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"触发 ON_STOP 事件失败: {e}")
+
+            # 3. 卸载插件
             await self._unload_all_plugins()
 
-            # 3. 停止调度器
+            # 4. 停止调度器
             if self.scheduler:
                 await self.scheduler.stop()
                 self._stats["scheduler_running"] = False
 
-            # 4. 停止 HTTP 服务器
+            # 5. 停止 HTTP 服务器
             if self.http_server and self.http_server.is_running():
                 if self.logger:
                     self.logger.info("停止 HTTP 服务器...")
                 await self.http_server.stop()
 
-            # 5. 停止 WatchDog
+            # 6. 停止 WatchDog
             if self.watchdog:
                 self.watchdog.stop()
 
-            # 6. 停止任务管理器（取消所有活动任务）
+            # 7. 停止任务管理器（取消所有活动任务）
             if self.task_manager:
                 active_tasks = self.task_manager.get_active_tasks()
                 for task_info in active_tasks:
@@ -777,18 +788,18 @@ class Bot:
                 # 清理已完成的任务
                 self.task_manager.cleanup_tasks()
 
-            # 7. 关闭数据库
+            # 8. 关闭数据库
             from src.kernel.db import close_engine
 
             await close_engine()
             self._stats["db_connected"] = False
 
-            # 8. 关闭向量数据库
+            # 9. 关闭向量数据库
             from src.kernel.vector_db import close_all_vector_db_services
 
             await close_all_vector_db_services()
 
-            # 9. 关闭日志系统（停止事件广播）
+            # 10. 关闭日志系统（停止事件广播）
             from src.kernel.logger import shutdown_logger_system
 
             shutdown_logger_system()
