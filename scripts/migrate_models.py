@@ -9,6 +9,7 @@
 """
 
 import asyncio
+import hashlib
 import shutil
 import sys
 from pathlib import Path
@@ -184,6 +185,7 @@ async def migrate_person_info():
                         UPDATE person_info
                         SET
                             first_interaction = know_since,
+                            last_interaction = last_know,
                             interaction_count = CAST(COALESCE(know_times, 0) AS INTEGER),
                             created_at = COALESCE(know_since, strftime('%s', 'now')),
                             updated_at = COALESCE(last_know, strftime('%s', 'now'))
@@ -208,6 +210,7 @@ async def migrate_person_info():
                         UPDATE person_info
                         SET
                             first_interaction = know_since,
+                            last_interaction = last_know,
                             interaction_count = COALESCE(know_times, 0),
                             created_at = COALESCE(know_since, EXTRACT(EPOCH FROM NOW())),
                             updated_at = COALESCE(last_know, EXTRACT(EPOCH FROM NOW()))
@@ -274,6 +277,659 @@ async def migrate_person_info():
 
         await session.commit()
         logger.info("PersonInfo 迁移完成：添加新字段、迁移数据、删除旧字段")
+
+
+async def rehash_person_ids():
+    """将 person_info 中的 person_id 从旧版 MD5 格式重新哈希为新版 SHA256 格式。
+
+    旧框架使用 MD5(f"{platform}_{user_id}") 生成 person_id（32字符），
+    新框架使用 SHA256(f"{platform}_{user_id}") 生成 person_id（64字符）。
+
+    如果不做此转换，新框架的 get_or_create_person() 按 SHA256 查找时永远找不到
+    旧记录，会为每个用户创建全新空记录，导致所有历史数据（impression、attitude、
+    interaction_count 等）丢失。
+
+    处理逻辑：
+    1. 获取所有 person_id 长度 != 64 的记录（即非 SHA256 格式）
+    2. 根据 (platform, user_id) 计算正确的 SHA256 person_id
+    3. 如果目标 SHA256 person_id 已存在（框架运行时自动创建的空记录）：
+       - 将旧记录的非空字段合并到新记录（保留内容更丰富的字段）
+       - 删除旧记录
+    4. 如果目标 SHA256 person_id 不存在：直接更新 person_id
+
+    SQLite 没有内置 SHA256 函数，因此必须在 Python 端逐行处理。
+    """
+    async with get_db_session() as session:
+        # 1. 获取所有非 SHA256 格式的人物记录
+        result = await session.execute(
+            text("""
+                SELECT id, person_id, platform, user_id
+                FROM person_info
+                WHERE LENGTH(person_id) != 64
+            """)
+        )
+        old_rows = result.fetchall()
+
+        if not old_rows:
+            logger.info("所有 person_id 已为 SHA256 格式，无需重哈希")
+            return
+
+        logger.info(f"发现 {len(old_rows)} 条非 SHA256 person_id，开始重哈希...")
+
+        rehashed = 0
+        merged = 0
+        skipped = 0
+
+        for row in old_rows:
+            old_id, old_person_id, platform, user_id = row
+
+            if not platform or not user_id:
+                skipped += 1
+                continue
+
+            # 计算新的 SHA256 person_id
+            new_person_id = hashlib.sha256(
+                f"{platform}_{user_id}".encode()
+            ).hexdigest()
+
+            # 检查目标 SHA256 person_id 是否已存在
+            existing = await session.execute(
+                text("SELECT id FROM person_info WHERE person_id = :pid"),
+                {"pid": new_person_id}
+            )
+            existing_row = existing.fetchone()
+
+            if existing_row:
+                # 目标已存在（框架自动创建的空记录）→ 将旧记录数据合并过去
+                target_id = existing_row[0]
+
+                # 获取旧记录的完整数据
+                old_data = await session.execute(
+                    text("SELECT * FROM person_info WHERE id = :id"),
+                    {"id": old_id}
+                )
+                old_record = old_data.fetchone()
+                old_keys = old_data.keys()
+                old_dict = dict(zip(old_keys, old_record))
+
+                # 获取新记录的完整数据
+                new_data = await session.execute(
+                    text("SELECT * FROM person_info WHERE id = :id"),
+                    {"id": target_id}
+                )
+                new_record = new_data.fetchone()
+                new_dict = dict(zip(old_keys, new_record))
+
+                # 合并策略：对每个字段，优先保留非空且非默认的值
+                merge_fields = [
+                    "nickname", "cardname", "impression", "short_impression",
+                    "points", "info_list",
+                ]
+                updates = {}
+                for field in merge_fields:
+                    old_val = old_dict.get(field)
+                    new_val = new_dict.get(field)
+                    # 旧记录有数据但新记录为空 → 用旧值
+                    if old_val and not new_val:
+                        updates[field] = old_val
+
+                # attitude: 取非默认值(50)的那个，都非默认则取旧记录的
+                old_att = old_dict.get("attitude")
+                new_att = new_dict.get("attitude")
+                if old_att is not None and old_att != 50 and (new_att is None or new_att == 50):
+                    updates["attitude"] = old_att
+
+                # interaction_count: 取大的
+                old_count = old_dict.get("interaction_count") or 0
+                new_count = new_dict.get("interaction_count") or 0
+                if old_count > new_count:
+                    updates["interaction_count"] = old_count
+
+                # first_interaction: 取更早的
+                old_first = old_dict.get("first_interaction")
+                new_first = new_dict.get("first_interaction")
+                if old_first and (not new_first or old_first < new_first):
+                    updates["first_interaction"] = old_first
+
+                # last_interaction: 取更晚的
+                old_last = old_dict.get("last_interaction")
+                new_last = new_dict.get("last_interaction")
+                if old_last and (not new_last or old_last > new_last):
+                    updates["last_interaction"] = old_last
+
+                # created_at: 取更早的
+                old_created = old_dict.get("created_at")
+                new_created = new_dict.get("created_at")
+                if old_created and (not new_created or old_created < new_created):
+                    updates["created_at"] = old_created
+
+                # updated_at: 取更晚的
+                old_updated = old_dict.get("updated_at")
+                new_updated = new_dict.get("updated_at")
+                if old_updated and (not new_updated or old_updated > new_updated):
+                    updates["updated_at"] = old_updated
+
+                if updates:
+                    set_clause = ", ".join(f"{k} = :{k}" for k in updates)
+                    updates["target_id"] = target_id
+                    await session.execute(
+                        text(f"UPDATE person_info SET {set_clause} WHERE id = :target_id"),
+                        updates
+                    )
+
+                # 删除旧记录
+                await session.execute(
+                    text("DELETE FROM person_info WHERE id = :id"),
+                    {"id": old_id}
+                )
+                merged += 1
+            else:
+                # 目标不存在 → 直接更新 person_id
+                await session.execute(
+                    text(
+                        "UPDATE person_info SET person_id = :new_pid WHERE id = :id"
+                    ),
+                    {"new_pid": new_person_id, "id": old_id}
+                )
+                rehashed += 1
+
+        await session.commit()
+        logger.info(
+            f"person_id 重哈希完成: 直接转换 {rehashed} 条, "
+            f"合并去重 {merged} 条, 跳过 {skipped} 条"
+        )
+
+
+async def migrate_user_relationships_into_person_info():
+    """将旧版 user_relationships 表中的关系数据合并到 person_info 表。
+
+    旧框架存在 person_info 和 user_relationships 双表并存的设计：
+    - person_info：基础用户信息（impression/points/attitude/interaction_count 等）
+    - user_relationships：活跃关系系统（impression_text/relationship_score 等）
+
+    两张表各有独立维护的数据，需要智能合并而非简单填空。
+
+    合并策略（user_relationships 作为活跃系统优先级更高）：
+    - impression: ur.impression_text 优先（更新更频繁），否则取 ur.relationship_text
+      仅在 person_info.impression 为空时覆盖
+    - attitude: ur.relationship_score * 100 优先覆盖默认值(50)；
+      若 person_info 已有非默认 attitude，则取两者中更高的
+    - first_interaction: 取两者中更早的时间戳
+    - last_interaction: 取两者中更晚的时间戳
+    - short_impression: 仅在为空时合并 preference_keywords + key_facts
+
+    匹配方式：person_info.user_id = user_relationships.user_id
+    """
+    async with get_db_session() as session:
+        db_type = session.bind.dialect.name
+
+        # 0. 检查 user_relationships 表是否存在
+        if db_type == "postgresql":
+            check_result = await session.execute(
+                text("""
+                    SELECT COUNT(*)
+                    FROM information_schema.tables
+                    WHERE table_name = 'user_relationships'
+                """)
+            )
+        else:  # SQLite
+            check_result = await session.execute(
+                text("""
+                    SELECT COUNT(*)
+                    FROM sqlite_master
+                    WHERE type='table' AND name='user_relationships'
+                """)
+            )
+
+        table_exists = (check_result.scalar() or 0) > 0
+        if not table_exists:
+            logger.info("user_relationships 表不存在，跳过关系数据合并")
+            return
+
+        # 检查表中是否有数据
+        count_result = await session.execute(
+            text("SELECT COUNT(*) FROM user_relationships")
+        )
+        total = count_result.scalar() or 0
+        if total == 0:
+            logger.info("user_relationships 表为空，跳过关系数据合并")
+            return
+
+        logger.info(f"发现 {total} 条 user_relationships 记录，开始合并到 person_info...")
+
+        # 1. 合并 impression：优先使用 impression_text，其次 relationship_text
+        #    仅在 person_info.impression 为空时覆盖（person_info 已有 impression 的保留）
+        if db_type == "sqlite":
+            await session.execute(
+                text("""
+                    UPDATE person_info
+                    SET impression = (
+                        SELECT COALESCE(
+                            NULLIF(ur.impression_text, ''),
+                            NULLIF(ur.relationship_text, '')
+                        )
+                        FROM user_relationships ur
+                        WHERE ur.user_id = person_info.user_id
+                    )
+                    WHERE impression IS NULL
+                    AND EXISTS (
+                        SELECT 1 FROM user_relationships ur
+                        WHERE ur.user_id = person_info.user_id
+                        AND (
+                            (ur.impression_text IS NOT NULL AND ur.impression_text != '')
+                            OR (ur.relationship_text IS NOT NULL AND ur.relationship_text != '')
+                        )
+                    )
+                """)
+            )
+        else:  # PostgreSQL
+            await session.execute(
+                text("""
+                    UPDATE person_info pi
+                    SET impression = COALESCE(
+                        NULLIF(ur.impression_text, ''),
+                        NULLIF(ur.relationship_text, '')
+                    )
+                    FROM user_relationships ur
+                    WHERE ur.user_id = pi.user_id
+                    AND pi.impression IS NULL
+                    AND (
+                        (ur.impression_text IS NOT NULL AND ur.impression_text != '')
+                        OR (ur.relationship_text IS NOT NULL AND ur.relationship_text != '')
+                    )
+                """)
+            )
+        logger.info("  已合并 impression 字段（仅填充空值）")
+
+        # 2. 合并 attitude：relationship_score (0-1) → attitude (0-100)
+        #    分两步：(a) 默认值 50 或 NULL → 直接覆盖
+        #           (b) 已有非默认值 → 取两者中更高的
+        # 步骤 2a: 默认值覆盖
+        if db_type == "sqlite":
+            await session.execute(
+                text("""
+                    UPDATE person_info
+                    SET attitude = (
+                        SELECT CAST(ROUND(ur.relationship_score * 100) AS INTEGER)
+                        FROM user_relationships ur
+                        WHERE ur.user_id = person_info.user_id
+                        AND ur.relationship_score IS NOT NULL
+                    )
+                    WHERE (attitude IS NULL OR attitude = 50)
+                    AND EXISTS (
+                        SELECT 1 FROM user_relationships ur
+                        WHERE ur.user_id = person_info.user_id
+                        AND ur.relationship_score IS NOT NULL
+                    )
+                """)
+            )
+        else:
+            await session.execute(
+                text("""
+                    UPDATE person_info pi
+                    SET attitude = CAST(ROUND(ur.relationship_score * 100) AS INTEGER)
+                    FROM user_relationships ur
+                    WHERE ur.user_id = pi.user_id
+                    AND (pi.attitude IS NULL OR pi.attitude = 50)
+                    AND ur.relationship_score IS NOT NULL
+                """)
+            )
+        logger.info("  已合并 attitude（覆盖默认值 50）")
+
+        # 步骤 2b: 非默认值 → 取更高的（user_relationships 更活跃，score 通常更准）
+        if db_type == "sqlite":
+            await session.execute(
+                text("""
+                    UPDATE person_info
+                    SET attitude = (
+                        SELECT MAX(
+                            person_info.attitude,
+                            CAST(ROUND(ur.relationship_score * 100) AS INTEGER)
+                        )
+                        FROM user_relationships ur
+                        WHERE ur.user_id = person_info.user_id
+                        AND ur.relationship_score IS NOT NULL
+                        AND ur.relationship_score != 0.3
+                    )
+                    WHERE attitude IS NOT NULL AND attitude != 50
+                    AND EXISTS (
+                        SELECT 1 FROM user_relationships ur
+                        WHERE ur.user_id = person_info.user_id
+                        AND ur.relationship_score IS NOT NULL
+                        AND ur.relationship_score != 0.3
+                        AND CAST(ROUND(ur.relationship_score * 100) AS INTEGER) > person_info.attitude
+                    )
+                """)
+            )
+        else:
+            await session.execute(
+                text("""
+                    UPDATE person_info pi
+                    SET attitude = GREATEST(
+                        pi.attitude,
+                        CAST(ROUND(ur.relationship_score * 100) AS INTEGER)
+                    )
+                    FROM user_relationships ur
+                    WHERE ur.user_id = pi.user_id
+                    AND pi.attitude IS NOT NULL AND pi.attitude != 50
+                    AND ur.relationship_score IS NOT NULL
+                    AND ur.relationship_score != 0.3
+                    AND CAST(ROUND(ur.relationship_score * 100) AS INTEGER) > pi.attitude
+                """)
+            )
+        logger.info("  已合并 attitude（取更高值）")
+
+        # 3. 合并 first_interaction：取更早的时间戳
+        #    步骤 3a: person_info 为空 → 直接填充
+        if db_type == "sqlite":
+            await session.execute(
+                text("""
+                    UPDATE person_info
+                    SET first_interaction = (
+                        SELECT ur.first_met_time
+                        FROM user_relationships ur
+                        WHERE ur.user_id = person_info.user_id
+                        AND ur.first_met_time IS NOT NULL
+                    )
+                    WHERE first_interaction IS NULL
+                    AND EXISTS (
+                        SELECT 1 FROM user_relationships ur
+                        WHERE ur.user_id = person_info.user_id
+                        AND ur.first_met_time IS NOT NULL
+                    )
+                """)
+            )
+        else:
+            await session.execute(
+                text("""
+                    UPDATE person_info pi
+                    SET first_interaction = ur.first_met_time
+                    FROM user_relationships ur
+                    WHERE ur.user_id = pi.user_id
+                    AND pi.first_interaction IS NULL
+                    AND ur.first_met_time IS NOT NULL
+                """)
+            )
+
+        #    步骤 3b: 两者都有 → 取更早的
+        if db_type == "sqlite":
+            await session.execute(
+                text("""
+                    UPDATE person_info
+                    SET first_interaction = (
+                        SELECT ur.first_met_time
+                        FROM user_relationships ur
+                        WHERE ur.user_id = person_info.user_id
+                        AND ur.first_met_time IS NOT NULL
+                        AND ur.first_met_time < person_info.first_interaction
+                    )
+                    WHERE first_interaction IS NOT NULL
+                    AND EXISTS (
+                        SELECT 1 FROM user_relationships ur
+                        WHERE ur.user_id = person_info.user_id
+                        AND ur.first_met_time IS NOT NULL
+                        AND ur.first_met_time < person_info.first_interaction
+                    )
+                """)
+            )
+        else:
+            await session.execute(
+                text("""
+                    UPDATE person_info pi
+                    SET first_interaction = ur.first_met_time
+                    FROM user_relationships ur
+                    WHERE ur.user_id = pi.user_id
+                    AND pi.first_interaction IS NOT NULL
+                    AND ur.first_met_time IS NOT NULL
+                    AND ur.first_met_time < pi.first_interaction
+                """)
+            )
+        logger.info("  已合并 first_interaction（取更早时间）")
+
+        # 4. 合并 last_interaction：取更晚的时间戳
+        #    步骤 4a: person_info 为空 → 直接填充
+        if db_type == "sqlite":
+            await session.execute(
+                text("""
+                    UPDATE person_info
+                    SET last_interaction = (
+                        SELECT ur.last_updated
+                        FROM user_relationships ur
+                        WHERE ur.user_id = person_info.user_id
+                        AND ur.last_updated IS NOT NULL
+                    )
+                    WHERE last_interaction IS NULL
+                    AND EXISTS (
+                        SELECT 1 FROM user_relationships ur
+                        WHERE ur.user_id = person_info.user_id
+                        AND ur.last_updated IS NOT NULL
+                    )
+                """)
+            )
+        else:
+            await session.execute(
+                text("""
+                    UPDATE person_info pi
+                    SET last_interaction = ur.last_updated
+                    FROM user_relationships ur
+                    WHERE ur.user_id = pi.user_id
+                    AND pi.last_interaction IS NULL
+                    AND ur.last_updated IS NOT NULL
+                """)
+            )
+
+        #    步骤 4b: 两者都有 → 取更晚的
+        if db_type == "sqlite":
+            await session.execute(
+                text("""
+                    UPDATE person_info
+                    SET last_interaction = (
+                        SELECT ur.last_updated
+                        FROM user_relationships ur
+                        WHERE ur.user_id = person_info.user_id
+                        AND ur.last_updated IS NOT NULL
+                        AND ur.last_updated > person_info.last_interaction
+                    )
+                    WHERE last_interaction IS NOT NULL
+                    AND EXISTS (
+                        SELECT 1 FROM user_relationships ur
+                        WHERE ur.user_id = person_info.user_id
+                        AND ur.last_updated IS NOT NULL
+                        AND ur.last_updated > person_info.last_interaction
+                    )
+                """)
+            )
+        else:
+            await session.execute(
+                text("""
+                    UPDATE person_info pi
+                    SET last_interaction = ur.last_updated
+                    FROM user_relationships ur
+                    WHERE ur.user_id = pi.user_id
+                    AND pi.last_interaction IS NOT NULL
+                    AND ur.last_updated IS NOT NULL
+                    AND ur.last_updated > pi.last_interaction
+                """)
+            )
+        logger.info("  已合并 last_interaction（取更晚时间）")
+
+        # 5. 合并 short_impression：preference_keywords + key_facts → short_impression
+        #    仅在 person_info.short_impression 为空时填充
+        if db_type == "sqlite":
+            await session.execute(
+                text("""
+                    UPDATE person_info
+                    SET short_impression = (
+                        SELECT
+                            CASE
+                                WHEN COALESCE(NULLIF(ur.preference_keywords, ''), '') != ''
+                                     AND COALESCE(NULLIF(ur.key_facts, ''), '') != ''
+                                THEN '偏好: ' || ur.preference_keywords || '; 关键信息: ' || ur.key_facts
+                                WHEN COALESCE(NULLIF(ur.preference_keywords, ''), '') != ''
+                                THEN '偏好: ' || ur.preference_keywords
+                                WHEN COALESCE(NULLIF(ur.key_facts, ''), '') != ''
+                                THEN '关键信息: ' || ur.key_facts
+                                ELSE NULL
+                            END
+                        FROM user_relationships ur
+                        WHERE ur.user_id = person_info.user_id
+                    )
+                    WHERE short_impression IS NULL
+                    AND EXISTS (
+                        SELECT 1 FROM user_relationships ur
+                        WHERE ur.user_id = person_info.user_id
+                        AND (
+                            (ur.preference_keywords IS NOT NULL AND ur.preference_keywords != '')
+                            OR (ur.key_facts IS NOT NULL AND ur.key_facts != '')
+                        )
+                    )
+                """)
+            )
+        else:  # PostgreSQL
+            await session.execute(
+                text("""
+                    UPDATE person_info pi
+                    SET short_impression =
+                        CASE
+                            WHEN COALESCE(NULLIF(ur.preference_keywords, ''), '') != ''
+                                 AND COALESCE(NULLIF(ur.key_facts, ''), '') != ''
+                            THEN '偏好: ' || ur.preference_keywords || '; 关键信息: ' || ur.key_facts
+                            WHEN COALESCE(NULLIF(ur.preference_keywords, ''), '') != ''
+                            THEN '偏好: ' || ur.preference_keywords
+                            WHEN COALESCE(NULLIF(ur.key_facts, ''), '') != ''
+                            THEN '关键信息: ' || ur.key_facts
+                            ELSE NULL
+                        END
+                    FROM user_relationships ur
+                    WHERE ur.user_id = pi.user_id
+                    AND pi.short_impression IS NULL
+                    AND (
+                        (ur.preference_keywords IS NOT NULL AND ur.preference_keywords != '')
+                        OR (ur.key_facts IS NOT NULL AND ur.key_facts != '')
+                    )
+                """)
+            )
+        logger.info("  已合并 short_impression（preference_keywords + key_facts）")
+
+        # 6. 为 person_info 中不存在但 user_relationships 中存在的用户创建记录
+        #    这些用户可能只在 user_relationships 中有记录
+        if db_type == "sqlite":
+            await session.execute(
+                text("""
+                    INSERT INTO person_info (
+                        person_id, platform, user_id, nickname,
+                        impression, attitude,
+                        first_interaction, last_interaction, interaction_count,
+                        created_at, updated_at
+                    )
+                    SELECT
+                        'placeholder_' || ur.user_id,
+                        'qq',
+                        ur.user_id,
+                        ur.user_name,
+                        COALESCE(NULLIF(ur.impression_text, ''), NULLIF(ur.relationship_text, '')),
+                        CAST(ROUND(ur.relationship_score * 100) AS INTEGER),
+                        ur.first_met_time,
+                        ur.last_updated,
+                        0,
+                        COALESCE(ur.first_met_time, ur.last_updated),
+                        ur.last_updated
+                    FROM user_relationships ur
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM person_info pi
+                        WHERE pi.user_id = ur.user_id
+                    )
+                """)
+            )
+        else:
+            await session.execute(
+                text("""
+                    INSERT INTO person_info (
+                        person_id, platform, user_id, nickname,
+                        impression, attitude,
+                        first_interaction, last_interaction, interaction_count,
+                        created_at, updated_at
+                    )
+                    SELECT
+                        'placeholder_' || ur.user_id,
+                        'qq',
+                        ur.user_id,
+                        ur.user_name,
+                        COALESCE(NULLIF(ur.impression_text, ''), NULLIF(ur.relationship_text, '')),
+                        CAST(ROUND(ur.relationship_score * 100) AS INTEGER),
+                        ur.first_met_time,
+                        ur.last_updated,
+                        0,
+                        COALESCE(ur.first_met_time, ur.last_updated),
+                        ur.last_updated
+                    FROM user_relationships ur
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM person_info pi
+                        WHERE pi.user_id = ur.user_id
+                    )
+                """)
+            )
+        logger.info("  已为仅存在于 user_relationships 的用户创建 person_info 记录")
+
+        await session.commit()
+
+        # 统计合并结果
+        result = await session.execute(
+            text("""
+                SELECT
+                    COUNT(*) as total,
+                    COUNT(CASE WHEN impression IS NOT NULL AND impression != '' THEN 1 END) as with_impression,
+                    COUNT(CASE WHEN attitude IS NOT NULL AND attitude != 50 THEN 1 END) as with_attitude,
+                    COUNT(CASE WHEN first_interaction IS NOT NULL THEN 1 END) as with_first,
+                    COUNT(CASE WHEN last_interaction IS NOT NULL THEN 1 END) as with_last
+                FROM person_info
+            """)
+        )
+        row = result.fetchone()
+        if row:
+            logger.info(
+                f"  合并统计: 总计 {row[0]} 条, "
+                f"有印象 {row[1]} 条, "
+                f"有好感度(非50) {row[2]} 条, "
+                f"有首次交互 {row[3]} 条, "
+                f"有末次交互 {row[4]} 条"
+            )
+
+        logger.info("user_relationships → person_info 合并完成")
+
+
+async def drop_user_relationships_table() -> None:
+    """删除已合并的 user_relationships 表。
+
+    在 migrate_user_relationships_into_person_info() 和 rehash_person_ids()
+    完成后调用。数据已全部合并到 person_info，该表不再需要。
+    """
+    async with get_db_session() as session:
+        # 先检查表是否存在
+        db_type = session.bind.dialect.name
+        if db_type == "sqlite":
+            result = await session.execute(
+                text(
+                    "SELECT COUNT(*) FROM sqlite_master "
+                    "WHERE type='table' AND name='user_relationships'"
+                )
+            )
+        else:
+            result = await session.execute(
+                text(
+                    "SELECT COUNT(*) FROM information_schema.tables "
+                    "WHERE table_name = 'user_relationships'"
+                )
+            )
+
+        exists = result.scalar()
+        if not exists:
+            logger.info("  user_relationships 表不存在，跳过")
+            return
+
+        await session.execute(text("DROP TABLE user_relationships"))
+        await session.commit()
+        logger.info("  已删除 user_relationships 表（数据已合并到 person_info）")
 
 
 async def migrate_chat_streams():
@@ -1481,56 +2137,71 @@ async def run_all_migrations():
     logger.info("=" * 60)
 
     try:
-        # 1. 迁移用户信息
-        logger.info("\n[1/13] 迁移 PersonInfo...")
+        # 1. 迁移用户信息（添加新字段、迁移旧字段名、删除废弃字段）
+        logger.info("\n[1/16] 迁移 PersonInfo...")
         await migrate_person_info()
 
-        # 2. 迁移聊天流
-        logger.info("\n[2/13] 迁移 ChatStreams...")
+        # 2. 合并 user_relationships 表数据到 person_info
+        #    （旧框架双表设计，关系数据实际存储在 user_relationships 中）
+        logger.info("\n[2/16] 合并 user_relationships → person_info...")
+        await migrate_user_relationships_into_person_info()
+
+        # 3. 重哈希 person_id：MD5(32字符) → SHA256(64字符)
+        #    （旧框架用 MD5，新框架用 SHA256，不转换则新框架找不到旧记录）
+        logger.info("\n[3/16] 重哈希 person_id (MD5 → SHA256)...")
+        await rehash_person_ids()
+
+        # 4. 删除已合并的 user_relationships 表
+        #    （数据已在步骤 2 中合并到 person_info，该表不再需要）
+        logger.info("\n[4/16] 删除 user_relationships 表...")
+        await drop_user_relationships_table()
+
+        # 5. 迁移聊天流
+        logger.info("\n[5/16] 迁移 ChatStreams...")
         await migrate_chat_streams()
 
-        # 3. 迁移消息
-        logger.info("\n[3/13] 迁移 Messages...")
+        # 5. 迁移消息
+        logger.info("\n[6/16] 迁移 Messages...")
         await migrate_messages()
 
-        # 4. 迁移动作记录
-        logger.info("\n[4/13] 迁移 ActionRecords...")
+        # 6. 迁移动作记录
+        logger.info("\n[7/16] 迁移 ActionRecords...")
         await migrate_action_records()
 
-        # 5. 迁移图像信息
-        logger.info("\n[5/13] 迁移 Images...")
+        # 7. 迁移图像信息
+        logger.info("\n[8/16] 迁移 Images...")
         await migrate_images()
 
-        # 6. 迁移图像描述
-        logger.info("\n[6/13] 迁移 ImageDescriptions...")
+        # 8. 迁移图像描述
+        logger.info("\n[9/16] 迁移 ImageDescriptions...")
         await migrate_image_descriptions()
 
-        # 7. 迁移在线时长
-        logger.info("\n[7/13] 迁移 OnlineTime...")
+        # 9. 迁移在线时长
+        logger.info("\n[10/16] 迁移 OnlineTime...")
         await migrate_online_time()
 
-        # 8. 迁移封禁用户
-        logger.info("\n[8/13] 迁移 BanUsers...")
+        # 10. 迁移封禁用户
+        logger.info("\n[11/16] 迁移 BanUsers...")
         await migrate_ban_users()
 
-        # 9. 迁移权限节点
-        logger.info("\n[9/13] 迁移 PermissionNodes...")
+        # 11. 迁移权限节点
+        logger.info("\n[12/16] 迁移 PermissionNodes...")
         await migrate_permission_nodes()
 
-        # 10. 迁移用户权限
-        logger.info("\n[10/13] 迁移 UserPermissions...")
+        # 12. 迁移用户权限
+        logger.info("\n[13/16] 迁移 UserPermissions...")
         await migrate_user_permissions()
 
-        # 11. 迁移 LLM 使用记录
-        logger.info("\n[11/13] 迁移 LLMUsage...")
+        # 13. 迁移 LLM 使用记录
+        logger.info("\n[14/16] 迁移 LLMUsage...")
         await migrate_llm_usage()
 
-        # 12. 清理 Emoji 旧字段
-        logger.info("\n[12/13] 清理 Emoji 旧字段...")
+        # 14. 清理 Emoji 旧字段
+        logger.info("\n[15/16] 清理 Emoji 旧字段...")
         await migrate_emoji()
 
-        # 13. 验证迁移结果
-        logger.info("\n[13/13] 验证迁移结果...")
+        # 15. 验证迁移结果
+        logger.info("\n[16/16] 验证迁移结果...")
         await verify_migration()
 
         logger.info("\n" + "=" * 60)
@@ -1589,7 +2260,7 @@ def main():
     # 4. 输入 bot 信息（用于填充旧库 bot 消息的 person_id）
     print()
     print("旧数据库中 bot 发送的消息没有存储发送者信息，需要提供 bot 的 ID 来补充。")
-    print("格式: 平台:ID，多个用逗号分隔。例如: qq:3905802962,qq:1234567890")
+    print("格式: 平台:ID，多个用逗号分隔。例如: qq:1919810114,qq:1234567890")
     print("直接回车跳过（bot 消息将显示为未知用户）")
     bot_input = input("请输入 bot ID: ").strip()
     _parse_and_store_bot_ids(bot_input)
