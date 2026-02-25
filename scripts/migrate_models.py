@@ -447,16 +447,14 @@ async def migrate_user_relationships_into_person_info():
     - person_info：基础用户信息（impression/points/attitude/interaction_count 等）
     - user_relationships：活跃关系系统（impression_text/relationship_score 等）
 
-    两张表各有独立维护的数据，需要智能合并而非简单填空。
+    两张表各有独立维护的数据，需要智能合并。
 
-    合并策略（user_relationships 作为活跃系统优先级更高）：
-    - impression: ur.impression_text 优先（更新更频繁），否则取 ur.relationship_text
-      仅在 person_info.impression 为空时覆盖
-    - attitude: ur.relationship_score * 100 优先覆盖默认值(50)；
-      若 person_info 已有非默认 attitude，则取两者中更高的
+    合并策略（user_relationships 为主、person_info 为补充）：
+    - impression: ur 有数据时直接覆盖 person_info；ur 无数据时保留 person_info 原值
+    - attitude: ur.relationship_score 有值时直接覆盖；ur 无值时保留 person_info 原值
     - first_interaction: 取两者中更早的时间戳
     - last_interaction: 取两者中更晚的时间戳
-    - short_impression: 仅在为空时合并 preference_keywords + key_facts
+    - short_impression: ur 有 preference_keywords/key_facts 时直接覆盖；ur 无数据时保留原值
 
     匹配方式：person_info.user_id = user_relationships.user_id
     """
@@ -497,8 +495,9 @@ async def migrate_user_relationships_into_person_info():
 
         logger.info(f"发现 {total} 条 user_relationships 记录，开始合并到 person_info...")
 
-        # 1. 合并 impression：优先使用 impression_text，其次 relationship_text
-        #    仅在 person_info.impression 为空时覆盖（person_info 已有 impression 的保留）
+        # 1. 合并 impression：user_relationships 优先
+        #    ur 有 impression_text/relationship_text 时直接覆盖 person_info
+        #    ur 无数据时保留 person_info 原值
         if db_type == "sqlite":
             await session.execute(
                 text("""
@@ -511,8 +510,7 @@ async def migrate_user_relationships_into_person_info():
                         FROM user_relationships ur
                         WHERE ur.user_id = person_info.user_id
                     )
-                    WHERE impression IS NULL
-                    AND EXISTS (
+                    WHERE EXISTS (
                         SELECT 1 FROM user_relationships ur
                         WHERE ur.user_id = person_info.user_id
                         AND (
@@ -532,19 +530,17 @@ async def migrate_user_relationships_into_person_info():
                     )
                     FROM user_relationships ur
                     WHERE ur.user_id = pi.user_id
-                    AND pi.impression IS NULL
                     AND (
                         (ur.impression_text IS NOT NULL AND ur.impression_text != '')
                         OR (ur.relationship_text IS NOT NULL AND ur.relationship_text != '')
                     )
                 """)
             )
-        logger.info("  已合并 impression 字段（仅填充空值）")
+        logger.info("  已合并 impression 字段（user_relationships 优先覆盖）")
 
-        # 2. 合并 attitude：relationship_score (0-1) → attitude (0-100)
-        #    分两步：(a) 默认值 50 或 NULL → 直接覆盖
-        #           (b) 已有非默认值 → 取两者中更高的
-        # 步骤 2a: 默认值覆盖
+        # 2. 合并 attitude：user_relationships 优先
+        #    ur.relationship_score 有值时直接覆盖 person_info.attitude
+        #    ur 无值时保留 person_info 原值
         if db_type == "sqlite":
             await session.execute(
                 text("""
@@ -555,8 +551,7 @@ async def migrate_user_relationships_into_person_info():
                         WHERE ur.user_id = person_info.user_id
                         AND ur.relationship_score IS NOT NULL
                     )
-                    WHERE (attitude IS NULL OR attitude = 50)
-                    AND EXISTS (
+                    WHERE EXISTS (
                         SELECT 1 FROM user_relationships ur
                         WHERE ur.user_id = person_info.user_id
                         AND ur.relationship_score IS NOT NULL
@@ -570,54 +565,10 @@ async def migrate_user_relationships_into_person_info():
                     SET attitude = CAST(ROUND(ur.relationship_score * 100) AS INTEGER)
                     FROM user_relationships ur
                     WHERE ur.user_id = pi.user_id
-                    AND (pi.attitude IS NULL OR pi.attitude = 50)
                     AND ur.relationship_score IS NOT NULL
                 """)
             )
-        logger.info("  已合并 attitude（覆盖默认值 50）")
-
-        # 步骤 2b: 非默认值 → 取更高的（user_relationships 更活跃，score 通常更准）
-        if db_type == "sqlite":
-            await session.execute(
-                text("""
-                    UPDATE person_info
-                    SET attitude = (
-                        SELECT MAX(
-                            person_info.attitude,
-                            CAST(ROUND(ur.relationship_score * 100) AS INTEGER)
-                        )
-                        FROM user_relationships ur
-                        WHERE ur.user_id = person_info.user_id
-                        AND ur.relationship_score IS NOT NULL
-                        AND ur.relationship_score != 0.3
-                    )
-                    WHERE attitude IS NOT NULL AND attitude != 50
-                    AND EXISTS (
-                        SELECT 1 FROM user_relationships ur
-                        WHERE ur.user_id = person_info.user_id
-                        AND ur.relationship_score IS NOT NULL
-                        AND ur.relationship_score != 0.3
-                        AND CAST(ROUND(ur.relationship_score * 100) AS INTEGER) > person_info.attitude
-                    )
-                """)
-            )
-        else:
-            await session.execute(
-                text("""
-                    UPDATE person_info pi
-                    SET attitude = GREATEST(
-                        pi.attitude,
-                        CAST(ROUND(ur.relationship_score * 100) AS INTEGER)
-                    )
-                    FROM user_relationships ur
-                    WHERE ur.user_id = pi.user_id
-                    AND pi.attitude IS NOT NULL AND pi.attitude != 50
-                    AND ur.relationship_score IS NOT NULL
-                    AND ur.relationship_score != 0.3
-                    AND CAST(ROUND(ur.relationship_score * 100) AS INTEGER) > pi.attitude
-                """)
-            )
-        logger.info("  已合并 attitude（取更高值）")
+        logger.info("  已合并 attitude（user_relationships 优先覆盖）")
 
         # 3. 合并 first_interaction：取更早的时间戳
         #    步骤 3a: person_info 为空 → 直接填充
@@ -753,8 +704,9 @@ async def migrate_user_relationships_into_person_info():
             )
         logger.info("  已合并 last_interaction（取更晚时间）")
 
-        # 5. 合并 short_impression：preference_keywords + key_facts → short_impression
-        #    仅在 person_info.short_impression 为空时填充
+        # 5. 合并 short_impression：user_relationships 优先
+        #    ur 有 preference_keywords/key_facts 时直接覆盖 person_info
+        #    ur 无数据时保留 person_info 原值
         if db_type == "sqlite":
             await session.execute(
                 text("""
@@ -774,8 +726,7 @@ async def migrate_user_relationships_into_person_info():
                         FROM user_relationships ur
                         WHERE ur.user_id = person_info.user_id
                     )
-                    WHERE short_impression IS NULL
-                    AND EXISTS (
+                    WHERE EXISTS (
                         SELECT 1 FROM user_relationships ur
                         WHERE ur.user_id = person_info.user_id
                         AND (
@@ -802,14 +753,13 @@ async def migrate_user_relationships_into_person_info():
                         END
                     FROM user_relationships ur
                     WHERE ur.user_id = pi.user_id
-                    AND pi.short_impression IS NULL
                     AND (
                         (ur.preference_keywords IS NOT NULL AND ur.preference_keywords != '')
                         OR (ur.key_facts IS NOT NULL AND ur.key_facts != '')
                     )
                 """)
             )
-        logger.info("  已合并 short_impression（preference_keywords + key_facts）")
+        logger.info("  已合并 short_impression（user_relationships 优先覆盖）")
 
         # 6. 为 person_info 中不存在但 user_relationships 中存在的用户创建记录
         #    这些用户可能只在 user_relationships 中有记录
