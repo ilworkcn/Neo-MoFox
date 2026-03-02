@@ -82,6 +82,8 @@ system_prompt = """# 关于你
 在该平台你的信息：
 - 昵称：{nickname}
 - id：{bot_id}
+
+{extra_info}
 """
 
 user_prompt = """你当前正在名为"{stream_name}"的对话中。
@@ -418,6 +420,7 @@ class DefaultChatterPlugin(BasePlugin):
                 "current_time": optional(
                     datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 ),
+                "extra_info": optional("")
             },
         )
 
