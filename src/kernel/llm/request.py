@@ -103,6 +103,14 @@ class LLMRequest:
         Returns:
             Self: 返回当前 LLMRequest 实例，支持链式调用。
         """
+        if self.context_manager is not None:
+            self.payloads = self.context_manager.add_payload(
+                self.payloads,
+                payload,
+                position=int(position) if position is not None else None,
+            )
+            return self
+
         if position is not None:
             self.payloads.insert(int(position), payload)
             return self

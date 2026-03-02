@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.kernel.llm.context import LLMContextManager
-from src.kernel.llm.payload import LLMPayload, Text, ToolResult
+from src.kernel.llm.payload import LLMPayload, Text, ToolCall, ToolResult
 from src.kernel.llm.request import LLMRequest
 from src.kernel.llm.roles import ROLE
 
@@ -122,3 +122,53 @@ def test_context_manager_trims_by_token_budget() -> None:
     assert trimmed[0].role == ROLE.USER
     assert trimmed[0].content[0].text == "q3"
     assert trimmed[1].role == ROLE.ASSISTANT
+
+
+def test_context_manager_system_tool_equivalent_add_payload() -> None:
+    manager = LLMContextManager(max_payloads=20)
+    payloads: list[LLMPayload] = []
+
+    payloads = manager.system(payloads, Text("sys"))
+    payloads = manager.tool(payloads, DummyTool)
+
+    assert len(payloads) == 2
+    assert payloads[0].role == ROLE.SYSTEM
+    assert payloads[0].content[0].text == "sys"
+    assert payloads[1].role == ROLE.TOOL
+
+
+def test_context_manager_reminder_creates_first_user() -> None:
+    manager = LLMContextManager(max_payloads=20)
+    payloads = [LLMPayload(ROLE.SYSTEM, Text("sys"))]
+
+    payloads = manager.reminder(payloads, "你必须先输出结论")
+
+    assert len(payloads) == 2
+    assert payloads[0].role == ROLE.SYSTEM
+    assert payloads[1].role == ROLE.USER
+    assert payloads[1].content[0].text == "你必须先输出结论"
+
+
+def test_context_manager_fills_missing_tool_result_placeholder() -> None:
+    manager = LLMContextManager(max_payloads=20)
+    payloads = [LLMPayload(ROLE.USER, Text("帮我调用工具"))]
+
+    payloads = manager.add_payload(
+        payloads,
+        LLMPayload(
+            ROLE.ASSISTANT,
+            [
+                Text("我将调用工具"),
+                ToolCall(id="call_1", name="get_weather", args={"city": "上海"}),
+            ],
+        ),
+    )
+
+    assert len(payloads) == 4
+    assert payloads[0].role == ROLE.USER
+    assert payloads[1].role == ROLE.ASSISTANT
+    assert payloads[2].role == ROLE.TOOL_RESULT
+    result = next(part for part in payloads[2].content if isinstance(part, ToolResult))
+    assert result.call_id == "call_1"
+    assert result.value == ""
+    assert payloads[3].role == ROLE.ASSISTANT
