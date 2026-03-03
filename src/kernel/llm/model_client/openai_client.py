@@ -684,6 +684,25 @@ class OpenAIChatClient:
             else:
                 params["extra_body"] = extra_body
 
+        # 兼容：部分 OpenAI 兼容网关（如 Kimi）在开启 thinking 时，
+        # 要求所有包含 tool_calls 的 assistant 消息携带 reasoning_content 字段。
+        # 否则会返回 400（thinking enabled but reasoning_content is missing）。
+        thinking_enabled = False
+        extra_body_params = params.get("extra_body")
+        if isinstance(extra_body_params, dict):
+            enable_thinking = extra_body_params.get("enable_thinking")
+            thinking_enabled = bool(enable_thinking) if enable_thinking is not None else False
+
+        if thinking_enabled:
+            for msg in messages:
+                if (
+                    msg.get("role") == "assistant"
+                    and msg.get("tool_calls")
+                    and "reasoning_content" not in msg
+                ):
+                    content = msg.get("content")
+                    msg["reasoning_content"] = content if isinstance(content, str) else ""
+
         if not stream:
             return await self._create_non_stream(
                 client=client,

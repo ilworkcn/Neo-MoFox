@@ -14,6 +14,7 @@ from src.kernel.llm import (
     LLMPayload,
     ROLE,
     Text,
+    ToolCall,
     ToolResult,
 )
 
@@ -549,6 +550,62 @@ class TestOpenAIChatClient:
         call_kwargs = mock_chat.completions.create.call_args.kwargs
         assert call_kwargs["top_p"] == 0.9
         assert call_kwargs["presence_penalty"] == 0.1
+
+    @pytest.mark.asyncio
+    async def test_create_inject_reasoning_content_for_thinking_tool_calls(self):
+        """测试开启 thinking 时为 tool_calls 消息补齐 reasoning_content。"""
+        from src.kernel.llm.model_client.openai_client import OpenAIChatClient
+
+        mock_completion = MagicMock()
+        mock_completion.choices = [MagicMock()]
+        mock_completion.choices[0].message.content = "OK"
+        mock_completion.choices[0].message.tool_calls = None
+
+        mock_chat = AsyncMock()
+        mock_chat.completions.create = AsyncMock(return_value=mock_completion)
+
+        mock_openai_client = MagicMock()
+        mock_openai_client.chat.completions.create = mock_chat.completions.create
+
+        client = OpenAIChatClient()
+        client._clients = {}
+        client._get_client = MagicMock(return_value=mock_openai_client)
+
+        payloads = [
+            LLMPayload(ROLE.USER, Text("Hi")),
+            LLMPayload(
+                ROLE.ASSISTANT,
+                [
+                    Text("I'll call a tool"),
+                    ToolCall(id="call_1", name="calculator", args={"a": 1}),
+                ],
+            ),
+        ]
+        model_set = {
+            "api_key": "test-key",
+            "base_url": None,
+            "timeout": None,
+            "max_tokens": None,
+            "temperature": None,
+            "extra_params": {"enable_thinking": True},
+        }
+
+        await client.create(
+            model_name="moonshotai/kimi-k2.5",
+            payloads=payloads,
+            tools=[],
+            request_name="test",
+            model_set=model_set,
+            stream=False,
+        )
+
+        call_kwargs = mock_chat.completions.create.call_args.kwargs
+        messages = call_kwargs["messages"]
+        tool_call_message = messages[1]
+        assert tool_call_message["role"] == "assistant"
+        assert "tool_calls" in tool_call_message
+        assert "reasoning_content" in tool_call_message
+        assert tool_call_message["reasoning_content"] == tool_call_message["content"]
 
     @pytest.mark.asyncio
     async def test_default_tool_choice_is_auto_for_deepseek(self):
