@@ -1,19 +1,11 @@
 from __future__ import annotations
 
 import time
-from types import SimpleNamespace
+from typing import cast
 
+from src.core.models.stream import StreamContext
 from src.core.transport.distribution.stream_loop_manager import StreamLoopManager
-
-
-class Wait:
-    def __init__(self, time: float | None) -> None:
-        self.time = time
-
-
-class Stop:
-    def __init__(self, time: float) -> None:
-        self.time = time
+from src.core.components.base.chatter import Wait, Stop
 
 
 def test_wait_state_check_requires_new_message_after_stop() -> None:
@@ -24,11 +16,13 @@ def test_wait_state_check_requires_new_message_after_stop() -> None:
     manager._wait_states[stream_id] = (Stop(time=0.0), 0.0, 2)
 
     # 冷却时间已过，但没有新消息（仍是 2 条）
-    context_same = SimpleNamespace(unread_messages=[1, 2])
+    context_same = StreamContext(stream_id=stream_id)
+    context_same.unread_messages = cast(list, [1, 2])
     assert manager._wait_state_check(stream_id, context_same) is False
 
     # 出现新消息（从 2 -> 3）后才恢复
-    context_new = SimpleNamespace(unread_messages=[1, 2, 3])
+    context_new = StreamContext(stream_id=stream_id)
+    context_new.unread_messages = cast(list, [1, 2, 3])
     assert manager._wait_state_check(stream_id, context_new) is True
 
 
@@ -39,10 +33,11 @@ def test_wait_state_check_wait_for_messages_only() -> None:
 
     manager._wait_states[stream_id] = (Wait(time=None), time.time(), 0)
 
-    context_empty = SimpleNamespace(unread_messages=[])
+    context_empty = StreamContext(stream_id=stream_id)
     assert manager._wait_state_check(stream_id, context_empty) is False
 
-    context_non_empty = SimpleNamespace(unread_messages=["m1"])
+    context_non_empty = StreamContext(stream_id=stream_id)
+    context_non_empty.unread_messages = cast(list, ["m1"])
     assert manager._wait_state_check(stream_id, context_non_empty) is True
 
 
@@ -53,7 +48,7 @@ def test_wait_state_check_wait_for_time_only() -> None:
 
     manager._wait_states[stream_id] = (Wait(time=4102444800.0), 0.0, 0)  # 2100-01-01
 
-    context_any = SimpleNamespace(unread_messages=[])
+    context_any = StreamContext(stream_id=stream_id)
     assert manager._wait_state_check(stream_id, context_any) is False
 
     manager._wait_states[stream_id] = (Wait(time=0.0), time.time(), 0)
