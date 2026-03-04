@@ -126,10 +126,20 @@ class MessageSender:
             # 7. 写入历史消息
             await self._persist_sent_message_to_history(message)
 
-            logger.info(
+            # 提取消息文本用于日志
+            msg_text = (
+                message.processed_plain_text
+                or (message.content if isinstance(message.content, str) else "")
+                or "(无文本内容)"
+            )
+            # 日志中截断超长内容
+            if len(msg_text) > 100:
+                msg_text = msg_text[:100] + "..."
+
+            logger.debug(
                 f"消息发送成功: {message.message_id} → {adapter_signature}"
             )
-
+            logger.info(f'消息发送成功: [dim]{msg_text}[/dim]')
 
             return True
 
