@@ -24,6 +24,7 @@ from src.core.components.base import (
     Stop,
 )
 from src.core.models.stream import ChatStream
+from src.core.models.message import MessageType
 from src.core.components.base.action import BaseAction
 from src.core.components.loader import register_plugin
 from src.core.config import get_core_config
@@ -89,7 +90,7 @@ system_prompt = """# 关于你
 """
 
 user_prompt = """你当前正在名为"{stream_name}"的对话中。
-消息格式说明：【时间】<群组角色> [平台ID] 昵称$群名片： 消息内容
+消息格式说明：【时间】<群组角色> [平台ID] 昵称$群名片 [消息ID]： 消息内容
     
 {history}
     
@@ -100,6 +101,10 @@ user_prompt = """你当前正在名为"{stream_name}"的对话中。
 请基于上述信息决定接下来的动作。
 请务必保持你的回复符合你的人设和表达风格，
 同时请确保你的回复有理有据，禁止无根据地编造信息或胡乱回复。
+
+关于引用回复：
+如果你想对某条特定的消息进行引用回复，在调用 send_text action 时，使用 reply_to 参数指定该消息的 ID（从方括号中获取）。
+例如，如果消息显示为"【12:34】<member> [123456] Alice [msg_123456_abc]： 你好呀"，则可以使用 reply_to="msg_123456_abc" 来引用这条消息。
 """
 
 sub_agent_system_prompt = """你是一个聊天意图识别助手。
@@ -138,18 +143,86 @@ class SendTextAction(BaseAction):
     """发送文本消息"""
 
     action_name = "send_text"
-    action_description = "发送一段文本消息给用户，这是你回复用户的主要方式。你可以调用多次 send_text 来分多段回复，但每次调用必须提供你想说的话的文本内容，不要添加任何标记或格式，只写纯文本即可。注意：本工具无法发送表情包等非文本内容。"
+    action_description = "发送一段文本消息给用户，这是你回复用户的主要方式。你可以调用多次 send_text 来分多段回复，但每次调用必须提供你想说的话的文本内容，不要添加任何标记或格式，只写纯文本即可。你也可以选择引用之前某条消息作为背景，使用 reply_to 参数指定。注意：本工具无法发送表情包等非文本内容。"
 
     chatter_allow: list[str] = ["default_chatter"]
 
-    async def execute(self, content: str) -> tuple[bool, str]:
+    async def execute(self, content: str, reply_to: str | None = None) -> tuple[bool, str]:
         """执行发送文本消息的逻辑
 
         Args:
             content: 要发送的文本内容，不用添加标记，只写你想说的话即可
+            reply_to: 可选，要引用回复的目标消息 ID。若指定此参数，发送的消息将作为对该消息的回复
         """
-        await self._send_to_stream(content)
-        return True, f"已发送消息:{content}"
+        from src.core.models.message import Message
+        
+        # 如果需要引用消息，创建带reply_to的Message对象
+        if reply_to:
+            target_stream_id = self.chat_stream.stream_id
+            platform = self.chat_stream.platform
+            chat_type = self.chat_stream.chat_type
+            context = self.chat_stream.context
+            
+            from src.core.managers.adapter_manager import get_adapter_manager
+            from uuid import uuid4
+            
+            bot_info = await get_adapter_manager().get_bot_info_by_platform(platform)
+            
+            target_user_id = None
+            target_group_id = None
+            target_user_name = None
+            target_group_name = None
+            
+            def _get_last_context_message() -> Message | None:
+                if context.unread_messages:
+                    return context.unread_messages[-1]
+                if context.history_messages:
+                    return context.history_messages[-1]
+                return context.current_message
+            
+            last_msg = _get_last_context_message()
+            
+            if chat_type == "group":
+                if last_msg:
+                    target_group_id = last_msg.extra.get("group_id")
+                    target_group_name = last_msg.extra.get("group_name")
+            else:
+                target_user_id = context.triggering_user_id
+                if not target_user_id and last_msg:
+                    target_user_id = last_msg.sender_id
+                    target_user_name = last_msg.sender_name
+            
+            extra: dict[str, Any] = {}
+            if target_user_id:
+                extra["target_user_id"] = target_user_id
+            if target_user_name:
+                extra["target_user_name"] = target_user_name
+            if target_group_id:
+                extra["target_group_id"] = target_group_id
+            if target_group_name:
+                extra["target_group_name"] = target_group_name
+            
+            message = Message(
+                message_id=f"action_{self.action_name}_{uuid4().hex}",
+                content=content,
+                processed_plain_text=content,
+                message_type=MessageType.TEXT,
+                sender_id=bot_info.get("bot_id", "") if bot_info else "",
+                sender_name=bot_info.get("bot_nickname", "Bot") if bot_info else "Bot",
+                platform=platform,
+                chat_type=chat_type,
+                stream_id=target_stream_id,
+                reply_to=reply_to,
+                **extra,
+            )
+            
+            from src.core.transport.message_send import get_message_sender
+            sender = get_message_sender()
+            success = await sender.send_message(message)
+            return success, f"已发送消息:{content}"
+        else:
+            await self._send_to_stream(content)
+            return True, f"已发送消息:{content}"
 
 
 class PassAndWaitAction(BaseAction):

@@ -242,6 +242,10 @@ class MessageConverter:
             "time": message.time if isinstance(message.time, float) else time.time(),
         }
 
+        # 如果有 reply_to，在段列表前面插入 reply 段
+        if message.reply_to:
+            seg_list.insert(0, {"type": "reply", "data": message.reply_to})
+
         target_user_id = message.extra.get("target_user_id")
         target_user_name = message.extra.get("target_user_name")
 

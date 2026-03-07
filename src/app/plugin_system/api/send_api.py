@@ -18,6 +18,7 @@ async def send_text(
     content: str,
     stream_id: str,
     platform: str | None = None,
+    reply_to: str | None = None,
 ) -> bool:
     """发送文本消息
 
@@ -25,12 +26,14 @@ async def send_text(
         content: 文本内容
         stream_id: 聊天流 ID
         platform: 平台名称（可选，会从 stream_id 推断）
+        reply_to: 要回复的消息 ID（可选）
 
     Returns:
         是否发送成功
 
     Example:
         success = await send_text("Hello!", "qq_group_123456")
+        success = await send_text("Reply!", "qq_group_123456", reply_to="msg_id_123")
     """
     return await _send_message(
         content=content,
@@ -38,6 +41,7 @@ async def send_text(
         stream_id=stream_id,
         platform=platform,
         processed_plain_text=content,
+        reply_to=reply_to,
     )
 
 
@@ -269,6 +273,7 @@ async def _send_message(
     platform: str | None = None,
     processed_plain_text: str = "",
     extra_media: list[dict] | None = None,
+    reply_to: str | None = None,
 ) -> bool:
     """内部消息发送实现
 
@@ -280,6 +285,7 @@ async def _send_message(
         processed_plain_text: 消息的人类可读文本，由上层调用方显式传入
         extra_media: 额外媒体段列表，用于发送框架 MessageType 枚举不覆盖的自定义类型
                      格式：[{"type": "music", "data": "song_id"}, ...]
+        reply_to: 要回复的消息 ID（可选）
 
     Returns:
         是否发送成功
@@ -361,6 +367,7 @@ async def _send_message(
             platform=platform,
             chat_type=chat_type,
             stream_id=stream_id,
+            reply_to=reply_to,
             **extra,
         )
 

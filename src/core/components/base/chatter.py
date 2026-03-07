@@ -589,7 +589,7 @@ class BaseChatter(ABC):
     ) -> str:
         """将单条消息格式化为统一的显示行。
 
-        格式：【时间】<role> [platform_id] nickname$cardname： 消息
+        格式：【时间】<role> [platform_id] nickname$cardname [msg_id]： 消息
 
         Args:
             msg: 消息对象
@@ -624,10 +624,14 @@ class BaseChatter(ABC):
         else:
             name_part = nickname or "未知发送者"
 
+        # 消息 ID 部分（用于LLM引用回复）
+        message_id = getattr(msg, "message_id", "") or ""
+        msg_id_part = f"[{message_id}]" if message_id else ""
+
         # 消息内容
         content = getattr(msg, "processed_plain_text", None) or str(getattr(msg, "content", ""))
 
-        return f"【{time_str}】{role_part}{id_part}{name_part}： {content}"
+        return f"【{time_str}】{role_part}{id_part}{name_part} {msg_id_part}： {content}"
 
     async def fetch_unreads(
         self,
