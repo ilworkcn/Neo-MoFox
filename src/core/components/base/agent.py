@@ -13,11 +13,17 @@ from typing import Annotated, Any, TYPE_CHECKING
 from src.core.components.types import ChatType
 from src.core.components.utils import parse_function_signature
 from src.kernel.llm import LLMUsable, LLMRequest, LLMPayload, ROLE
+from src.kernel.logger import get_logger
+
+logger = get_logger("agent")
 
 if TYPE_CHECKING:
     from src.core.components.base.plugin import BasePlugin
     from src.core.models.message import Message
     from src.kernel.llm import LLMContextManager, ModelSet
+
+# 类型别名：支持直接传类或传组件签名字符串
+UsableReference = type[LLMUsable] | str
 
 
 def _strip_usable_prefix(name: str) -> str:
@@ -68,7 +74,7 @@ class BaseAgent(ABC, LLMUsable):
     associated_types: list[str] = []
 
     dependencies: list[str] = []
-    usables: list[type[LLMUsable]] = []
+    usables: list[UsableReference] = []  # 支持类或组件签名字符串
 
     def __init__(self, stream_id: str, plugin: "BasePlugin") -> None:
         """初始化 Agent 组件。
@@ -113,10 +119,38 @@ class BaseAgent(ABC, LLMUsable):
     def get_local_usables(cls) -> list[type[LLMUsable]]:
         """获取 Agent 私有 usables。
 
+        自动解析 usables 中的组件签名字符串，从全局注册表获取对应的类。
+
         Returns:
             list[type[LLMUsable]]: Agent 私有组件类列表
         """
-        return list(cls.usables)
+        from src.core.components.registry import get_global_registry
+
+        resolved_usables: list[type[LLMUsable]] = []
+        registry = get_global_registry()
+
+        for usable_ref in cls.usables:
+            if isinstance(usable_ref, str):
+                # 字符串签名：从注册表解析
+                component_cls = registry.get(usable_ref)
+                if component_cls is None:
+                    logger.warning(
+                        f"Agent '{cls.agent_name}' 引用的组件签名 '{usable_ref}' "
+                        f"未在注册表中找到，跳过该 usable"
+                    )
+                    continue
+                if not issubclass(component_cls, LLMUsable):
+                    logger.warning(
+                        f"Agent '{cls.agent_name}' 引用的组件 '{usable_ref}' "
+                        f"不是 LLMUsable 子类，跳过该 usable"
+                    )
+                    continue
+                resolved_usables.append(component_cls)  # type: ignore
+            else:
+                # 直接传入的类
+                resolved_usables.append(usable_ref)
+
+        return resolved_usables
 
     @classmethod
     def get_local_usable_schemas(cls) -> list[dict[str, Any]]:

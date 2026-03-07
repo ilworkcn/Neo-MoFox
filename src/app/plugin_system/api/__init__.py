@@ -1,6 +1,8 @@
 """插件系统 API 聚合模块。"""
 
+from src.app.plugin_system.api import action_api
 from src.app.plugin_system.api import adapter_api
+from src.app.plugin_system.api import agent_api
 from src.app.plugin_system.api import chat_api
 from src.app.plugin_system.api import command_api
 from src.app.plugin_system.api import config_api
@@ -20,7 +22,9 @@ from src.app.plugin_system.api import storage_api
 from src.app.plugin_system.api import stream_api
 
 __all__ = [
+    "action_api",
     "adapter_api",
+    "agent_api",
     "chat_api",
     "command_api",
     "config_api",
