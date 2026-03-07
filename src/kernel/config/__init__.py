@@ -14,7 +14,20 @@
     class MyConfig(ConfigBase):
         @config_section("general")
         class GeneralSection(SectionBase):
-            enabled: bool = Field(default=True, description="启用功能")
+            enabled: bool = Field(
+                default=True,
+                description="启用功能",
+                label="功能开关",
+                icon="power_settings_new"
+            )
+            temperature: float = Field(
+                default=0.7,
+                ge=0.0,
+                le=2.0,
+                step=0.1,
+                description="生成温度",
+                icon="thermostat"
+            )
 
         general: GeneralSection = Field(default_factory=GeneralSection)
 
@@ -32,7 +45,7 @@ __all__ = [
     "ConfigBase",
     "SectionBase",
     "config_section",
-    "Field",
+    "Field",  # 增强的配置字段定义函数（支持 WebUI，覆盖 Pydantic Field）
     # 类型定义
     "ConfigData",
     "SectionData",

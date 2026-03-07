@@ -3,6 +3,10 @@
 实现层：承载 config 模块的全部逻辑实现。
 
 `src.kernel.config.__init__` 应保持轻量，只负责对外导出与文档。
+
+支持 WebUI 可视化配置编辑器：
+    使用 Field 定义配置项时，可指定 UI 属性（label, icon, placeholder 等），
+    系统会自动生成 Schema 供 WebUI 渲染配置表单。
 """
 
 from __future__ import annotations
@@ -10,10 +14,11 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Any, Callable, TypeVar, Self, get_args, get_origin
+from typing import Any, Callable, ClassVar, Literal, TypeVar, Self, get_args, get_origin
 
 import tomllib
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, TypeAdapter
+from pydantic import Field as PydanticField
 from pydantic_core import PydanticUndefined
 
 from .types import ConfigData, TOMLData
@@ -22,15 +27,302 @@ from .types import ConfigData, TOMLData
 SectionT = TypeVar("SectionT", bound="SectionBase")
 
 
-def config_section(name: str) -> Callable[[type[SectionT]], type[SectionT]]:
-    """配置节装饰器。
+# ==================== Field：增强的配置字段定义 ====================
+
+
+def Field(  # noqa: N802
+    default: Any = ...,
+    *,
+    # === Pydantic 原生验证参数 ===
+    ge: float | int | None = None,  # 大于等于（最小值）- 适用于 int/float
+    le: float | int | None = None,  # 小于等于（最大值）- 适用于 int/float
+    gt: float | int | None = None,  # 大于
+    lt: float | int | None = None,  # 小于
+    min_length: int | None = None,  # 最小长度 - 适用于 str/list
+    max_length: int | None = None,  # 最大长度 - 适用于 str/list
+    pattern: str | None = None,  # 正则表达式 - 适用于 str
+    # === 通用描述参数 ===
+    description: str = "",  # 字段描述（必填，用于生成帮助文本）
+    # === WebUI 显示增强参数 ===
+    label: str | None = None,  # 显示标签（不指定则使用字段名）
+    tag: Literal[
+        "general",      # 通用设置
+        "security",     # 安全/密码
+        "network",      # 网络
+        "ai",           # AI/智能
+        "database",     # 数据库/存储
+        "user",         # 用户
+        "timer",        # 时间/调度
+        "performance",  # 性能/数值
+        "text",         # 文本
+        "list",         # 列表/数组
+        "advanced",     # 高级设置
+        "debug",        # 调试
+        "file",         # 文件
+        "color",        # 颜色
+        "notification", # 通知
+        "plugin",       # 插件
+    ] | None = None,  # 预设标签（系统会映射到对应图标）
+    placeholder: str | None = None,  # 输入框占位符文本
+    hint: str | None = None,  # 帮助提示文本
+    order: int = 0,  # 显示顺序（越小越靠前）
+    hidden: bool = False,  # 是否隐藏
+    disabled: bool = False,  # 是否禁用（只读）
+    # === 输入控件类型 ===
+    input_type: Literal[
+        "text",  # 单行文本
+        "password",  # 密码（遮罩）
+        "textarea",  # 多行文本
+        "number",  # 数字输入
+        "slider",  # 滑块
+        "switch",  # 开关
+        "select",  # 下拉选择
+        "list",  # 列表编辑器
+        "json",  # JSON 编辑器
+        "color",  # 颜色选择器
+        "file",  # 文件路径选择
+    ]
+    | None = None,
+    # === 控件特定参数 ===
+    rows: int | None = None,  # textarea 行数
+    step: float | int | None = None,  # number/slider 步进值
+    choices: list[Any] | None = None,  # select 选项列表
+    # === 列表配置（item_type="list" 时） ===
+    item_type: Literal["str", "number", "boolean", "object"] | None = None,  # 列表项类型
+    item_fields: dict[str, Any] | None = None,  # 当 item_type="object" 时的字段定义
+    min_items: int | None = None,  # 最少列表项数
+    max_items: int | None = None,  # 最多列表项数
+    # === 条件显示 ===
+    depends_on: str | None = None,  # 依赖的字段名
+    depends_value: Any = None,  # 依赖字段的期望值
+    # === Pydantic 其他参数 ===
+    title: str | None = None,
+    examples: list[Any] | None = None,
+    **extra: Any,
+) -> Any:
+    """增强的配置字段定义函数。
+
+    这是 Pydantic Field 的增强版本，支持：
+    1. Pydantic 原生验证参数（ge, le, min_length, max_length, pattern 等）
+    2. WebUI 可视化编辑器的 UI 属性（label, icon, placeholder 等）
+    3. 自动类型推断（根据约束自动选择最佳控件）
+
+    Args:
+        default: 默认值（必需，除非字段是可选的）
+
+        # Pydantic 原生验证
+        ge: 最小值（>=）- 适用于 int/float
+        le: 最大值（<=）- 适用于 int/float
+        gt: 大于（>）- 适用于 int/float
+        lt: 小于（<）- 适用于 int/float
+        min_length: 最小长度 - 适用于 str/list
+        max_length: 最大长度 - 适用于 str/list
+        pattern: 正则表达式验证 - 适用于 str
+
+        # 通用
+        description: 字段描述（推荐填写，用于生成帮助信息）
+
+        # WebUI 显示
+        label: 显示标签（不指定则使用字段名）
+        tag: 预设标签（如 "ai", "security"），系统会自动映射到对应图标
+        placeholder: 输入框占位符
+        hint: 帮助提示文本
+        order: 显示顺序（数字越小越靠前）
+        hidden: 是否隐藏
+        disabled: 是否禁用（只读）
+
+        # 控件类型
+        input_type: 强制指定输入控件类型（不指定则自动推断）
+            - text: 单行文本
+            - password: 密码输入（遮罩）
+            - textarea: 多行文本
+            - number: 数字输入框
+            - slider: 滑块
+            - switch: 开关
+            - select: 下拉选择
+            - list: 列表编辑器
+            - json: JSON 编辑器
+            - color: 颜色选择器
+            - file: 文件路径选择
+
+        # 控件特定参数
+        rows: textarea 的行数（默认 5）
+        step: number/slider 的步进值（如 0.1）
+        choices: select 的选项列表
+
+        # 列表配置
+        item_type: 列表项类型（"str", "number", "boolean", "object"）
+        item_fields: 当 item_type="object" 时，定义对象字段
+        min_items: 最少列表项数
+        max_items: 最多列表项数
+
+        # 条件显示
+        depends_on: 依赖的字段名（如 "use_proxy"）
+        depends_value: 依赖字段的期望值（如 True）
+
+    Returns:
+        Pydantic FieldInfo 对象
+
+    Example:
+        ```python
+        class AISection(SectionBase):
+            # 自动推断为 slider（因为有 ge/le）
+            temperature: float = Field(
+                default=0.7,
+                ge=0.0,
+                le=2.0,
+                step=0.1,
+                description="生成温度",
+                tag="performance"
+            )
+
+            # 强制使用 password 控件
+            api_key: str = Field(
+                default="",
+                description="API 密钥",
+                input_type="password",
+                placeholder="sk-xxxxxxxx"
+            )
+
+            # 条件显示
+            use_proxy: bool = Field(
+                default=False,
+                description="是否使用代理"
+            )
+            proxy_url: str = Field(
+                default="",
+                description="代理地址",
+                depends_on="use_proxy",
+                depends_value=True
+            )
+
+        # 在 ConfigBase 中使用（配合 config_section 装饰器）
+        class MyConfig(ConfigBase):
+            @config_section("ai", title="AI 配置", tag="ai")
+            class AIConfig(SectionBase):
+                temperature: float = Field(...)
+
+            ai: AIConfig = Field(default_factory=AIConfig)
+        ```
+    """
+    # 构建 json_schema_extra 存储自定义 UI 属性
+    json_schema_extra = {
+        # WebUI 显示
+        "label": label,
+        "tag": tag,
+        "placeholder": placeholder,
+        "hint": hint,
+        "order": order,
+        "hidden": hidden,
+        "disabled": disabled,
+        # 控件类型
+        "input_type": input_type,
+        # 控件特定
+        "rows": rows,
+        "step": step,
+        "choices": choices,
+        # 列表配置
+        "item_type": item_type,
+        "item_fields": item_fields,
+        "min_items": min_items,
+        "max_items": max_items,
+        # 条件显示
+        "depends_on": depends_on,
+        "depends_value": depends_value,
+    }
+
+    # 移除 None 值，减少冗余
+    json_schema_extra = {k: v for k, v in json_schema_extra.items() if v is not None}
+
+    # 如果有 examples，添加到 extra 中
+    if examples:
+        extra["examples"] = examples
+
+    # 调用 Pydantic Field
+    return PydanticField(
+        default=default,
+        ge=ge,
+        le=le,
+        gt=gt,
+        lt=lt,
+        min_length=min_length,
+        max_length=max_length,
+        pattern=pattern,
+        description=description,
+        title=title,
+        json_schema_extra=json_schema_extra if json_schema_extra else None,
+        **extra,
+    )
+
+
+# ==================== 配置节与配置基类 ====================
+
+
+def config_section(
+    name: str,
+    *,
+    title: str | None = None,
+    description: str | None = None,
+    tag: Literal[
+        "general",
+        "security",
+        "network",
+        "ai",
+        "database",
+        "user",
+        "timer",
+        "performance",
+        "text",
+        "list",
+        "advanced",
+        "debug",
+        "file",
+        "color",
+        "notification",
+        "plugin",
+    ] | None = None,
+    order: int = 0,
+) -> Callable[[type[SectionT]], type[SectionT]]:
+    """配置节装饰器（增强版）。
+
+    用于标记配置节类，并设置其在 TOML 中的节名以及 WebUI 显示元数据。
+
+    Args:
+        name: TOML 节名（必需）
+        title: WebUI 显示标题（可选，不指定则使用节名美化）
+        description: 节描述（可选，不指定则使用类 docstring 首行）
+        tag: 预设标签（可选），系统会自动映射到对应图标
+        order: 显示顺序，数字越小越靠前（默认 0）
+
+    Returns:
+        装饰器函数
 
     重要：该装饰器使用泛型返回类型，确保 IDE/Pylance 能保留被装饰类的具体类型，
     避免把 `SectionB` 降级成 `SectionBase`，从而导致字段（如 `value_b`）无法被识别。
+
+    Example:
+        ```python
+        class MyConfig(ConfigBase):
+            @config_section(
+                "general",
+                title="通用设置",
+                description="基本配置选项",
+                tag="general",
+                order=0,
+            )
+            class GeneralSection(SectionBase):
+                enabled: bool = Field(default=True, description="启用功能")
+
+            general: GeneralSection = Field(default_factory=GeneralSection)
+        ```
     """
 
     def decorator(cls: type[SectionT]) -> type[SectionT]:
-        cls.__config_section_name__ = name  # type: ignore[attr-defined]  # 将节名写入类属性，供 _get_section_name 读取
+        cls.__config_section_name__ = name  # type: ignore[attr-defined]
+        cls.__config_section_title__ = title  # type: ignore[attr-defined]
+        cls.__config_section_description__ = description  # type: ignore[attr-defined]
+        cls.__config_section_tag__ = tag  # type: ignore[attr-defined]
+        cls.__config_section_order__ = order  # type: ignore[attr-defined]
         return cls
 
     return decorator
@@ -52,6 +344,34 @@ class ConfigBase(BaseModel):
 
     配置类本身是一个 Pydantic 模型，所有配置节都应作为字段显式声明。
     这能让 IDE/Pylance 在访问 `config.xxx.yyy` 时正确进行类型推断。
+
+    示例：
+        ```python
+        class MyConfig(ConfigBase):
+            @config_section(
+                "general",
+                title="通用设置",
+                description="基本配置选项",
+                tag="general",
+                order=0,
+            )
+            class GeneralSection(SectionBase):
+                enabled: bool = Field(default=True, description="启用功能")
+
+            general: GeneralSection = Field(default_factory=GeneralSection)
+
+            @config_section(
+                "advanced",
+                title="高级设置",
+                description="除非你知道自己在干什么，否则别动",
+                tag="advanced",
+                order=100,
+            )
+            class AdvancedSection(SectionBase):
+                debug_mode: bool = Field(default=False, description="调试模式")
+
+            advanced: AdvancedSection = Field(default_factory=AdvancedSection)
+        ```
     """
 
     model_config = ConfigDict(
