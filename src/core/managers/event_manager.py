@@ -12,7 +12,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
-    pass
+    from src.core.components.base.plugin import BasePlugin
 
 from src.kernel.logger import get_logger
 from src.kernel.event import get_event_bus, EventDecision
@@ -59,6 +59,74 @@ class EventManager:
 
         logger.info("事件管理器初始化完成")
 
+    async def register_plugin_handlers(
+        self, plugin_name: str, plugin_instance: "BasePlugin | None" = None
+    ) -> int:
+        """注册指定插件的所有事件处理器。
+
+        Args:
+            plugin_name: 插件名称
+
+        Returns:
+            int: 成功注册的事件处理器数量
+        """
+        from src.core.components.registry import get_global_registry
+        from src.core.components.types import ComponentType
+
+        registry = get_global_registry()
+        event_handler_classes = registry.get_by_plugin_and_type(
+            plugin_name, ComponentType.EVENT_HANDLER
+        )
+
+        if not event_handler_classes:
+            return 0
+
+        registered_count = 0
+        for component_name, handler_cls in event_handler_classes.items():
+            signature = f"{plugin_name}:event_handler:{component_name}"
+            handler = self._instantiate_handler(
+                signature, handler_cls, plugin_instance=plugin_instance
+            )
+            if handler is None:
+                continue
+
+            await self.register_handler(signature, handler)
+            registered_count += 1
+
+        if registered_count:
+            logger.info(
+                f"插件 '{plugin_name}' 的事件处理器注册完成，共 {registered_count} 个"
+            )
+
+        return registered_count
+
+    async def unregister_plugin_handlers(self, plugin_name: str) -> int:
+        """注销指定插件的所有事件处理器。
+
+        Args:
+            plugin_name: 插件名称
+
+        Returns:
+            int: 成功注销的事件处理器数量
+        """
+        async with self._lock:
+            prefix = f"{plugin_name}:"
+            signatures = [
+                signature
+                for signature in self._handler_map.keys()
+                if signature.startswith(prefix)
+            ]
+
+            for signature in signatures:
+                self._unregister_handler_locked(signature)
+
+        if signatures:
+            logger.info(
+                f"插件 '{plugin_name}' 的事件处理器已注销，共 {len(signatures)} 个"
+            )
+
+        return len(signatures)
+
     async def build_subscription_map(self) -> None:
         """构建事件订阅映射表。
 
@@ -83,61 +151,75 @@ class EventManager:
                 registry.get_by_type(ComponentType.EVENT_HANDLER)
             )
 
-            # 需要从 plugin manager 获取实例化的插件，然后实例化事件处理器
-            from src.core.managers import get_plugin_manager
-
-            plugin_manager = get_plugin_manager()
-
             for signature, handler_cls in event_handler_classes.items():
-                try:
-                    # 解析签名获取插件名称
-                    from src.core.components.types import parse_signature
-
-                    sig = parse_signature(signature)
-                    plugin_name = sig["plugin_name"]
-
-                    # 获取插件实例
-                    plugin_instance = plugin_manager.get_plugin(plugin_name)
-                    if not plugin_instance:
-                        logger.warning(f"未找到插件实例: {plugin_name}")
-                        continue
-
-                    # 实例化事件处理器
-                    handler = handler_cls(plugin_instance)
-                    handler.signature = signature  # 设置签名属性
-
-                    # 添加到处理器映射表
-                    self._handler_map[signature] = handler
-
-                    # 获取处理器订阅的事件
-                    subscribed_events = handler.get_subscribed_events()
-
-                    # 将处理器添加到每个订阅事件的映射表中
-                    for event in subscribed_events:
-                        # 支持 EventType 枚举和字符串事件名称
-                        event_name = (
-                            event.value if isinstance(event, EventType) else str(event)
-                        )
-                        # 直接注册处理器 execute，以薄异常保护包装
-                        unsubscribe = self._event_bus.subscribe(
-                            event_name,
-                            self._make_safe_wrapper(handler, signature),
-                            priority=handler.weight,
-                        )
-                        # 保存取消订阅函数
-                        if signature not in self._handler_wrappers:
-                            self._handler_wrappers[signature] = []
-                        self._handler_wrappers[signature].append(unsubscribe)
-
-                    logger.debug(f"已注册事件处理器: {signature}")
-
-                except Exception as e:
-                    logger.error(f"实例化事件处理器 {signature} 失败: {e}")
+                handler = self._instantiate_handler(signature, handler_cls)
+                if handler is None:
                     continue
+
+                self._register_handler_locked(signature, handler)
 
             logger.info(
                 f"订阅映射表构建完成，共处理 {len(self._handler_map)} 个 " f"事件处理器"
             )
+
+    def _instantiate_handler(
+        self,
+        signature: str,
+        handler_cls: type[BaseEventHandler],
+        plugin_instance: "BasePlugin | None" = None,
+    ) -> BaseEventHandler | None:
+        """根据组件签名实例化事件处理器。"""
+        from src.core.components.types import parse_signature
+        from src.core.managers import get_plugin_manager
+
+        try:
+            sig = parse_signature(signature)
+            plugin_name = sig["plugin_name"]
+
+            resolved_plugin = plugin_instance or get_plugin_manager().get_plugin(plugin_name)
+            if not resolved_plugin:
+                logger.warning(f"未找到插件实例: {plugin_name}")
+                return None
+
+            handler = handler_cls(resolved_plugin)
+            handler.signature = signature
+            return handler
+        except Exception as e:
+            logger.error(f"实例化事件处理器 {signature} 失败: {e}")
+            return None
+
+    def _register_handler_locked(
+        self, signature: str, handler: BaseEventHandler
+    ) -> None:
+        """在已持有锁时注册处理器。"""
+        if signature in self._handler_wrappers:
+            self._unregister_handler_locked(signature)
+
+        self._handler_map[signature] = handler
+
+        subscribed_events = handler.get_subscribed_events()
+        wrappers: list[Callable[[], None]] = []
+        for event in subscribed_events:
+            event_name = event.value if isinstance(event, EventType) else str(event)
+            unsubscribe = self._event_bus.subscribe(
+                event_name,
+                self._make_safe_wrapper(handler, signature),
+                priority=handler.weight,
+            )
+            wrappers.append(unsubscribe)
+
+        self._handler_wrappers[signature] = wrappers
+        logger.debug(f"已注册事件处理器: {signature}")
+
+    def _unregister_handler_locked(self, signature: str) -> None:
+        """在已持有锁时注销处理器。"""
+        if signature in self._handler_wrappers:
+            for unsubscribe in self._handler_wrappers[signature]:
+                unsubscribe()
+            del self._handler_wrappers[signature]
+
+        self._handler_map.pop(signature, None)
+        logger.debug(f"已注销事件处理器: {signature}")
 
     def _make_safe_wrapper(
         self, handler: BaseEventHandler, signature: str
@@ -218,26 +300,7 @@ class EventManager:
             >>> await manager.register_handler("my_plugin:event_handler:log", handler)
         """
         async with self._lock:
-            self._handler_map[signature] = handler
-
-            # 获取处理器订阅的事件
-            subscribed_events = handler.get_subscribed_events()
-
-            # 将处理器注册到 EventBus
-            for event in subscribed_events:
-                # 支持 EventType 枚举和字符串事件名称
-                event_name = event.value if isinstance(event, EventType) else str(event)
-                unsubscribe = self._event_bus.subscribe(
-                    event_name,
-                    self._create_handler_wrapper(handler, signature),
-                    priority=handler.weight,
-                )
-                # 保存取消订阅函数
-                if signature not in self._handler_wrappers:
-                    self._handler_wrappers[signature] = []
-                self._handler_wrappers[signature].append(unsubscribe)
-
-            logger.debug(f"已注册事件处理器: {signature}")
+            self._register_handler_locked(signature, handler)
 
     def unregister_handler(self, signature: str) -> None:
         """注销单个事件处理器。
@@ -252,16 +315,7 @@ class EventManager:
         async def _unregister() -> None:
             async with self._lock:
                 if signature in self._handler_map:
-                    # 取消所有订阅
-                    if signature in self._handler_wrappers:
-                        for unsubscribe in self._handler_wrappers[signature]:
-                            unsubscribe()
-                        del self._handler_wrappers[signature]
-
-                    # 从映射表移除
-                    del self._handler_map[signature]
-
-                    logger.debug(f"已注销事件处理器: {signature}")
+                    self._unregister_handler_locked(signature)
 
         get_task_manager().create_task(_unregister())
 
@@ -281,14 +335,17 @@ class EventManager:
             >>> custom_handlers = manager.get_handlers_for_event("my_plugin:custom_event")
         """
         # 将事件转换为字符串（支持 EventType 枚举和自定义字符串）
-        event_name = str(event)
+        event_name = event.value if isinstance(event, EventType) else str(event)
 
         # 从已注册的处理器中查找订阅了该事件的处理器
         result = []
         for signature, handler in self._handler_map.items():
             subscribed_events = handler.get_subscribed_events()
             # 检查是否订阅了该事件（支持 EventType 和字符串）
-            if any(str(e) == event_name for e in subscribed_events):
+            if any(
+                (e.value if isinstance(e, EventType) else str(e)) == event_name
+                for e in subscribed_events
+            ):
                 result.append((handler, signature))
 
         # 按权重排序
@@ -383,12 +440,10 @@ def reset_event_manager() -> None:
 def initialize_event_manager() -> None:
     """初始化事件管理器。
 
-    主要用于在应用启动时进行必要的初始化操作。
-    订阅插件加载完成事件，在所有插件加载完成后自动构建事件订阅映射。
+    主要用于在应用启动时提前创建全局事件管理器实例。
+    正常运行路径下，插件事件处理器会在单插件加载成功后立即完成注册。
     """
-    from src.core.components.types import EventType
-
-    get_event_bus().subscribe(EventType.ON_ALL_PLUGIN_LOADED, on_all_plugins_loaded)
+    get_event_manager()
 
 
 async def on_all_plugins_loaded(

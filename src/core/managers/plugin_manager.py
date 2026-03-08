@@ -148,6 +148,13 @@ class PluginManager:
             ComponentState.ACTIVE,
         )
 
+        from src.core.managers.event_manager import get_event_manager
+
+        await get_event_manager().register_plugin_handlers(
+            plugin_name,
+            plugin_instance=plugin_instance,
+        )
+
         logger.info(f"✅ 插件加载成功: {plugin_name} v{manifest.version}")
         return True
 
@@ -206,6 +213,10 @@ class PluginManager:
                 build_signature(plugin_name, ComponentType.PLUGIN, plugin_name),
                 ComponentState.UNLOADED,
             )
+
+            from src.core.managers.event_manager import get_event_manager
+
+            await get_event_manager().unregister_plugin_handlers(plugin_name)
 
             # 从全局注册表中移除该插件的组件
             await self._unregister_plugin_components(plugin_name)
