@@ -12,8 +12,8 @@ from .agent.tools import (
     BookuMemoryRetrieveTool,
 )
 from .config import BookuMemoryConfig
-from .event_handler import MemoryFlashbackInjector
-from .service import BookuMemoryService, sync_booku_memory_actor_reminder
+from .event_handler import MemoryFlashbackInjector, BookuMemoryStartupIngestHandler
+from .service import BookuMemoryService, BookuKnowledgeService, sync_booku_memory_actor_reminder
 
 logger = get_logger("booku_memory_plugin")
 
@@ -39,7 +39,8 @@ class BookuMemoryAgentPlugin(BasePlugin):
 
         from src.core.prompt import get_system_reminder_store
 
-        get_system_reminder_store().delete("actor", "booku_memory")
+        get_system_reminder_store().delete("actor", "记忆引导语")
+        get_system_reminder_store().delete("actor", "专业知识引导语")
 
     def get_components(self) -> list[type]:
         """返回插件组件列表。"""
@@ -53,6 +54,8 @@ class BookuMemoryAgentPlugin(BasePlugin):
                     BookuMemoryWriteAgent,
                     BookuMemoryReadAgent,
                     BookuMemoryService,
+                    BookuKnowledgeService,
+                    BookuMemoryStartupIngestHandler,
                     MemoryFlashbackInjector,
                 ]
 
@@ -61,7 +64,9 @@ class BookuMemoryAgentPlugin(BasePlugin):
                 BookuMemoryCreateTool,
                 BookuMemoryEditInherentTool,
                 BookuMemoryService,
+                BookuKnowledgeService,
                 MemoryFlashbackInjector,
+                BookuMemoryStartupIngestHandler,
             ]
 
         # 配置对象不可用时保持历史行为：默认启用 agent 代理模式。
@@ -69,5 +74,7 @@ class BookuMemoryAgentPlugin(BasePlugin):
             BookuMemoryWriteAgent,
             BookuMemoryReadAgent,
             BookuMemoryService,
+            BookuKnowledgeService,
+            BookuMemoryStartupIngestHandler,
             MemoryFlashbackInjector,
         ]

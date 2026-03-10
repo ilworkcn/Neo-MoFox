@@ -118,6 +118,7 @@ class BookuMemoryReadAgent(BaseAgent):
     1. inherent 层：始终通过向量检索查询（固有记忆优先级最高）
     2. emergent 层：近期活跃记忆，优先召回
     3. archived 层：仅在 include_archived=True 或 emergent 结果不足时检索
+    4. knowledge 层：仅在 include_knowledge=True 时检索
 
     最终 LLM 综合所有检索结果，生成「结论摘要」，并附带来源 memory_id 列表。
     """
@@ -129,7 +130,8 @@ class BookuMemoryReadAgent(BaseAgent):
 2.用户提到“之前说过”、“还记得吗”等词汇时。
 3.需要个性化建议时（如推荐电影、食物，需先查喜好）。
 4.存在不能完全确定的个性化信息时（如用户提过喜欢某类型但未明确说喜欢某个具体选项）。
-5.任何你无法完全确定是否需要调用记忆的情况时，优先调用此工具进行检索，获取相关信息后再决定如何回答。
+5.需要从知识库中检索相关知识时（如用户询问专业知识、技术细节）。
+6.任何你无法完全确定是否需要调用记忆的情况时，优先调用此工具进行检索，获取相关信息后再决定如何回答。
 注意：如果不读取记忆直接回答，可能会忘记用户名字或偏好，导致用户体验极差。
 """
 
@@ -214,7 +216,8 @@ class BookuMemoryReadAgent(BaseAgent):
             "  • 精确匹配：query原词 + 推断tags\n"
             "  • 语义扩展：query同义/相关词 + 宽泛tags\n"
             "  • 场景关联：从任务场景反推可能的记忆类型\n"
-            "- 建议先设置 include_archived=false，若无结果再尝试 true\n\n"
+            "- 建议先设置 include_archived=false，若无结果再尝试 true\n"
+            "- 若问题与专业知识相关，建议设置 include_knowledge=true, 若无需访问知识库或已经访问过但无结果则设为 false\n\n"
 
             "### 阶段3：结果评估与全文读取\n"
             "- 阅读 memory_retrieve 返回的片段结果，判断：\n"
@@ -235,6 +238,7 @@ class BookuMemoryReadAgent(BaseAgent):
             "  • 记忆总量是否很少？→ 是：直接 memory_finish_task 说明'记忆库内容不足'\n"
             "  • 目标 folder 是否为空？→ 是：尝试切换 folder_id 或说明范围限制\n"
             "  • 最近是否有新记忆？→ 否：提示用户可能尚未记录相关信息\n"
+            "- memory_status 不包括知识库中的记忆\n"
             "- ⚠️ 严禁编造：无依据时明确说明'未找到相关记忆'，可基于常识给出建议但需标注\n\n"
 
             "### 阶段6：迭代尝试的防无用功机制\n"

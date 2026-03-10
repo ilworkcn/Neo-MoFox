@@ -29,6 +29,7 @@ logger = get_logger("booku_memory_service")
 _TARGET_REMINDER_BUCKET = "actor"
 _TARGET_REMINDER_NAME = "记忆引导语"
 
+
 _MEMORY_HINT = (
     "你具备长期记忆能力。"
     "记忆对你来说，不只是存放信息的地方，更是维持关系连续性、理解用户处境、连接过去与现在的方式。\n\n"
@@ -114,7 +115,9 @@ async def build_booku_memory_actor_reminder(plugin: Any) -> str:
                 f"已构建 booku_memory actor reminder 的固有记忆块（count={len(inherent_records)}）"
             )
     except Exception as exc:  # noqa: BLE001
-        logger.warning(f"构建 booku_memory actor reminder 时读取固有记忆失败，将跳过：{exc}")
+        logger.warning(
+            f"构建 booku_memory actor reminder 时读取固有记忆失败，将跳过：{exc}"
+        )
     finally:
         if repo is not None:
             await repo.close()
@@ -130,13 +133,13 @@ async def sync_booku_memory_actor_reminder(plugin: Any) -> str:
     store = get_system_reminder_store()
     reminder_content = await build_booku_memory_actor_reminder(plugin)
     if not reminder_content:
-        store.delete(_TARGET_REMINDER_BUCKET, _TARGET_REMINDER_NAME)
+        store.delete(_KNOWLEDGE_REMINDER_BUCKET, _KNOWLEDGE_REMINDER_NAME)
         logger.debug("booku_memory actor reminder 已清理")
         return ""
 
     store.set(
-        _TARGET_REMINDER_BUCKET,
-        name=_TARGET_REMINDER_NAME,
+        _KNOWLEDGE_REMINDER_BUCKET,
+        name=_KNOWLEDGE_REMINDER_NAME,
         content=reminder_content,
     )
     logger.debug("booku_memory actor reminder 已同步")
@@ -204,7 +207,7 @@ class BookuMemoryService(BaseService):
         return self._repo
 
     def _get_deduplicator(self) -> ResultDeduplicator:
-        """获取结果去重器实例（拇阵式单例）。
+        """获取结果去重器实例（懒加载单例）。
 
         Returns:
             共享的 ``ResultDeduplicator`` 实例。
@@ -217,7 +220,7 @@ class BookuMemoryService(BaseService):
     def _rag_params_file_path() -> Path:
         """获取插件目录下 ``rag_params.json`` 所在路径。
 
-        ``rag_params.json`` 用于热加载部分 RAG 参数，无需重啂服务即可生效。
+        ``rag_params.json`` 用于热加载部分 RAG 参数，无需重启服务即可生效。
 
         Returns:
             rag_params.json 的绝对路径对象（文件不存在时返回相应路径但不会抛异常）。
@@ -245,10 +248,10 @@ class BookuMemoryService(BaseService):
         参数系列及等价 JSON 键名：见 rag_params.json 文件注释。
 
         Args:
-            default_params: 当文件无效时的回坍掇默认参数。
+            default_params: 当文件无效时回退到的默认参数。
 
         Returns:
-            解析并经耘算的 ``_RagParams`` 实例。所有数值均普到合法范围内。
+            解析并经运算的 ``_RagParams`` 实例。所有数值均裁剪到合法范围内。
         """
         path = self._rag_params_file_path()
         if not path.exists():
@@ -263,8 +266,15 @@ class BookuMemoryService(BaseService):
         if not isinstance(payload, dict):
             return default_params
 
-        dedup = float(payload.get("deduplicationThreshold", default_params.deduplication_threshold))
-        core_boost_range = payload.get("coreBoostRange", [default_params.core_boost_min, default_params.core_boost_max])
+        dedup = float(
+            payload.get(
+                "deduplicationThreshold", default_params.deduplication_threshold
+            )
+        )
+        core_boost_range = payload.get(
+            "coreBoostRange",
+            [default_params.core_boost_min, default_params.core_boost_max],
+        )
         if isinstance(core_boost_range, list | tuple) and len(core_boost_range) >= 2:
             core_min = float(core_boost_range[0])
             core_max = float(core_boost_range[1])
@@ -284,7 +294,7 @@ class BookuMemoryService(BaseService):
         )
 
     def _get_rag_params(self) -> _RagParams:
-        """获取带防重喐热加载能力的 RAG 参数。
+        """获取带缓存与热加载能力的 RAG 参数。
 
         优先从内存缓存返回；若 ``rag_params.json`` 的 mtime 已变，则重新加载。
         配置文件中的默认值首先从 ``BookuMemoryConfig.retrieval`` 读取。
@@ -302,7 +312,9 @@ class BookuMemoryService(BaseService):
 
         path = self._rag_params_file_path()
         current_mtime = path.stat().st_mtime if path.exists() else -1.0
-        if self._rag_params_cache is not None and math.isclose(current_mtime, self._rag_params_mtime):
+        if self._rag_params_cache is not None and math.isclose(
+            current_mtime, self._rag_params_mtime
+        ):
             return self._rag_params_cache
 
         loaded = self._load_rag_params_from_file(default_params)
@@ -470,10 +482,12 @@ class BookuMemoryService(BaseService):
         return normalized.tolist()
 
     @classmethod
-    def _project_to_basis(cls, vector: list[float], basis_vectors: list[list[float]]) -> list[float]:
+    def _project_to_basis(
+        cls, vector: list[float], basis_vectors: list[list[float]]
+    ) -> list[float]:
         """将向量投影到由多个向量张成的子空间上。
 
-        对每个基底向量随独计算投影系数并加和。
+        对每个基底向量分别计算投影系数并加和。
         基底向量不需正交。
 
         Args:
@@ -527,9 +541,7 @@ class BookuMemoryService(BaseService):
         return eigenvalue, vector.tolist()
 
     @classmethod
-    def _build_local_svd_basis(
-        cls, vectors: list[list[float]]
-    ) -> list[list[float]]:
+    def _build_local_svd_basis(cls, vectors: list[list[float]]) -> list[list[float]]:
         """通过邻域向量构建局部 SVD 子空间正交基。
 
         对输入向量集进行抽象层分解，提取敎居前 90% 当量的奇异向量（归一化）作为子空间基。
@@ -547,7 +559,9 @@ class BookuMemoryService(BaseService):
         valid_vectors = [
             vector
             for vector in vectors
-            if vector and len(vector) == first_dim and cls._vector_norm_sq(vector) > 1e-12
+            if vector
+            and len(vector) == first_dim
+            and cls._vector_norm_sq(vector) > 1e-12
         ]
         if not valid_vectors:
             return []
@@ -758,7 +772,9 @@ class BookuMemoryService(BaseService):
             basis_arrays.append(normalized_residual)
             diffusion_array += normalized_residual * float(weight)
 
-        reshaped = (1.0 - beta) * query_array + beta * (core_array + diffusion_array - opposing_array)
+        reshaped = (1.0 - beta) * query_array + beta * (
+            core_array + diffusion_array - opposing_array
+        )
         return cls._normalize_vector(reshaped.tolist())
 
     def _match_score_with_tags(
@@ -836,7 +852,7 @@ class BookuMemoryService(BaseService):
         使用 ``getattr`` 保证兼容 ``BookuMemoryRecord`` dataclass 与 ORM 实例。
 
         Args:
-            record: 仓储记录对象，可是 ``BookuMemoryRecord`` dataclass 或 ORM 实例。
+            record: 仓储记录对象，可以是 ``BookuMemoryRecord`` dataclass 或 ORM 实例。
 
         Returns:
             包含 title、folder_id、bucket、source、novelty_energy、
@@ -867,7 +883,7 @@ class BookuMemoryService(BaseService):
 
         Args:
             folder_id: 原始 folder_id，可为空字符串或 None。
-            default_folder_id: folder_id 无效时的回坍掇默认值。
+            default_folder_id: folder_id 无效时回退到的默认值。
 
         Returns:
             实一化后的 folder_id，永远不为空字符串。
@@ -961,7 +977,7 @@ class BookuMemoryService(BaseService):
         body = content
         heading = f"# {resolved_title}"
         if body.startswith(heading):
-            body = body[len(heading):].lstrip("\n")
+            body = body[len(heading) :].lstrip("\n")
         return resolved_title, body
 
     @classmethod
@@ -978,7 +994,7 @@ class BookuMemoryService(BaseService):
         当 ``include_full_content=True`` 时额外返回 ``content`` 字段（未截断的完整正文）。
 
         Args:
-            record: 仓幂记录对象或带属性的对象。
+            record: 仓储记录对象或带属性的对象。
             snippet_length: content_snippet 的最大字符数，默认 280。
             include_full_content: 是否包含完整正文字段，默认 False。
 
@@ -1090,10 +1106,12 @@ class BookuMemoryService(BaseService):
         return rows
 
     @staticmethod
-    def _resolve_search_folders(folder_id: str | None, default_folder_id: str) -> list[str]:
+    def _resolve_search_folders(
+        folder_id: str | None, default_folder_id: str
+    ) -> list[str]:
         """解析检索目标 folder 列表。
 
-        - 若 folder_id 有效，则尾返回单元素列表。
+        - 若 folder_id 有效，则会返回单元素列表。
         - 若 folder_id 为空，则返回包含默认 folder 在内的全部预定义 folder 列表。
 
         Args:
@@ -1180,7 +1198,9 @@ class BookuMemoryService(BaseService):
         normalized_opposing_tags = self._normalize_tags(opposing_tags)
 
         vector = await self._embed_text(merged_content)
-        collection_name = self._collection_name(bucket=normalized_bucket, folder_id=effective_folder_id)
+        collection_name = self._collection_name(
+            bucket=normalized_bucket, folder_id=effective_folder_id
+        )
         vector_db = get_vector_db_service(config.storage.vector_db_path)
 
         query_result: dict[str, Any] = {}
@@ -1302,6 +1322,7 @@ class BookuMemoryService(BaseService):
         folder_id: str | None = None,
         top_k: int | None = None,
         include_archived: bool | None = None,
+        include_knowledge: bool | None = None,
         core_tags: list[str] | None = None,
         diffusion_tags: list[str] | None = None,
         opposing_tags: list[str] | None = None,
@@ -1340,9 +1361,16 @@ class BookuMemoryService(BaseService):
             if include_archived is None
             else include_archived
         )
+        use_knowledge = (
+            config.retrieval.include_knowledge_default
+            if include_knowledge is None
+            else include_knowledge
+        )
 
         query_vector = await self._embed_text(query_text)
-        query_core_tags = {tag.strip().lower() for tag in (core_tags or []) if tag and tag.strip()}
+        query_core_tags = {
+            tag.strip().lower() for tag in (core_tags or []) if tag and tag.strip()
+        }
         query_diffusion_tags = {
             tag.strip().lower() for tag in (diffusion_tags or []) if tag and tag.strip()
         }
@@ -1357,6 +1385,8 @@ class BookuMemoryService(BaseService):
             collections.append(self._collection_name("emergent", search_folder))
             if use_archived:
                 collections.append(self._collection_name("archived", search_folder))
+            if use_knowledge:
+                collections.append(self._collection_name("knowledge", search_folder))
 
         async def _collect_candidates(
             embedding: list[float], per_collection_limit: int
@@ -1401,8 +1431,16 @@ class BookuMemoryService(BaseService):
                     collected.append(
                         {
                             "memory_id": memory_id,
-                            "document": documents_row[index] if index < len(documents_row) else "",
-                            "metadata": metadatas_row[index] if index < len(metadatas_row) else {},
+                            "document": (
+                                documents_row[index]
+                                if index < len(documents_row)
+                                else ""
+                            ),
+                            "metadata": (
+                                metadatas_row[index]
+                                if index < len(metadatas_row)
+                                else {}
+                            ),
                             "embedding": item_embedding,
                             "score": 0.0,
                             "collection": collection,
@@ -1415,7 +1453,11 @@ class BookuMemoryService(BaseService):
             max(n_results, config.write_conflict.top_n),
         )
         initial_records = await repo.get_records_map(
-            [str(item["memory_id"]) for item in initial_candidates if item.get("memory_id")]
+            [
+                str(item["memory_id"])
+                for item in initial_candidates
+                if item.get("memory_id")
+            ]
         )
 
         for item in initial_candidates:
@@ -1434,7 +1476,9 @@ class BookuMemoryService(BaseService):
             for item in initial_candidates
             if item.get("embedding") is not None
         ]
-        logic_depth = self._projection_entropy_logic_depth(query_vector, evidence_vectors)
+        logic_depth = self._projection_entropy_logic_depth(
+            query_vector, evidence_vectors
+        )
         resonance = self._estimate_resonance(
             query_text,
             query_core_tags,
@@ -1468,7 +1512,9 @@ class BookuMemoryService(BaseService):
                 continue
 
             item_core_tags = set(self._safe_list(metadata.get("core_tags", [])))
-            item_diffusion_tags = set(self._safe_list(metadata.get("diffusion_tags", [])))
+            item_diffusion_tags = set(
+                self._safe_list(metadata.get("diffusion_tags", []))
+            )
             item_opposing_tags = set(self._safe_list(metadata.get("opposing_tags", [])))
 
             similarity = max(0.0, self._cosine_similarity(query_vector, embedding))
@@ -1477,15 +1523,33 @@ class BookuMemoryService(BaseService):
 
             core_match = (query_core_tags or query_tokens) & item_core_tags
             if core_match:
-                core_vectors.append((embedding, similarity * core_boost_center * len(core_match)))
+                core_vectors.append(
+                    (embedding, similarity * core_boost_center * len(core_match))
+                )
 
-            diffusion_match = (query_diffusion_tags or query_tokens) & item_diffusion_tags
+            diffusion_match = (
+                query_diffusion_tags or query_tokens
+            ) & item_diffusion_tags
             if diffusion_match:
-                diffusion_vectors.append((embedding, similarity * config.retrieval.diffusion_boost * len(diffusion_match)))
+                diffusion_vectors.append(
+                    (
+                        embedding,
+                        similarity
+                        * config.retrieval.diffusion_boost
+                        * len(diffusion_match),
+                    )
+                )
 
             opposing_match = (query_opposing_tags or query_tokens) & item_opposing_tags
             if opposing_match:
-                opposing_vectors.append((embedding, similarity * config.retrieval.opposing_penalty * len(opposing_match)))
+                opposing_vectors.append(
+                    (
+                        embedding,
+                        similarity
+                        * config.retrieval.opposing_penalty
+                        * len(opposing_match),
+                    )
+                )
 
         reshaped_vector = self._reshape_query_vector(
             query_vector,
@@ -1617,7 +1681,11 @@ class BookuMemoryService(BaseService):
         for index, memory_id in enumerate(ids):
             metadata = metadatas[index] if index < len(metadatas) else {}
             if isinstance(metadata, dict):
-                metadata = {**metadata, "bucket": "archived", "archived_at": time.time()}
+                metadata = {
+                    **metadata,
+                    "bucket": "archived",
+                    "archived_at": time.time(),
+                }
             else:
                 metadata = {"bucket": "archived", "archived_at": time.time()}
             vector_metadata = self._sanitize_vector_metadata(metadata)
@@ -1626,7 +1694,11 @@ class BookuMemoryService(BaseService):
                 ids=[memory_id],
                 documents=[documents[index] if index < len(documents) else ""],
                 metadatas=[vector_metadata],
-                embeddings=[[float(value) for value in embeddings[index]]] if index < len(embeddings) else [[0.0]],
+                embeddings=(
+                    [[float(value) for value in embeddings[index]]]
+                    if index < len(embeddings)
+                    else [[0.0]]
+                ),
             )
             archived_count += 1
 
@@ -1638,7 +1710,10 @@ class BookuMemoryService(BaseService):
             folder_id=effective_folder_id,
         )
 
-        return {"archived": archived_count, "skipped": max(0, len(memory_ids) - archived_count)}
+        return {
+            "archived": archived_count,
+            "skipped": max(0, len(memory_ids) - archived_count),
+        }
 
     async def create_memory(
         self,
@@ -1654,7 +1729,7 @@ class BookuMemoryService(BaseService):
         """创建记忆并返回标准工具项形式的结果。
 
         封装 ``upsert_memory`` 并统一返回格式为 action/mode/total/items。
-        嵌入公譱序重复检测由底层 ``upsert_memory`` 自动处理。
+        嵌入过程的重复检测由底层 ``upsert_memory`` 自动处理。
 
         Args:
             title: 记忆标题。
@@ -1772,7 +1847,8 @@ class BookuMemoryService(BaseService):
         filtered = [
             item
             for item in result.get("results", [])
-            if isinstance(item, dict) and item.get("metadata", {}).get("bucket") == "inherent"
+            if isinstance(item, dict)
+            and item.get("metadata", {}).get("bucket") == "inherent"
         ]
         return {
             "query": query_text,
@@ -1859,7 +1935,9 @@ class BookuMemoryService(BaseService):
         """
         config = self._get_config()
         repo = await self._get_repo()
-        effective_folder_id = self._normalize_folder_id(folder_id, config.storage.default_folder_id)
+        effective_folder_id = self._normalize_folder_id(
+            folder_id, config.storage.default_folder_id
+        )
         vector_db = get_vector_db_service(config.storage.vector_db_path)
 
         vector_counts: dict[str, int] = {}
@@ -1949,15 +2027,25 @@ class BookuMemoryService(BaseService):
             return {"action": "update_memory_by_id", "updated": 0, "items": []}
 
         if record.bucket == "inherent":
-            return {"action": "update_memory_by_id", "updated": 0, "error": "inherent 记忆请使用 edit_inherent_memory"}
+            return {
+                "action": "update_memory_by_id",
+                "updated": 0,
+                "error": "inherent 记忆请使用 edit_inherent_memory",
+            }
 
         normalized_core_tags = self._normalize_tags(core_tags)
         normalized_diffusion_tags = self._normalize_tags(diffusion_tags)
         normalized_opposing_tags = self._normalize_tags(opposing_tags)
 
         old_collection = self._collection_name(record.bucket, record.folder_id)
-        resolved_title = (title or "").strip() or record.title or self._extract_title(record.content)
-        new_body = content.strip() if content is not None else self._split_title_and_content(record.title, record.content)[1]
+        resolved_title = (
+            (title or "").strip() or record.title or self._extract_title(record.content)
+        )
+        new_body = (
+            content.strip()
+            if content is not None
+            else self._split_title_and_content(record.title, record.content)[1]
+        )
         merged_content = self._join_title_and_content(resolved_title, new_body)
 
         vector_db = get_vector_db_service(config.storage.vector_db_path)
@@ -1971,7 +2059,13 @@ class BookuMemoryService(BaseService):
         vector_metadata = metadata_row[0] if metadata_row else {}
         if not isinstance(vector_metadata, dict):
             vector_metadata = {}
-        vector_metadata.update({"title": resolved_title, "bucket": record.bucket, "folder_id": record.folder_id})
+        vector_metadata.update(
+            {
+                "title": resolved_title,
+                "bucket": record.bucket,
+                "folder_id": record.folder_id,
+            }
+        )
 
         await vector_db.delete(collection_name=old_collection, ids=[memory_id])
         await vector_db.add(
@@ -1997,10 +2091,16 @@ class BookuMemoryService(BaseService):
         return {
             "action": "update_memory_by_id",
             "updated": 1,
-            "items": [self._build_record_item(updated_record)] if updated_record is not None else [],
+            "items": (
+                [self._build_record_item(updated_record)]
+                if updated_record is not None
+                else []
+            ),
         }
 
-    async def delete_memories(self, *, memory_ids: list[str], hard: bool = False) -> dict[str, Any]:
+    async def delete_memories(
+        self, *, memory_ids: list[str], hard: bool = False
+    ) -> dict[str, Any]:
         """删除指定记忆（默认软删，hard=True 为硬删）。
 
         软删除：仅在元数据库标记 ``is_deleted=1``，向量库数据保留。
@@ -2016,14 +2116,18 @@ class BookuMemoryService(BaseService):
         repo = await self._get_repo()
         config = self._get_config()
         records = await repo.get_records_map(memory_ids, include_deleted=True)
-        affects_inherent = any(record.bucket == "inherent" for record in records.values())
+        affects_inherent = any(
+            record.bucket == "inherent" for record in records.values()
+        )
         vector_db = get_vector_db_service(config.storage.vector_db_path)
 
         if hard:
             for record in records.values():
                 collection = self._collection_name(record.bucket, record.folder_id)
                 try:
-                    await vector_db.delete(collection_name=collection, ids=[record.memory_id])
+                    await vector_db.delete(
+                        collection_name=collection, ids=[record.memory_id]
+                    )
                 except Exception:  # noqa: BLE001
                     continue
             deleted = await repo.hard_delete_records(memory_ids)
@@ -2081,7 +2185,10 @@ class BookuMemoryService(BaseService):
         records = await repo.get_records_map(memory_ids)
         vector_db = get_vector_db_service(config.storage.vector_db_path)
         moved_items: list[dict[str, Any]] = []
-        affects_inherent = any(record.bucket == "inherent" for record in records.values()) or target_bucket == "inherent"
+        affects_inherent = (
+            any(record.bucket == "inherent" for record in records.values())
+            or target_bucket == "inherent"
+        )
 
         for memory_id in memory_ids:
             record = records.get(memory_id)
@@ -2089,7 +2196,11 @@ class BookuMemoryService(BaseService):
                 continue
 
             new_bucket = target_bucket or record.bucket
-            new_folder = "global" if new_bucket == "inherent" else (target_folder or record.folder_id)
+            new_folder = (
+                "global"
+                if new_bucket == "inherent"
+                else (target_folder or record.folder_id)
+            )
             old_collection = self._collection_name(record.bucket, record.folder_id)
             new_collection = self._collection_name(new_bucket, new_folder)
 
@@ -2103,17 +2214,29 @@ class BookuMemoryService(BaseService):
                 if ids_row:
                     docs = loaded.get("documents", []) or [record.content]
                     metas = loaded.get("metadatas", []) or [{}]
-                    embs = loaded.get("embeddings", []) or [await self._embed_text(record.content)]
+                    embs = loaded.get("embeddings", []) or [
+                        await self._embed_text(record.content)
+                    ]
                     meta = metas[0] if metas and isinstance(metas[0], dict) else {}
-                    meta.update({"bucket": new_bucket, "folder_id": new_folder, "title": record.title})
+                    meta.update(
+                        {
+                            "bucket": new_bucket,
+                            "folder_id": new_folder,
+                            "title": record.title,
+                        }
+                    )
                     await vector_db.add(
                         collection_name=new_collection,
                         ids=[memory_id],
                         documents=[str(docs[0]) if docs else record.content],
                         metadatas=[self._sanitize_vector_metadata(meta)],
-                        embeddings=[[float(value) for value in self._safe_list(embs[0])]],
+                        embeddings=[
+                            [float(value) for value in self._safe_list(embs[0])]
+                        ],
                     )
-                    await vector_db.delete(collection_name=old_collection, ids=[memory_id])
+                    await vector_db.delete(
+                        collection_name=old_collection, ids=[memory_id]
+                    )
 
             await repo.update_record(
                 memory_id,
@@ -2210,5 +2333,3 @@ class BookuMemoryService(BaseService):
             "discarded": discarded,
             "folder_id": effective_folder_id,
         }
-
-

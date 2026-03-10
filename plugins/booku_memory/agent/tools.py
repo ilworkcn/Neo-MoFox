@@ -169,6 +169,7 @@ class BookuMemoryRetrieveTool(BaseTool):
         opposing_tags: Annotated[list[str], "对立标签"],
         topk: Annotated[int | None, "召回条数，默认使用系统配置"] = None,
         include_archived: Annotated[bool | None, "是否检索归档层"] = None,
+        include_knowledge: Annotated[bool | None, "是否检索知识库"] = None,
         folder_id: Annotated[FolderLiteral | None, "在指定 folder 中检索"] = None,
     ) -> tuple[bool, str | dict]:
         """执行标签三角驱动的语义检索，融合 EPA（扩散-对立-核心）向量动力学重塑查询向量。
@@ -180,6 +181,7 @@ class BookuMemoryRetrieveTool(BaseTool):
             opposing_tags: 对立标签，用于抑制不希望召回的语义方向。
             topk: 最大返回条数，``None`` 时使用系统默认配置。
             include_archived: 是否同时检索归档层（``archived`` bucket），默认 False。
+            include_knowledge: 是否同时检索知识库（``knowledge`` bucket），默认 False。
             folder_id: 限定在指定 folder 中检索，``None`` 时搜索所有 folder。
 
         Returns:
@@ -199,6 +201,7 @@ class BookuMemoryRetrieveTool(BaseTool):
                 folder_id=folder_id,
                 top_k=topk,
                 include_archived=include_archived,
+                include_knowledge=include_knowledge,
                 core_tags=core_tags or [],
                 diffusion_tags=diffusion_tags or [],
                 opposing_tags=opposing_tags or [],

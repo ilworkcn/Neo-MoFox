@@ -106,6 +106,13 @@ class BookuMemoryConfig(BaseConfig):
             tag="general",
             order=1
         )
+        include_knowledge_default: bool = Field(
+            default=False,
+            description="默认是否检索知识库",
+            label="默认检索知识库",
+            tag="general",
+            order=2
+        )
         deduplication_threshold: float = Field(
             default=0.88,
             description="结果去重余弦阈值",
@@ -115,7 +122,7 @@ class BookuMemoryConfig(BaseConfig):
             step=0.01,
             input_type="slider",
             tag="performance",
-            order=2
+            order=3
         )
         base_beta: float = Field(
             default=0.3,
@@ -126,7 +133,7 @@ class BookuMemoryConfig(BaseConfig):
             step=0.05,
             input_type="slider",
             tag="ai",
-            order=3
+            order=4
         )
         logic_depth_scale: float = Field(
             default=0.5,
@@ -136,7 +143,7 @@ class BookuMemoryConfig(BaseConfig):
             le=2.0,
             step=0.1,
             tag="ai",
-            order=4
+            order=5
         )
         core_boost_min: float = Field(
             default=1.2,
@@ -146,7 +153,7 @@ class BookuMemoryConfig(BaseConfig):
             le=3.0,
             step=0.1,
             tag="performance",
-            order=5
+            order=6
         )
         core_boost_max: float = Field(
             default=1.4,
@@ -156,7 +163,7 @@ class BookuMemoryConfig(BaseConfig):
             le=3.0,
             step=0.1,
             tag="performance",
-            order=6
+            order=7
         )
         diffusion_boost: float = Field(
             default=0.3,
@@ -166,7 +173,7 @@ class BookuMemoryConfig(BaseConfig):
             le=1.0,
             step=0.05,
             tag="performance",
-            order=7
+            order=8
         )
         opposing_penalty: float = Field(
             default=0.5,
@@ -176,7 +183,7 @@ class BookuMemoryConfig(BaseConfig):
             le=1.0,
             step=0.05,
             tag="performance",
-            order=8
+            order=9
         )
 
     @config_section("write_conflict", title="写入冲突检测", tag="ai", order=30)
@@ -346,6 +353,71 @@ class BookuMemoryConfig(BaseConfig):
             order=6
         )
 
+    @config_section("chunking", title="分块配置", tag="ai", order=20)
+    class ChunkingSection(SectionBase):
+        """文档切分参数配置。"""
+
+        max_chunk_chars: int = Field(
+            default=900,
+            description="单块最大字符数",
+            label="最大块长度",
+            ge=300,
+            le=3000,
+            tag="performance",
+            order=0,
+        )
+        overlap_chars: int = Field(
+            default=120,
+            description="相邻块重叠字符数",
+            label="重叠长度",
+            ge=0,
+            le=500,
+            tag="performance",
+            order=1,
+        )
+
+    @config_section("startup_ingest", title="启动自动导入", tag="file", order=50)
+    class StartupIngestSection(SectionBase):
+        """启动阶段本地知识库导入配置。（建议仅有未读文档需要导入时启用）"""
+
+        enabled: bool = Field(
+            default=False,
+            description="是否在启动时自动导入配置路径文档",
+            label="启用启动导入",
+            tag="plugin",
+            order=0,
+        )
+        paths: list[str] = Field(
+            default_factory=list,
+            description="启动时自动导入的文件或目录路径列表",
+            label="导入路径",
+            input_type="list",
+            item_type="str",
+            tag="file",
+            order=1,
+        )
+        recursive: bool = Field(
+            default=True,
+            description="目录路径是否递归扫描子目录",
+            label="递归扫描目录",
+            tag="file",
+            order=2,
+        )
+        skip_missing_paths: bool = Field(
+            default=True,
+            description="路径不存在时是否跳过并继续",
+            label="跳过不存在路径",
+            tag="file",
+            order=3,
+        )
+        skip_existing_title: bool = Field(
+            default=True,
+            description="文档标题已存在时是否跳过导入",
+            label="跳过已存在标题",
+            tag="file",
+            order=4,
+        )
+
     plugin: PluginSection = Field(default_factory=PluginSection)
     storage: StorageSection = Field(default_factory=StorageSection)
     retrieval: RetrievalSection = Field(default_factory=RetrievalSection)
@@ -353,3 +425,5 @@ class BookuMemoryConfig(BaseConfig):
     time_window: TimeWindowSection = Field(default_factory=TimeWindowSection)
     internal_llm: InternalLLMSection = Field(default_factory=InternalLLMSection)
     flashback: FlashbackSection = Field(default_factory=FlashbackSection)
+    chunking: ChunkingSection = Field(default_factory=ChunkingSection)
+    startup_ingest: StartupIngestSection = Field(default_factory=StartupIngestSection)
