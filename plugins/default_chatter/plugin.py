@@ -158,7 +158,16 @@ class SendTextAction(BaseAction):
             content: 要发送的文本内容，不用添加标记，只写你想说的话即可
             reply_to: 可选，要引用回复的目标消息 ID。若指定此参数，发送的消息将作为对该消息的回复
         """
+        import re
         from src.core.models.message import Message
+
+        # 清洗 LLM 可能侧漏的 reason 字段
+        if content:
+            # 匹配 ,reason: 或 reason: 及其后的所有内容
+            content = re.split(r'[,，]?\s*reason[:：]', content, flags=re.IGNORECASE)[0].strip()
+
+        if not content:
+            return True, "内容为空，跳过发送"
         
         # 如果需要引用消息，创建带reply_to的Message对象
         if reply_to:

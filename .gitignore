@@ -98,4 +98,5 @@ plugins/*
 !plugins/default_chatter/
 !plugins/napcat_adapter/
 !plugins/booku_memory/
+!plugins/emoji_sender/
 

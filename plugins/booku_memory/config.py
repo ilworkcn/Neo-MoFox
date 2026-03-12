@@ -381,14 +381,14 @@ class BookuMemoryConfig(BaseConfig):
         """启动阶段本地知识库导入配置。（建议仅有未读文档需要导入时启用）"""
 
         enabled: bool = Field(
-            default=False,
+            default=True,
             description="是否在启动时自动导入配置路径文档",
             label="启用启动导入",
             tag="plugin",
             order=0,
         )
         paths: list[str] = Field(
-            default_factory=list,
+            default_factory=lambda: [r"data\booku_memory\knowledges"],
             description="启动时自动导入的文件或目录路径列表",
             label="导入路径",
             input_type="list",
