@@ -31,7 +31,7 @@ class SendEmojiMemeAction(BaseAction):
 
     async def execute(
         self,
-        description_query: Annotated[str, "目标表情包的描述文本，用于向量匹配（例如：‘生气地翻白眼’）"],
+        description: Annotated[str, "目标表情包的描述文本，用于向量匹配（例如：‘生气地翻白眼’）"],
         emotion_tags: Annotated[
             list[str] | None,
             _EMOTION_TAG_DESC,
@@ -47,7 +47,7 @@ class SendEmojiMemeAction(BaseAction):
         ok, result, reason = await service.send_best_detailed(
             stream_id=self.chat_stream.stream_id,
             platform=self.chat_stream.platform,
-            description_query=description_query,
+            description_query=description,
             emotion_tags=emotion_tags,
         )
 
