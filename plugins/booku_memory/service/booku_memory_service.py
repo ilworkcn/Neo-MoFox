@@ -30,7 +30,7 @@ _TARGET_REMINDER_BUCKET = "actor"
 _TARGET_REMINDER_NAME = "记忆引导语"
 
 
-MEMORY_HINT = (
+_MEMORY_HINT = (
     "你具备长期记忆能力。"
     "记忆对你来说，不只是存放信息的地方，更是维持关系连续性、理解用户处境、连接过去与现在的方式。\n\n"
     "在实际对话中，你应当更积极地使用 create_memory 创建记忆，而不是因为担心记忆价值不够高就放弃记录。"
