@@ -23,14 +23,37 @@ from src.kernel.llm.tool_call_compat import (
 from ..exceptions import LLMConfigurationError, LLMContentFilterError
 from ..payload import Image, LLMPayload, Text, ToolCall, ToolResult
 from ..roles import ROLE
+from ..token_counter import count_payload_tokens
 from .base import StreamEvent
 
 
-def _log_openai_request_body(api_name: str, params: dict[str, Any]) -> None:
+def _log_openai_request_body(
+    api_name: str,
+    params: dict[str, Any],
+    *,
+    model_set: dict[str, Any] | None = None,
+    payloads: list[LLMPayload] | None = None,
+    request_name: str | None = None,
+) -> None:
     """将 OpenAI 请求体送入请求检视器，便于在 WebUI 中核查 payload 结构。"""
+    metadata: dict[str, Any] = {}
+    if isinstance(model_set, dict):
+        provider = model_set.get("api_provider") or model_set.get("client_type") or model_set.get("base_url")
+        if provider is not None:
+            metadata["api_provider"] = str(provider)
+    if request_name:
+        metadata["request_name"] = request_name
+    if payloads:
+        try:
+            metadata["estimated_input_tokens"] = count_payload_tokens(
+                payloads,
+                model_identifier=str(params.get("model") or "cl100k_base"),
+            )
+        except Exception:
+            pass
     try:
         from src.kernel.llm.request_inspector import capture
-        capture(api_name, params)
+        capture(api_name, params, metadata)
     except Exception:
         pass
 
@@ -648,7 +671,6 @@ class OpenAIChatClient:
             ValueError: api_key 为空或 extra_params 非 dict 时抛出。
             LLMContentFilterError: 模型返回空 choices 时抛出。
         """
-        del request_name  # 保留参数以满足协议，暂不使用
         del tools  # 通过 payloads 中 ROLE.TOOL 传入，此参数保持协议兼容
 
         if not isinstance(model_set, dict):
@@ -736,6 +758,14 @@ class OpenAIChatClient:
                     content = msg.get("content")
                     msg["reasoning_content"] = content if isinstance(content, str) else ""
 
+        _log_openai_request_body(
+            "chat.completions.create",
+            params,
+            model_set=model_set,
+            payloads=payloads,
+            request_name=request_name,
+        )
+
         if not stream:
             return await self._create_non_stream(
                 client=client,
@@ -789,7 +819,6 @@ class OpenAIChatClient:
             LLMContentFilterError: 模型返回空 choices 时抛出。
         """
         try:
-            _log_openai_request_body("chat.completions.create", params)
             resp = await client.chat.completions.create(**params)
         except Exception as e:
             err_name = type(e).__name__.lower()
@@ -847,7 +876,6 @@ class OpenAIChatClient:
         """
         stream_params = dict(params)
         stream_params["stream"] = True
-        _log_openai_request_body("chat.completions.create", stream_params)
         stream_resp = await client.chat.completions.create(**params, stream=True)
 
         async def iter_events() -> AsyncIterator[StreamEvent]:
