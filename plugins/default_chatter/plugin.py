@@ -221,7 +221,7 @@ class SendTextAction(BaseAction):
                 processed_plain_text=content,
                 message_type=MessageType.TEXT,
                 sender_id=bot_info.get("bot_id", "") if bot_info else "",
-                sender_name=bot_info.get("bot_nickname", "Bot") if bot_info else "Bot",
+                sender_name=bot_info.get("bot_name", "Bot") if bot_info else "Bot",
                 platform=platform,
                 chat_type=chat_type,
                 stream_id=target_stream_id,

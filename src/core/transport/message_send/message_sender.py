@@ -160,14 +160,14 @@ class MessageSender:
             bot_info = await adapter.get_bot_info()
 
             bot_id = str(bot_info.get("bot_id", "") or "")
-            bot_nickname = str(bot_info.get("bot_nickname", "") or "")
+            bot_name = str(bot_info.get("bot_name", "") or "")
 
             if bot_id:
                 message.sender_id = bot_id
-            if bot_nickname:
-                message.sender_name = bot_nickname
+            if bot_name:
+                message.sender_name = bot_name
                 if not message.sender_cardname:
-                    message.sender_cardname = bot_nickname
+                    message.sender_cardname = bot_name
         except Exception as e:
             logger.warning(
                 f"获取 Bot sender 信息失败，保留原 sender: message_id={message.message_id}, error={e}"

@@ -71,7 +71,7 @@ async def test_create_new_stream_includes_bot_info(monkeypatch) -> None:
     # Mock adapter manager get_bot_info_by_platform
     adapter_manager = SimpleNamespace(
         get_bot_info_by_platform=AsyncMock(
-            return_value={"bot_id": "10001", "bot_nickname": "TestBot"}
+            return_value={"bot_id": "10001", "bot_name": "TestBot"}
         )
     )
     monkeypatch.setattr(
@@ -179,8 +179,8 @@ async def test_db_message_to_runtime_fallback_to_content_when_plain_text_missing
 
 
 @pytest.mark.asyncio
-async def test_db_message_to_runtime_uses_bot_nickname_for_bot_message(monkeypatch) -> None:
-    """数据库重建历史时，Bot 自身消息应优先显示 bot_nickname。"""
+async def test_db_message_to_runtime_uses_bot_name_for_bot_message(monkeypatch) -> None:
+    """数据库重建历史时，Bot 自身消息应优先显示 bot_name。"""
     from src.core.managers.stream_manager import StreamManager
 
     manager = StreamManager()
@@ -190,14 +190,8 @@ async def test_db_message_to_runtime_uses_bot_nickname_for_bot_message(monkeypat
         lambda: manager,
     )
 
-    fake_person = SimpleNamespace(
-        person_id="hash_qq_bot_001",
-        user_id="10001",
-        nickname=None,
-        cardname="",
-    )
     helper = SimpleNamespace(
-        person_crud=SimpleNamespace(get_by=AsyncMock(return_value=fake_person)),
+        person_crud=SimpleNamespace(get_by=AsyncMock(return_value=None)),
         generate_person_id=lambda platform, user_id: "hash_qq_bot_001",
     )
     monkeypatch.setattr(
@@ -207,7 +201,7 @@ async def test_db_message_to_runtime_uses_bot_nickname_for_bot_message(monkeypat
 
     adapter_manager = SimpleNamespace(
         get_bot_info_by_platform=AsyncMock(
-            return_value={"bot_id": "10001", "bot_nickname": "MoFox"}
+            return_value={"bot_id": "10001", "bot_name": "MoFox"}
         )
     )
     monkeypatch.setattr(
@@ -218,7 +212,7 @@ async def test_db_message_to_runtime_uses_bot_nickname_for_bot_message(monkeypat
     db_message = SimpleNamespace(
         message_id="db002",
         stream_id="stream001",
-        person_id="hash_qq_bot_001",
+        person_id="bot",
         time=1700000001.0,
         reply_to=None,
         content="bot self message",

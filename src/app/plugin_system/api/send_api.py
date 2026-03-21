@@ -374,7 +374,7 @@ async def _send_message(
             processed_plain_text=processed_plain_text,
             message_type=message_type,
             sender_id=bot_info.get("bot_id", ""),
-            sender_name=bot_info.get("bot_nickname", "Bot"),
+            sender_name=bot_info.get("bot_name", "Bot"),
             platform=platform,
             chat_type=chat_type,
             stream_id=stream_id,

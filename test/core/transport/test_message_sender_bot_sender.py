@@ -15,7 +15,7 @@ async def test_send_message_overrides_sender_with_bot_info(monkeypatch: pytest.M
     sender = MessageSender()
 
     adapter = SimpleNamespace(
-        get_bot_info=AsyncMock(return_value={"bot_id": "bot-001", "bot_nickname": "NeoBot"}),
+        get_bot_info=AsyncMock(return_value={"bot_id": "bot-001", "bot_name": "NeoBot"}),
         _send_platform_message=AsyncMock(return_value=None),
     )
     sender.set_adapter_manager(SimpleNamespace(get_adapter=lambda _sig: adapter))

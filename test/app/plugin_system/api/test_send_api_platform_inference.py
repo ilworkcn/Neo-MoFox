@@ -38,7 +38,7 @@ async def test_send_text_infers_platform_from_stream_info(
     class _FakeAdapterManager:
         async def get_bot_info_by_platform(self, platform: str) -> dict[str, str] | None:
             assert platform == "wx"
-            return {"bot_id": "b1", "bot_nickname": "Bot"}
+            return {"bot_id": "b1", "bot_name": "Bot"}
 
     captured = _Captured()
 

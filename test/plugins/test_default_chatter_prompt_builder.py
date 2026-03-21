@@ -91,3 +91,99 @@ def test_build_system_prompt_uses_private_theme(
     )
 
     assert prompt == "theme=PRIVATE_THEME"
+
+
+def test_build_system_prompt_prefers_bot_name_for_platform_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """系统提示词应优先使用适配器返回的 bot_name 填充平台昵称。"""
+    stream = ChatStream(
+        stream_id="s2",
+        platform="qq",
+        chat_type="group",
+        bot_id="100",
+        bot_nickname="fox-stream",
+    )
+
+    class _FakeTemplate:
+        def __init__(self) -> None:
+            self.values: dict[str, str] = {}
+
+        def set(self, key: str, value: str):
+            self.values[key] = value
+            return self
+
+        async def build(self) -> str:
+            return (
+                f"platform_name={self.values.get('platform_name', '')}|"
+                f"platform_id={self.values.get('platform_id', '')}"
+            )
+
+    fake_template = _FakeTemplate()
+    monkeypatch.setattr(
+        "plugins.default_chatter.prompt_builder.get_prompt_manager",
+        lambda: SimpleNamespace(
+            get_template=lambda _name: fake_template,
+        ),
+    )
+    async def _fake_get_bot_info(_platform: str) -> dict[str, str]:
+        return {"bot_id": "3602291932", "bot_name": "MoFox"}
+
+    monkeypatch.setattr(
+        "src.app.plugin_system.api.adapter_api.get_bot_info_by_platform",
+        _fake_get_bot_info,
+    )
+
+    prompt = asyncio.run(
+        DefaultChatterPromptBuilder.build_system_prompt(None, stream)
+    )
+
+    assert prompt == "platform_name=MoFox|platform_id=3602291932"
+
+
+def test_build_system_prompt_falls_back_to_stream_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """系统提示词在 bot_name 缺失时应回退到 chat_stream。"""
+    stream = ChatStream(
+        stream_id="s3",
+        platform="qq",
+        chat_type="group",
+        bot_id="stream-id",
+        bot_nickname="stream-name",
+    )
+
+    class _FakeTemplate:
+        def __init__(self) -> None:
+            self.values: dict[str, str] = {}
+
+        def set(self, key: str, value: str):
+            self.values[key] = value
+            return self
+
+        async def build(self) -> str:
+            return (
+                f"platform_name={self.values.get('platform_name', '')}|"
+                f"platform_id={self.values.get('platform_id', '')}"
+            )
+
+    fake_template = _FakeTemplate()
+    monkeypatch.setattr(
+        "plugins.default_chatter.prompt_builder.get_prompt_manager",
+        lambda: SimpleNamespace(
+            get_template=lambda _name: fake_template,
+        ),
+    )
+    async def _fake_get_bot_info(_platform: str) -> dict[str, str]:
+        return {}
+
+    monkeypatch.setattr(
+        "src.app.plugin_system.api.adapter_api.get_bot_info_by_platform",
+        _fake_get_bot_info,
+    )
+
+    prompt = asyncio.run(
+        DefaultChatterPromptBuilder.build_system_prompt(None, stream)
+    )
+
+    assert prompt == "platform_name=stream-name|platform_id=stream-id"

@@ -645,7 +645,7 @@ class StreamManager:
             bot_info = await get_adapter_manager().get_bot_info_by_platform(platform)
             if bot_info:
                 bot_id = str(bot_info.get("bot_id", "") or "")
-                bot_nickname = str(bot_info.get("bot_nickname", "") or "")
+                bot_nickname = str(bot_info.get("bot_name", "") or "")
         except Exception as e:
             logger.warning(f"获取 Bot 信息失败，将使用空值: platform={platform}, error={e}")
 
@@ -741,7 +741,7 @@ class StreamManager:
                 )
                 if bot_info:
                     bot_id = str(bot_info.get("bot_id", "") or "")
-                    bot_nickname = str(bot_info.get("bot_nickname", "") or "")
+                    bot_nickname = str(bot_info.get("bot_name", "") or "")
                     sender_id = bot_id or "bot"
                     sender_name = bot_nickname or "Bot"
                     sender_cardname = bot_nickname or ""

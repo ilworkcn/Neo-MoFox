@@ -333,7 +333,7 @@ class NapcatAdapter(BaseAdapter):
         config = cast(NapcatAdapterConfig, self.plugin.config)
         return {
             "bot_id": config.bot.qq_id,
-            "bot_nickname": config.bot.qq_nickname,
+            "bot_name": config.bot.qq_nickname,
             "platform": self.platform,
         }
     
