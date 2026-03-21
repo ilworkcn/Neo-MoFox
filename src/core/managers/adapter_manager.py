@@ -309,11 +309,11 @@ class AdapterManager:
             platform: 平台名称
 
         Returns:
-            dict[str, str] | None: 包含 'bot_id' 和 'bot_nickname' 的字典，如果未找到则返回 None
+            dict[str, str] | None: 包含 'bot_id' 和 'bot_name' 的字典，如果未找到则返回 None
 
         Examples:
             >>> bot_info = await manager.get_bot_info_by_platform("napcat")
-            >>> {'bot_id': '12345678', 'bot_nickname': 'MyBot'}
+            >>> {'bot_id': '12345678', 'bot_name': 'MyBot'}
         """
         for adapter in self._active_adapters.values():
             if adapter.platform == platform:

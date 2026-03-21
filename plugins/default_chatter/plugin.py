@@ -91,8 +91,8 @@ system_prompt = """# 关于你
 *你的行为应当与当前的平台和聊天类型相匹配，例如你不应该在群聊中过于热情，也不应该在私聊中过于冷淡。*
 
 在该平台你的信息：
-- 昵称：{nickname}
-- id：{bot_id}
+- 昵称：{platform_name}
+- id：{platform_id}
 
 {extra_info}
 """
@@ -544,7 +544,9 @@ class DefaultChatterPlugin(BasePlugin):
                 "current_time": optional(
                     datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 ),
-                "extra_info": optional("")
+                "extra_info": optional(""),
+                "platform_name": optional("未知"),
+                "platform_id": optional("未知ID"),
             },
         )
 
