@@ -111,6 +111,10 @@ class CoreConfig(ConfigBase):
             default=20,
             description="每个聊天流的最大上下文消息数",
         )
+        image_recognition_prompt: str = Field(
+            default="",
+            description="自定义识图提示词，留空则使用内置默认提示词",
+        )
     chat: ChatSection = Field(default_factory=ChatSection)
 
     @config_section("llm")

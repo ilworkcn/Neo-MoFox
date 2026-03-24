@@ -278,7 +278,7 @@ class BookuMemoryReadAgent(BaseAgent):
                 calls = response.call_list or []
                 if not calls:
                     logger.warning("LLM 未返回任何工具调用，可能是模型配置问题，建议更换模型。")
-                    return []
+                    return False, {"error": "LLM 未返回任何工具调用，可能是模型配置问题，建议更换模型。"}
                 for call in calls:
                     logger.info(f"调用工具：{call.name}")
                     logger.debug(f"工具调用请求：{call.name}，参数：{call.args}")

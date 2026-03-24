@@ -82,9 +82,12 @@ class MediaManager:
             manager = get_prompt_manager()
             
             # 注册图片识别提示词
+            from src.core.config import get_core_config
+            custom_prompt = get_core_config().chat.image_recognition_prompt
+            default_template = "描述这张图片的内容，包含主题、主要元素。若有文字或代码，完整转述。"
             image_prompt = PromptTemplate(
                 name="media.image_recognition",
-                template="请描述这张图片，字数控制在100字以内。简要说明图片主题、核心元素及背景环境。如果图片中包含任何文字或代码，请完整转述，这部分不计入字数限制，力求客观、生动地还原图片内容。"
+                template=custom_prompt if custom_prompt else default_template
             )
             manager.register_template(image_prompt)
             

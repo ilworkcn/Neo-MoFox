@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from json_repair import repair_json
 
@@ -242,7 +242,7 @@ class BookuMemoryWriteTool(BaseTool):
                 title=normalized_title or body_content[:20],
                 content=body_content,
                 bucket=bucket_hint,
-                folder_id=resolved_folder,
+                folder_id=cast(_FOLDER_IDS, resolved_folder),
                 core_tags=tags_ready,
                 diffusion_tags=diffusion_ready,
                 opposing_tags=opposing_ready,

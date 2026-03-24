@@ -68,6 +68,9 @@ class BookuMemoryReadTool(BaseTool):
         query = self._build_query_text(intent_text=intent_text, context=context)
         if not query:
             return False, "intent_text 不能为空"
+        task_name = (
+            f"{getattr(self.plugin, 'plugin_name', 'unknown_plugin')}:memory_read"
+        )
 
         # 与写工作流共用同一把锁，避免写入事务中读取到不一致状态。
         lock = self._get_db_lock()
@@ -85,7 +88,6 @@ class BookuMemoryReadTool(BaseTool):
                     logger.error(
                         "记忆读取任务失败",
                         task_name=task_name,
-                        title=title,
                         error=result,
                     )
                     return False, result
@@ -94,7 +96,6 @@ class BookuMemoryReadTool(BaseTool):
                 logger.error(
                     "记忆读取任务异常",
                     task_name=task_name,
-                    title=title,
                     exc_info=True,
                 )
                 return False, "记忆读取任务异常"
@@ -210,7 +211,7 @@ class BookuMemoryReadTool(BaseTool):
                 # 先用 grep 低成本探测可用性，再执行 retrieve。
                 grep_hit = await self._grep_probe(
                     layer=layer,
-                    folder_id=folder_id,
+                    folder_id=cast(_FOLDER_IDS, folder_id),
                     query_text=query_text,
                     topk=topk,
                 )
@@ -218,7 +219,7 @@ class BookuMemoryReadTool(BaseTool):
                     continue
                 found_in_other = await self._retrieve_in_folder(
                     layer=layer,
-                    folder_id=folder_id,
+                    folder_id=cast(_FOLDER_IDS, folder_id),
                     query_text=query_text,
                     core_tags=normalized_core,
                     diffusion_tags=normalized_diffusion,
@@ -229,7 +230,7 @@ class BookuMemoryReadTool(BaseTool):
                     return True, self._format_found_result(
                         query_text=query_text,
                         layer=layer,
-                        folder_id=folder_id,
+                        folder_id=cast(_FOLDER_IDS, folder_id),
                         items=found_in_other,
                     )
 
@@ -317,7 +318,7 @@ class BookuMemoryReadTool(BaseTool):
             if folder_id == skip_folder:
                 continue
             success, result = await BookuMemoryStatusTool(self.plugin).execute(
-                folder_id=folder_id,
+                folder_id=cast(_FOLDER_IDS, folder_id),
                 include_archived=True,
                 recent_limit=5,
             )
