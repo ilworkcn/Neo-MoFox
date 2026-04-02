@@ -232,10 +232,6 @@ class EventBus:
             key=lambda s: (-s.priority, s.order),
         )
 
-        logger.debug(
-            f"正在按顺序向 {len(subs)} 个处理器发布事件 '{event_name}'"
-        )
-
         expected_keys = set(params.keys())
         current_params: EventParams = dict(params)
         last_decision: EventDecision = EventDecision.SUCCESS
