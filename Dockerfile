@@ -35,6 +35,7 @@ ENV PYTHONUNBUFFERED=1 \
 # 安装运行时必要的系统库，并安装 uv（插件依赖安装需要）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
+    git \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir uv
 
@@ -47,5 +48,5 @@ COPY . .
 # 预先创建需要映射的目录
 RUN mkdir -p config data logs plugins
 
-# 启动命令
-CMD ["python", "main.py"]
+# 启动命令（由 docker-compose entrypoint 覆盖）
+CMD ["uv", "run", "main.py"]
