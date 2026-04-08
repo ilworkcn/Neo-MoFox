@@ -207,6 +207,70 @@ class UserQueryHelper:
 
         return cast(list["Messages"], messages)
 
+    async def resolve_user_id(
+        self,
+        platform: str,
+        keyword: str,
+    ) -> str | None:
+        """根据关键词解析平台用户 ID。
+
+        解析规则：
+        1. 纯数字字符串：直接视为 user_id
+        2. 在同平台按昵称/群名片精确匹配
+        3. 若精确匹配失败，尝试昵称/群名片包含匹配；仅在唯一命中时返回
+
+        Args:
+            platform: 平台标识
+            keyword: 待解析关键词（可为 user_id、昵称或群名片）
+
+        Returns:
+            str | None: 解析出的 user_id；无法定位或命中不唯一时返回 None
+        """
+        normalized = str(keyword or "").strip().lstrip("@").strip()
+        if not normalized:
+            return None
+
+        if normalized.isdigit():
+            return normalized
+
+        records = await QueryBuilder(self._PersonInfo).filter(platform=platform).all()
+        persons = cast(list["PersonInfo"], records)
+
+        exact_hits: list[str] = []
+        partial_hits: list[str] = []
+        normalized_lower = normalized.lower()
+
+        for person in persons:
+            user_id_val = str(getattr(person, "user_id", "") or "").strip()
+            if not user_id_val:
+                continue
+
+            nickname = str(getattr(person, "nickname", "") or "").strip()
+            cardname = str(getattr(person, "cardname", "") or "").strip()
+
+            if (nickname and nickname.lower() == normalized_lower) or (
+                cardname and cardname.lower() == normalized_lower
+            ):
+                exact_hits.append(user_id_val)
+                continue
+
+            if (nickname and normalized_lower in nickname.lower()) or (
+                cardname and normalized_lower in cardname.lower()
+            ):
+                partial_hits.append(user_id_val)
+
+        unique_exact = list(dict.fromkeys(exact_hits))
+        if len(unique_exact) == 1:
+            return unique_exact[0]
+        if len(unique_exact) > 1:
+            return None
+
+        unique_partial = list(dict.fromkeys(partial_hits))
+        if len(unique_partial) == 1:
+            return unique_partial[0]
+
+        return None
+
     async def enrich_message_with_person_info(
         self,
         message: "Messages",
