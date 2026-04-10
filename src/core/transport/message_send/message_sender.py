@@ -265,15 +265,14 @@ class MessageSender:
                     "message": message,
                     "envelope": envelope,
                     "adapter_signature": adapter_signature,
+                    "continue_send": True,
                 },
             )
             
             # 检查事件决策，如果被拦截则返回 False
-            decision = result.get("decision")
-            if decision == EventDecision.STOP:
-                return False
-                
-            return True
+            final_params = result.get("params") or {}
+            continue_send = final_params.get("continue_send", True)
+            return continue_send
             
         except Exception as e:
             logger.warning(f"触发发送事件失败: {e}")

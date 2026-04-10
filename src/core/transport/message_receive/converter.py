@@ -255,6 +255,12 @@ class MessageConverter:
         if message.reply_to:
             seg_list.insert(0, {"type": "reply", "data": message.reply_to})
 
+        # 非引用回复时，支持显式 @ 指定用户。
+        # 由上层在 message.extra["at_user_id"] 传入目标平台用户 ID。
+        at_user_id = message.extra.get("at_user_id")
+        if at_user_id and not message.reply_to:
+            seg_list.insert(0, {"type": "at", "data": str(at_user_id)})
+
         target_user_id = message.extra.get("target_user_id")
         target_user_name = message.extra.get("target_user_name")
 

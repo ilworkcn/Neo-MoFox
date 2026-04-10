@@ -1,13 +1,12 @@
 import base64
 import io
-import ssl
 import time
 import weakref
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+import httpx
 import orjson
-import urllib3
 from PIL import Image
 
 from src.app.plugin_system.api.log_api import get_logger
@@ -143,15 +142,6 @@ async def _call_adapter_api(
         return None
 
 
-class SSLAdapter(urllib3.PoolManager):
-    def __init__(self, *args, **kwargs):
-        context = ssl.create_default_context()
-        context.set_ciphers("DEFAULT@SECLEVEL=1")
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
-        kwargs["ssl_context"] = context
-        super().__init__(*args, **kwargs)
-
-
 async def get_respose(
     action: str,
     params: dict[str, Any],
@@ -255,17 +245,22 @@ async def get_image_base64(url: str) -> str:
     # sourcery skip: raise-specific-error
     """下载图片/视频并返回Base64"""
     logger.debug(f"下载图片: {url}")
-
-    def _download_sync() -> str:
-        http = SSLAdapter()
-        response = http.request("GET", url, timeout=10)
-        if response.status != 200:
-            raise Exception(f"HTTP Error: {response.status}")
-        image_bytes = response.data
-        return base64.b64encode(image_bytes).decode("utf-8")
-
     try:
-        return await asyncio.to_thread(_download_sync)
+        if not url:
+            raise ValueError("图片URL为空")
+
+        timeout = httpx.Timeout(timeout=10.0, connect=5.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            image_bytes = response.content
+
+        if not image_bytes:
+            raise ValueError("图片内容为空")
+        return base64.b64encode(image_bytes).decode("utf-8")
+    except httpx.TimeoutException as e:
+        logger.error(f"图片下载超时: {e!s}")
+        raise
     except Exception as e:
         logger.error(f"图片下载失败: {e!s}")
         raise

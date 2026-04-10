@@ -224,8 +224,18 @@ class MessageHandler:
         """处理图片消息与表情包消息"""
         message_data = segment.get("data", {})
         image_sub_type = message_data.get("sub_type")
+        image_url = message_data.get("url", "")
+
+        if not image_url:
+            logger.warning("图片消息缺少URL")
+            return None
+
         try:
-            image_base64 = await get_image_base64(message_data.get("url", ""))
+            async with asyncio.timeout(10): # 兜底超时处理
+                image_base64 = await get_image_base64(image_url)
+        except TimeoutError:
+            logger.error(f"图片消息处理超时: {image_url}")
+            return {"type": "text", "data": "[图片处理超时]"}
         except Exception as e:
             logger.error(f"图片消息处理失败: {e!s}")
             return None

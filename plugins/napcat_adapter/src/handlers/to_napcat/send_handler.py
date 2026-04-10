@@ -259,6 +259,11 @@ class SendHandler:
             if not text:
                 return payload
             new_payload = self.build_payload(payload, self.handle_text_message(str(text)), False)
+        elif seg_type == "at":
+            at_data = seg.get("data")
+            if not at_data:
+                return payload
+            new_payload = self.build_payload(payload, self.handle_at_message(str(at_data)), False)
         elif seg_type == "face":
             logger.warning("MoFox-Bot 发送了qq原生表情，暂时不支持")
         elif seg_type == "image":
@@ -362,6 +367,13 @@ class SendHandler:
     def handle_text_message(self, message: str) -> dict:
         """处理文本消息"""
         return {"type": "text", "data": {"text": message}}
+
+    def handle_at_message(self, at_data: str) -> list[dict]:
+        """处理显式 @ 消息段。"""
+        at_seg = {"type": "at", "data": {"qq": str(at_data)}}
+        text_seg = {"type": "text", "data": {"text": " "}}
+        result_seg = [at_seg, text_seg]
+        return result_seg
 
     def handle_image_message(self, encoded_image: str) -> dict:
         """处理图片消息。
