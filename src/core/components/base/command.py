@@ -14,6 +14,7 @@ from src.core.components.types import ChatType, PermissionLevel
 
 if TYPE_CHECKING:
     from src.core.components.base.plugin import BasePlugin
+    from src.core.models.message import Message
 
 
 @dataclass
@@ -78,17 +79,19 @@ class BaseCommand(ABC):
     # 组件级依赖（精确到组件签名）
     dependencies: list[str] = []  # 例如 ["other_plugin:service:config"]
 
-    def __init__(self, plugin: "BasePlugin", stream_id: str, message_id: str = "") -> None:
+    def __init__(self, plugin: "BasePlugin", stream_id: str, message_id: str = "", message: "Message | None" = None) -> None:
         """初始化命令组件。
 
         Args:
             plugin: 所属插件实例
             stream_id: 聊天流 ID
             message_id: 触发命令的消息 ID（可选，用于回复）
+            message: 触发命令的完整消息对象（可选，用于访问图片等媒体内容）
         """
         self.plugin = plugin
         self.stream_id = stream_id
         self.message_id = message_id
+        self._message = message
         self._root = CommandNode(name="root")
         self._build_command_tree()
 
