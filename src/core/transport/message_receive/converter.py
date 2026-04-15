@@ -209,15 +209,20 @@ class MessageConverter:
         }
         if message.message_type in _MEDIA_TYPES:
             content = message.content
+            content_data: str
             if isinstance(content, str):
-                content_data: str | dict[str, Any] = content
+                content_data = content
             elif isinstance(content, dict):
                 # send_file 等 API 传入 dict（如 {"path": "...", "name": "..."}）
-                # FILE 类型取 path 字段作为数据
+                # FILE 类型取 path 字段作为数据；其他类型取 data/path/url
                 if message.message_type == MessageType.FILE:
                     content_data = content.get("path", "")
                 else:
-                    content_data = content
+                    content_data = (
+                        content.get("data", "")
+                        or content.get("path", "")
+                        or content.get("url", "")
+                    )
             else:
                 content_data = ""
             if content_data:
@@ -697,14 +702,8 @@ class MessageConverter:
         # 文本消息直接提供纯字符串
         if message_type == MessageType.TEXT:
             return result.plain_text
-        
-        # 含媒体时返回一个包含文本和媒体列表的字典，保持兼容性
-        return {
-            "text": result.plain_text,
-            "media": result.media,
-        }
 
-        # 含媒体时返回结构化内容
+        # 含媒体时返回一个包含文本和媒体列表的字典，保持兼容性
         return {
             "text": result.plain_text,
             "media": result.media,
