@@ -270,8 +270,8 @@ class MessageSender:
             )
             
             # 检查事件决策，如果被拦截则返回 False
-            final_params = result.get("params", None)
-            continue_send = final_params.get("continue_send", "")
+            final_params = result.get("params") or {}
+            continue_send = final_params.get("continue_send", True)
             return continue_send
             
         except Exception as e:

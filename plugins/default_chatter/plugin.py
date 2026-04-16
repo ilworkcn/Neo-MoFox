@@ -183,6 +183,9 @@ class SendTextAction(BaseAction):
 
         if not (content or at_prefix_hint):
             return True, "内容为空，跳过发送"
+
+        if not content:
+            return True, "内容为空，跳过发送"
         
         # 如果需要引用消息，创建带reply_to的Message对象
         if reply_to:

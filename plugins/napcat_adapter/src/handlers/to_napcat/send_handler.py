@@ -368,7 +368,7 @@ class SendHandler:
         """处理文本消息"""
         return {"type": "text", "data": {"text": message}}
 
-    def handle_at_message(self, at_data: str) -> dict:
+    def handle_at_message(self, at_data: str) -> list[dict]:
         """处理显式 @ 消息段。"""
         at_seg = {"type": "at", "data": {"qq": str(at_data)}}
         text_seg = {"type": "text", "data": {"text": " "}}

@@ -253,8 +253,8 @@ async def get_image_base64(url: str) -> str:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(url)
             response.raise_for_status()
+            image_bytes = response.content
 
-        image_bytes = response.content
         if not image_bytes:
             raise ValueError("图片内容为空")
         return base64.b64encode(image_bytes).decode("utf-8")

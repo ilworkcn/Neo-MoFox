@@ -29,6 +29,31 @@ if TYPE_CHECKING:
 
 logger = get_logger("stream_manager", display="StreamMgr")
 
+# 含原始二进制的媒体类型，序列化入库时剔除 data 字段避免巨量 base64 写入数据库
+_BINARY_MEDIA_TYPES: frozenset[str] = frozenset({"image", "emoji", "voice"})
+
+
+def _serialize_content_for_db(content: Any) -> str:
+    """将消息 content 序列化为数据库存储字符串。
+
+    内存中的 content 字典可能包含图片/表情包/语音的原始 base64 数据（供 Chatter 多模态
+    使用），但这些数据不需要持久化，持久化会造成数据库存储暴涨。本函数在序列化前剔除
+    image/emoji/voice 媒体项中的 ``data`` 字段，仅保留类型标记。
+    """
+    if not isinstance(content, dict):
+        return str(content)
+
+    media = content.get("media")
+    if not isinstance(media, list):
+        return str(content)
+
+    stripped_media = [
+        {"type": item["type"]} if item.get("type") in _BINARY_MEDIA_TYPES else item
+        for item in media
+        if isinstance(item, dict)
+    ]
+    return str({**content, "media": stripped_media})
+
 
 class StreamManager:
     """统一的聊天流管理器。
@@ -296,7 +321,7 @@ class StreamManager:
                 "person_id": person_id,
                 "time": message.time,
                 "message_type": message.message_type.value,
-                "content": str(message.content),
+                "content": _serialize_content_for_db(message.content),
                 "processed_plain_text": message.processed_plain_text,
                 "reply_to": message.reply_to,
                 "platform": message.platform,
