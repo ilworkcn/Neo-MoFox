@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.core.managers.stream_manager import _serialize_content_for_db
 from src.core.models.message import Message
 
 
@@ -313,3 +314,42 @@ async def test_add_message_normalizes_direct_raw_person_id(monkeypatch) -> None:
 
     created_data = manager._messages_crud.create.await_args.args[0]
     assert created_data["person_id"] == "hash_qq_user_123"
+
+
+def test_serialize_content_for_db_keeps_small_binary_media_data() -> None:
+    """小体积二进制媒体数据应保留，避免误删有效内容。"""
+    content = {
+        "text": "hello",
+        "media": [{"type": "image", "data": "a" * 128, "name": "small.png"}],
+    }
+
+    serialized = _serialize_content_for_db(content)
+
+    assert "'data': '" in serialized
+    assert "small.png" in serialized
+
+
+def test_serialize_content_for_db_strips_large_binary_media_data() -> None:
+    """超过阈值的二进制媒体数据应丢弃，仅保留必要元信息。"""
+    content = {
+        "text": "hello",
+        "media": [{"type": "image", "data": "a" * 2048, "name": "large.png"}],
+    }
+
+    serialized = _serialize_content_for_db(content)
+
+    assert "large.png" in serialized
+    assert "'type': 'image'" in serialized
+    assert "'data': '" not in serialized
+
+
+def test_serialize_content_for_db_keeps_non_binary_media_data() -> None:
+    """非二进制媒体类型不参与裁剪，保持原始数据。"""
+    content = {
+        "media": [{"type": "file", "data": {"id": "file-001", "size": 99999}}],
+    }
+
+    serialized = _serialize_content_for_db(content)
+
+    assert "file-001" in serialized
+    assert "99999" in serialized

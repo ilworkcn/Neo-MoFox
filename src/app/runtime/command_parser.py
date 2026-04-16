@@ -26,12 +26,12 @@ class CommandParser:
     解析和执行用户输入的命令。
 
     支持的命令：
-    - /help: 显示帮助信息
+    - /help:   显示帮助信息
     - /status: 显示 Bot 状态
     - /reload [plugin_name]: 重新加载插件
-    - /stop: 停止 Bot
+    - /stop:   停止 Bot
     - /plugins: 列出所有插件及状态
-    - /tasks: 显示当前任务统计
+    - /tasks:  显示当前任务统计
     - /ui level [minimal|standard|verbose]: 调整 UI 级别
 
     Attributes:

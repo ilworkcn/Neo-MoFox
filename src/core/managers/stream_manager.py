@@ -29,6 +29,59 @@ if TYPE_CHECKING:
 
 logger = get_logger("stream_manager", display="StreamMgr")
 
+# 含原始二进制的媒体类型，序列化入库时仅在 payload 过大时剔除 data 字段
+_BINARY_MEDIA_TYPES: frozenset[str] = frozenset({"image", "emoji", "voice"})
+_MAX_MEDIA_DATA_BYTES = 1024
+
+
+def _get_content_size_bytes(content: Any) -> int:
+    """估算内容的 UTF-8 序列化字节数。"""
+    if isinstance(content, bytes):
+        return len(content)
+    if isinstance(content, str):
+        return len(content.encode("utf-8"))
+    return len(str(content).encode("utf-8"))
+
+
+def _strip_oversized_media_data(item: dict[str, Any]) -> dict[str, Any]:
+    """移除超出阈值的媒体 data 字段，保留其余元信息。"""
+    media_data = item.get("data")
+    if media_data is None:
+        return item
+
+    if _get_content_size_bytes(media_data) <= _MAX_MEDIA_DATA_BYTES:
+        return item
+
+    return {key: value for key, value in item.items() if key != "data"}
+
+
+def _serialize_content_for_db(content: Any) -> str:
+    """将消息 content 序列化为数据库存储字符串。
+
+    内存中的 content 字典可能包含图片/表情包/语音的原始 base64 数据（供 Chatter 多模态
+    使用），但这些数据不需要持久化，持久化会造成数据库存储暴涨。本函数在序列化前检查
+    image/emoji/voice 媒体项中的 ``data`` 实际大小，超过阈值时剔除该字段，其余元信息保留。
+    """
+    if not isinstance(content, dict):
+        return str(content)
+
+    media = content.get("media")
+    if not isinstance(media, list):
+        return str(content)
+
+    stripped_media = []
+    for item in media:
+        if not isinstance(item, dict):
+            continue
+
+        if item.get("type") in _BINARY_MEDIA_TYPES:
+            stripped_media.append(_strip_oversized_media_data(item))
+            continue
+
+        stripped_media.append(item)
+
+    return str({**content, "media": stripped_media})
+
 
 class StreamManager:
     """统一的聊天流管理器。
@@ -296,7 +349,7 @@ class StreamManager:
                 "person_id": person_id,
                 "time": message.time,
                 "message_type": message.message_type.value,
-                "content": str(message.content),
+                "content": _serialize_content_for_db(message.content),
                 "processed_plain_text": message.processed_plain_text,
                 "reply_to": message.reply_to,
                 "platform": message.platform,

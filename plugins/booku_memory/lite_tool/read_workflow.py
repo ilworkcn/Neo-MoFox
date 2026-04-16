@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime
 from typing import Annotated, Any, Literal, cast
 
@@ -219,7 +220,10 @@ class BookuMemoryReadTool(BaseTool):
                 grep_hit = await self._grep_probe(
                     layer=layer,
                     folder_id=cast(_FOLDER_IDS, folder_id),
-                    query_text=query_text,
+                    probe_tags=self._merge_probe_tags(
+                        core_tags=normalized_core,
+                        diffusion_tags=normalized_diffusion,
+                    ),
                     topk=topk,
                 )
                 if not grep_hit:
@@ -291,23 +295,48 @@ class BookuMemoryReadTool(BaseTool):
         *,
         layer: _LAYER_IDS,
         folder_id: _FOLDER_IDS,
-        query_text: str,
+        probe_tags: list[str],
         topk: int,
     ) -> bool:
-        """对候选 folder 做关键词预探测，减少无效 retrieve 调用。"""
+        """对候选 folder 做关键词预探测，减少无效 retrieve 调用。
+
+        使用聚合标签构建正则表达式，只要命中任意一个标签即视为探测成功。
+        """
+        regex_query = self._build_probe_regex(probe_tags)
+        if not regex_query:
+            return False
         include_archived = layer == "archived"
         success, result = await BookuMemoryGrepTool(self.plugin).execute(
-            query=query_text,
+            query=regex_query,
             scopes=["title", "summary", "tags", "content"],
             folder_id=folder_id,
             include_archived=include_archived,
             topk=topk,
-            use_regex=False,
+            use_regex=True,
         )
         if not success or not isinstance(result, dict):
             return False
         total = int(result.get("total", 0) or 0)
         return total > 0
+
+    @staticmethod
+    def _merge_probe_tags(*, core_tags: list[str], diffusion_tags: list[str]) -> list[str]:
+        """合并并去重探测标签，保持原有顺序。"""
+        merged: list[str] = []
+        for tag in [*core_tags, *diffusion_tags]:
+            normalized = str(tag).strip()
+            if not normalized or normalized in merged:
+                continue
+            merged.append(normalized)
+        return merged
+
+    @staticmethod
+    def _build_probe_regex(tags: list[str]) -> str:
+        """将标签列表转换为“任意命中即成功”的正则表达式。"""
+        escaped_tags = [re.escape(str(tag).strip()) for tag in tags if str(tag).strip()]
+        if not escaped_tags:
+            return ""
+        return "|".join(escaped_tags)
 
     async def _find_non_empty_folders(
         self,

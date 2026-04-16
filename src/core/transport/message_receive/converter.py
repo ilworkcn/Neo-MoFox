@@ -209,15 +209,20 @@ class MessageConverter:
         }
         if message.message_type in _MEDIA_TYPES:
             content = message.content
+            content_data: str
             if isinstance(content, str):
-                content_data: str | dict[str, Any] = content
+                content_data = content
             elif isinstance(content, dict):
                 # send_file 等 API 传入 dict（如 {"path": "...", "name": "..."}）
-                # FILE 类型取 path 字段作为数据
+                # FILE 类型取 path 字段作为数据；其他类型取 data/path/url
                 if message.message_type == MessageType.FILE:
                     content_data = content.get("path", "")
                 else:
-                    content_data = content
+                    content_data = (
+                        content.get("data", "")
+                        or content.get("path", "")
+                        or content.get("url", "")
+                    )
             else:
                 content_data = ""
             if content_data:
@@ -582,7 +587,7 @@ class MessageConverter:
         return type_mapping.get(first_media_type, MessageType.UNKNOWN)
 
     async def _recognize_media_with_manager(self, result: _ParseResult) -> _ParseResult:
-        """使用 MediaManager 识别媒体内容（图片、表情包）并更新文本描述。
+        """使用 MediaManager 识别媒体内容（图片、表情包、语音）并更新文本描述。
         
         Args:
             result: 解析结果
@@ -596,17 +601,20 @@ class MessageConverter:
             
             manager = get_media_manager()
             
-            # 收集需要识别的媒体（仅图片和表情包）
+            # 收集需要识别的媒体（图片、表情包、语音）
             media_to_recognize = []
+            voice_to_recognize = []
             for i, media in enumerate(result.media):
                 if media["type"] in ("image", "emoji"):
                     media_to_recognize.append((i, media))
+                elif media["type"] == "voice":
+                    voice_to_recognize.append((i, media))
             
             # 早退策略：没有待识别媒体就直接返回原结果
-            if not media_to_recognize:
+            if not media_to_recognize and not voice_to_recognize:
                 return result
             
-            # 批量识别并缓存描述
+            # 批量识别图片/表情包，并缓存描述
             descriptions = []
             for idx, media in media_to_recognize:
                 try:
@@ -616,18 +624,26 @@ class MessageConverter:
                         use_cache=True
                     )
                     descriptions.append((idx, description))
-                    
-                    # recognize_media 内部已经调用了 save_media_info，无需重复保存
                 except Exception as e:
                     logger.warning(f"识别{media['type']}失败: {e}")
                     descriptions.append((idx, None))
             
+            # 识别语音
+            voice_texts = []
+            for idx, media in voice_to_recognize:
+                try:
+                    text = await manager.recognize_voice(media["data"])
+                    voice_texts.append((idx, text))
+                except Exception as e:
+                    logger.warning(f"识别语音失败: {e}")
+                    voice_texts.append((idx, None))
+            
             # 将识别结果应用回 text_parts，替换占位符
             new_text_parts = []
             media_idx = 0
+            voice_idx = 0
             for part in result.text_parts:
                 if part in ("[图片]", "[表情包]"):
-                    # 找到对应的描述
                     if media_idx < len(descriptions):
                         _, description = descriptions[media_idx]
                         if description:
@@ -636,6 +652,16 @@ class MessageConverter:
                         else:
                             new_text_parts.append(part)
                         media_idx += 1
+                    else:
+                        new_text_parts.append(part)
+                elif part == "[语音]":
+                    if voice_idx < len(voice_texts):
+                        _, text = voice_texts[voice_idx]
+                        if text:
+                            new_text_parts.append(f"[语音:{text}]")
+                        else:
+                            new_text_parts.append(part)
+                        voice_idx += 1
                     else:
                         new_text_parts.append(part)
                 else:
@@ -676,14 +702,8 @@ class MessageConverter:
         # 文本消息直接提供纯字符串
         if message_type == MessageType.TEXT:
             return result.plain_text
-        
-        # 含媒体时返回一个包含文本和媒体列表的字典，保持兼容性
-        return {
-            "text": result.plain_text,
-            "media": result.media,
-        }
 
-        # 含媒体时返回结构化内容
+        # 含媒体时返回一个包含文本和媒体列表的字典，保持兼容性
         return {
             "text": result.plain_text,
             "media": result.media,
