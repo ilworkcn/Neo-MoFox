@@ -1292,3 +1292,98 @@ class TestEventBroadcast:
 
         finally:
             unsubscribe()
+
+
+class TestLogLevelDynamicUpdate:
+    """测试 logger 在 initialize_logger_system 后动态跟随全局日志级别。
+
+    核心场景：logger 在 initialize_logger_system 调用前就已创建，
+    此时 _global_config["log_level"] 仍为默认值 "DEBUG"；
+    后续 initialize_logger_system 更新为 "INFO" 时，
+    该 logger 的控制台输出应立即遵从新级别。
+    """
+
+    def test_logger_without_explicit_level_follows_global(self) -> None:
+        """无显式 log_level 的 logger 应动态跟随全局配置变化。"""
+        from src.kernel.logger import initialize_logger_system
+
+        initialize_logger_system(log_dir="logs", log_level="DEBUG", enable_file=False)
+
+        buf = StringIO()
+        log = Logger(name="dynamic_test", console=Console(file=buf), log_level=None)
+
+        assert log._use_global_level is True
+
+        log.debug("should appear at DEBUG")
+        assert "should appear at DEBUG" in buf.getvalue()
+
+        # 改变全局级别为 INFO
+        initialize_logger_system(log_dir="logs", log_level="INFO", enable_file=False)
+
+        buf2 = StringIO()
+        log.console = Console(file=buf2)
+        log.debug("should be filtered at INFO")
+        log.info("should appear at INFO")
+
+        out2 = buf2.getvalue()
+        assert "should be filtered at INFO" not in out2
+        assert "should appear at INFO" in out2
+
+    def test_logger_with_explicit_level_ignores_global_change(self) -> None:
+        """有显式 log_level 的 logger 不受全局配置变化影响。"""
+        from src.kernel.logger import initialize_logger_system
+
+        initialize_logger_system(log_dir="logs", log_level="DEBUG", enable_file=False)
+
+        log = Logger(name="explicit_test", console=Console(file=StringIO()), log_level="DEBUG")
+
+        assert log._use_global_level is False
+
+        initialize_logger_system(log_dir="logs", log_level="INFO", enable_file=False)
+
+        buf2 = StringIO()
+        log.console = Console(file=buf2)
+        log.debug("explicit debug still visible")
+
+        assert "explicit debug still visible" in buf2.getvalue()
+
+    def test_set_log_level_disables_global_tracking(self) -> None:
+        """显式调用 set_log_level 后不再跟随全局。"""
+        from src.kernel.logger import initialize_logger_system
+
+        initialize_logger_system(log_dir="logs", log_level="DEBUG", enable_file=False)
+
+        log = Logger(name="set_level_test", console=Console(file=StringIO()), log_level=None)
+        assert log._use_global_level is True
+
+        log.set_log_level("WARNING")
+        assert log._use_global_level is False
+
+        # 全局改为 DEBUG 也不影响该 logger
+        initialize_logger_system(log_dir="logs", log_level="DEBUG", enable_file=False)
+
+        buf2 = StringIO()
+        log.console = Console(file=buf2)
+        log.info("info should be filtered by WARNING")
+        assert "info should be filtered by WARNING" not in buf2.getvalue()
+
+    def test_get_logger_without_log_level_uses_global_dynamically(self) -> None:
+        """get_logger 不传 log_level 时，logger 动态跟随全局级别。"""
+        from src.kernel.logger import initialize_logger_system, clear_all_loggers
+
+        clear_all_loggers()
+        initialize_logger_system(log_dir="logs", log_level="WARNING", enable_file=False)
+
+        buf = StringIO()
+        log = get_logger("dynamic_get_test", console=Console(file=buf))
+        assert log._use_global_level is True
+
+        log.info("info filtered")
+        assert "info filtered" not in buf.getvalue()
+
+        # 全局改为 INFO，再写入
+        initialize_logger_system(log_dir="logs", log_level="INFO", enable_file=False)
+        buf2 = StringIO()
+        log.console = Console(file=buf2)
+        log.info("info visible after global change")
+        assert "info visible after global change" in buf2.getvalue()

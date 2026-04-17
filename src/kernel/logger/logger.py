@@ -154,7 +154,10 @@ class Logger:
         self._enable_file = enable_file
         self._enable_event_broadcast = enable_event_broadcast
 
-        # 设置日志等级（优先使用传入的，否则使用全局配置）
+        # 设置日志等级
+        # _use_global_level=True 时，_should_log 动态读取 _global_config，
+        # 确保 initialize_logger_system 调整级别后已创建的 logger 也能响应。
+        self._use_global_level: bool = log_level is None
         with _config_lock:
             self._log_level = (log_level or _global_config["log_level"]).upper()
 
@@ -363,18 +366,26 @@ class Logger:
         Returns:
             bool: 是否应该输出
         """
+        if self._use_global_level:
+            with _config_lock:
+                current_level = _global_config["log_level"]
+        else:
+            current_level = self._log_level
         level_priority = _LOG_LEVEL_PRIORITY.get(level.upper(), 0)
-        current_priority = _LOG_LEVEL_PRIORITY.get(self._log_level, 0)
+        current_priority = _LOG_LEVEL_PRIORITY.get(current_level, 0)
         return level_priority >= current_priority
 
     def set_log_level(self, level: str) -> None:
         """设置日志等级
+
+        显式调用后不再跟随全局配置变更。
 
         Args:
             level: 日志等级（DEBUG, INFO, WARNING, ERROR, CRITICAL）
         """
         with self._lock:
             self._log_level = level.upper()
+            self._use_global_level = False
 
     def get_log_level(self) -> str:
         """获取当前日志等级
@@ -586,8 +597,7 @@ def get_logger(
                     enable_event_broadcast if enable_event_broadcast is not None 
                     else _global_config["enable_event_broadcast"]
                 )
-                actual_log_level = log_level if log_level is not None else _global_config["log_level"]
-                actual_color = color if color is not None else _get_default_logger_color_by_name(name)
+            actual_color = color if color is not None else _get_default_logger_color_by_name(name)
             
             _loggers[name] = Logger(
                 name=name,
@@ -596,7 +606,7 @@ def get_logger(
                 console=console,
                 enable_file=actual_enable_file,
                 enable_event_broadcast=actual_enable_event_broadcast,
-                log_level=actual_log_level,
+                log_level=log_level,  # None 时 Logger 自动跟随全局配置
             )
         return _loggers[name]
 
