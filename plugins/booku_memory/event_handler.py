@@ -48,7 +48,7 @@ class BookuMemoryStartupIngestHandler(BaseEventHandler):
     handler_description: str = "程序启动时按配置路径自动导入文档到本地知识库"
     weight: int = 5
     intercept_message: bool = False
-    init_subscribe: list[EventType | str] = [EventType.ON_ALL_PLUGIN_LOADED]
+    init_subscribe: list[EventType | str] = [EventType.ON_START]
     dependencies: list[str] = []
 
     def _get_config(self) -> BookuMemoryConfig:
