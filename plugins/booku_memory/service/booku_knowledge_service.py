@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import re
@@ -67,6 +68,16 @@ def _collect_unique_titles(records: list[Any]) -> list[str]:
     titles: list[str] = []
     for record in records:
         title = _normalize_document_title(str(getattr(record, "title", "") or ""))
+        if title and title not in titles:
+            titles.append(title)
+    return titles
+
+
+def _collect_unique_titles_from_strings(raw_titles: list[str]) -> list[str]:
+    """从字符串列表中提取去重后的文档标题（去掉片段后缀）。"""
+    titles: list[str] = []
+    for raw in raw_titles:
+        title = _normalize_document_title(raw)
         if title and title not in titles:
             titles.append(title)
     return titles
@@ -545,16 +556,11 @@ async def build_booku_knowledge_actor_reminder(plugin: Any) -> str:
     repo = BookuMemoryMetadataRepository(db_path=config.storage.metadata_db_path)
     await repo.initialize()
     try:
-        records = await repo.list_records_by_bucket(
-            bucket="knowledge",
-            folder_id="default",
-            limit=800,
-            include_deleted=False,
-        )
+        raw_titles = await repo.list_knowledge_chunk_titles(folder_id="default")
     finally:
         await repo.close()
 
-    titles = _collect_unique_titles(records)
+    titles = _collect_unique_titles_from_strings(raw_titles)
 
     if not titles:
         return ""
@@ -713,9 +719,10 @@ class BookuKnowledgeService(BaseService):
         repo = self._create_repo()
         await repo.initialize()
         try:
-            embeddings = [
-                await memory_service._embed_text(chunk.content) for chunk in chunk_drafts
-            ]
+            embeddings: list[list[float]] = []
+            for chunk in chunk_drafts:
+                embeddings.append(await memory_service._embed_text(chunk.content))
+                await asyncio.sleep(0.1)
             now = time.time()
             ids: list[str] = []
             docs: list[str] = []
@@ -781,8 +788,13 @@ class BookuKnowledgeService(BaseService):
         }
 
     async def export_document_titles(self) -> list[str]:
-        records = await self._list_knowledge_records(limit=1000)
-        return _collect_unique_titles(records)
+        repo = self._create_repo()
+        await repo.initialize()
+        try:
+            raw_titles = await repo.list_knowledge_chunk_titles(folder_id="default")
+        finally:
+            await repo.close()
+        return _collect_unique_titles_from_strings(raw_titles)
 
     async def dump_documents(self, *, limit: int = 100) -> dict[str, Any]:
         """导出知识库文档内容(该方法导出所有文档数据，未封装进tool)

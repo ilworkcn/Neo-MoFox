@@ -6,7 +6,9 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Self
 
-from .exceptions import LLMConfigurationError, classify_exception
+from src.kernel.logger import get_logger
+
+from .exceptions import LLMAPIError, LLMConfigurationError, LLMRateLimitError, LLMTimeoutError, classify_exception
 from .model_client import ModelClientRegistry
 from .monitor import RequestMetrics, RequestTimer, get_global_collector
 from .policy import create_default_policy
@@ -14,6 +16,8 @@ from .policy.base import Policy
 from .request import _validate_model_entry, _validate_model_set
 from .types import ModelSet, RequestType
 from .embedding_response import EmbeddingResponse
+
+logger = get_logger("kernel.llm.embedding", display="LLM Embedding")
 
 
 @dataclass(slots=True)
@@ -102,6 +106,32 @@ class EmbeddingRequest:
             except BaseException as e:
                 classified_error = classify_exception(e, model=model_identifier)
                 last_error = classified_error
+
+                _err_type = type(classified_error).__name__
+                if isinstance(classified_error, asyncio.CancelledError):
+                    logger.debug(
+                        f"Embedding 请求被取消: model={model_identifier}, request={self.request_name or '__default__'}",
+                        exc_info=True,
+                    )
+                elif (
+                    isinstance(classified_error, (LLMTimeoutError, LLMRateLimitError, TimeoutError))
+                    or (isinstance(classified_error, LLMAPIError) and classified_error.status_code is None)
+                ):
+                    logger.warning(
+                        f"Embedding 请求暂时失败: model={model_identifier}, "
+                        f"request={self.request_name or '__default__'}, error_type={_err_type}"
+                    )
+                    logger.debug(
+                        f"Embedding 请求暂时失败（详情）: model={model_identifier}, "
+                        f"request={self.request_name or '__default__'}, reason={classified_error}",
+                        exc_info=True,
+                    )
+                else:
+                    logger.error(
+                        f"Embedding 请求失败: model={model_identifier}, request={self.request_name or '__default__'}, "
+                        f"error_type={_err_type}, reason={classified_error}",
+                        exc_info=True,
+                    )
 
                 if self.enable_metrics:
                     metrics = RequestMetrics(

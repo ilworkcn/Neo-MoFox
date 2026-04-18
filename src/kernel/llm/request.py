@@ -349,7 +349,11 @@ class LLMRequest:
                         f"LLM 请求被取消: model={model_identifier}, request={self.request_name or '__default__'}",
                         exc_info=True,
                     )
-                elif isinstance(classified_error, (LLMTimeoutError, LLMRateLimitError, TimeoutError)) or _5xx_status_code is not None:
+                elif (
+                    isinstance(classified_error, (LLMTimeoutError, LLMRateLimitError, TimeoutError))
+                    or _5xx_status_code is not None
+                    or (isinstance(classified_error, LLMAPIError) and classified_error.status_code is None)
+                ):
                     _status_hint = f", status_code={_5xx_status_code}" if _5xx_status_code is not None else ""
                     logger.warning(
                         f"LLM 请求暂时失败: model={model_identifier}, "
