@@ -1,6 +1,6 @@
 """LLM payload models."""
 
-from .content import Audio, Content, File, Image, Text
+from .content import Audio, Content, File, Image, Text, Video
 from .payload import LLMPayload
 from .tooling import LLMUsable, ToolCall, ToolResult, ToolRegistry
 
@@ -9,6 +9,7 @@ __all__ = [
 	"Text",
 	"Image",
 	"Audio",
+	"Video",
 	"File",
 	"ToolResult",
 	"ToolCall",

@@ -204,3 +204,28 @@ class Audio(File):
         """返回对象的字符串表示。"""
         preview = self.value[:16] + "..." if len(self.value) > 16 else self.value
         return f"Audio(value={preview!r})"
+
+
+class Video(File):
+    """视频内容，用于多模态 LLM。
+
+    继承自 :class:`File`，在构造时将输入统一规范化为纯 base64 字符串。
+
+    支持与 :class:`File` 完全相同的三种输入形式：
+
+    - **文件路径**（``str`` 或 ``Path``）：读取视频文件并 base64 编码。
+    - **文件对象**（``BinaryIO``）：读取并编码。
+    - **base64 / data URL / base64| 字符串**：剥离前缀后存储纯 base64。
+
+    示例::
+
+        v1 = Video("clip.mp4")                             # 文件路径
+        v2 = Video(open("clip.mp4", "rb"))                 # 文件对象
+        v3 = Video("data:video/mp4;base64,AAAAB...")       # data URL
+        v4 = Video("AAAAB...")                             # 纯 base64 字符串
+    """
+
+    def __repr__(self) -> str:
+        """返回对象的字符串表示。"""
+        preview = self.value[:16] + "..." if len(self.value) > 16 else self.value
+        return f"Video(value={preview!r})"

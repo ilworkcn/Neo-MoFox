@@ -31,6 +31,7 @@ from .payload import (
 	ToolCall,
 	ToolResult,
 	ToolRegistry,
+	Video,
 )
 
 from .monitor import (
@@ -76,6 +77,7 @@ __all__ = [
 	"Text",
 	"Image",
 	"Audio",
+	"Video",
 	# 工具相关
 	"ToolResult",
 	"ToolCall",

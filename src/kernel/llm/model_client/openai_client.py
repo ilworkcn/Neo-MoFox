@@ -22,6 +22,7 @@ from src.kernel.llm.tool_call_compat import (
 
 from ..exceptions import LLMConfigurationError, LLMContentFilterError
 from ..payload import Image, LLMPayload, Text, ToolCall, ToolResult
+from ..payload.content import Video
 from ..roles import ROLE
 from ..token_counter import count_payload_tokens
 from .base import StreamEvent
@@ -365,6 +366,9 @@ def _payloads_to_openai_messages(
             elif isinstance(part, Image):
                 url = _image_to_data_url(part.value)
                 parts.append({"type": "image_url", "image_url": {"url": url}})
+            elif isinstance(part, Video):
+                data_url = f"data:video/mp4;base64,{part.value}"
+                parts.append({"type": "image_url", "image_url": {"url": data_url}})
             else:
                 parts.append({"type": "text", "text": str(part)})
 
