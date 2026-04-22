@@ -665,7 +665,7 @@ class DefaultChatterPlugin(BasePlugin):
     """默认聊天插件"""
 
     plugin_name = "default_chatter"
-    plugin_version = "1.0.0"
+    plugin_version = "1.1.0-alpha"
     plugin_author = "MoFox Team"
     plugin_description = "默认聊天组件，提供基础的消息处理和回复功能"
     configs = [DefaultChatterConfig]
