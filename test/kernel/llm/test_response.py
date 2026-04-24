@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from src.kernel.llm.exceptions import LLMResponseConsumedError
 from src.kernel.llm.model_client.base import StreamEvent
-from src.kernel.llm.payload import LLMPayload, Text
+from src.kernel.llm.payload import LLMPayload, ReasoningText, Text, ToolCall
 from src.kernel.llm.request import LLMRequest
 from src.kernel.llm.response import LLMResponse, _ToolCallAccumulator
 from src.kernel.llm.roles import ROLE
@@ -551,6 +551,61 @@ class TestLLMResponseSend:
             assert mock_send.called
             call_kwargs = mock_send.call_args.kwargs
             assert call_kwargs["stream"] is False
+
+    @pytest.mark.asyncio
+    async def test_send_appends_current_response_before_follow_up(
+        self, mock_model_set: list[dict[str, Any]], sample_payloads: list[LLMPayload]
+    ) -> None:
+        """Test that send includes the current assistant response in the next request payloads."""
+        captured_payloads: list[LLMPayload] = []
+
+        async def fake_send(
+            request_self: LLMRequest,
+            *,
+            auto_append_response: bool = True,
+            stream: bool = True,
+        ) -> LLMResponse:
+            del auto_append_response, stream
+            captured_payloads.extend(request_self.payloads)
+            return LLMResponse(
+                _stream=None,
+                _upper=request_self,
+                _auto_append_response=False,
+                payloads=list(request_self.payloads),
+                model_set=mock_model_set,
+                message="Chained response",
+                call_list=[],
+            )
+
+        response = LLMResponse(
+            _stream=None,
+            _upper=LLMRequest(mock_model_set, "test"),
+            _auto_append_response=False,
+            payloads=list(sample_payloads),
+            model_set=mock_model_set,
+            message="Test",
+            reasoning_content="Thinking",
+            call_list=[ToolCall(id="call_1", name="demo_tool", args={"value": 1})],
+        )
+
+        with patch.object(LLMRequest, "send", new=fake_send):
+            await response.send(stream=False)
+
+        assert captured_payloads
+        assistant_payload = captured_payloads[-1]
+        assert assistant_payload.role == ROLE.ASSISTANT
+        assert any(
+            isinstance(part, ReasoningText) and part.text == "Thinking"
+            for part in assistant_payload.content
+        )
+        assert any(
+            isinstance(part, Text) and part.text == "Test"
+            for part in assistant_payload.content
+        )
+        assert any(
+            isinstance(part, ToolCall) and part.id == "call_1"
+            for part in assistant_payload.content
+        )
 
 
 class TestLLMResponseStreamWithCallback:

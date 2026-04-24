@@ -12,6 +12,7 @@ import pytest
 from src.kernel.llm import (
     Image,
     LLMPayload,
+    ReasoningText,
     ROLE,
     Text,
     ToolCall,
@@ -116,6 +117,21 @@ class TestPayloadsToOpenAIMessages:
         assert len(messages) == 1
         assert messages[0]["role"] == "assistant"
         assert messages[0]["content"] == "Hi there"
+
+    def test_assistant_message_with_reasoning_content(self):
+        """测试助手消息会保留 reasoning_content。"""
+        from src.kernel.llm.model_client.openai_client import _payloads_to_openai_messages
+
+        payloads = [
+            LLMPayload(ROLE.ASSISTANT, [ReasoningText("先想一下"), Text("再回答")])
+        ]
+        messages, tools = _payloads_to_openai_messages(payloads)
+
+        assert len(messages) == 1
+        assert len(tools) == 0
+        assert messages[0]["role"] == "assistant"
+        assert messages[0]["content"] == "再回答"
+        assert messages[0]["reasoning_content"] == "先想一下"
 
     def test_multimodal_content(self):
         """测试多模态内容（文本+图片）。"""
@@ -433,7 +449,7 @@ class TestOpenAIChatClient:
             "extra_params": {},
         }
 
-        message, tool_calls, stream_iter = await client.create(
+        message, tool_calls, stream_iter, reasoning_content = await client.create(
             model_name="gpt-4",
             payloads=payloads,
             tools=[],
@@ -445,6 +461,7 @@ class TestOpenAIChatClient:
         assert message == "Hello, world!"
         assert tool_calls == []
         assert stream_iter is None
+        assert reasoning_content is None
 
     @pytest.mark.asyncio
     async def test_create_with_tool_calls(self):
@@ -482,7 +499,7 @@ class TestOpenAIChatClient:
             "extra_params": {},
         }
 
-        message, tool_calls, stream_iter = await client.create(
+        message, tool_calls, stream_iter, reasoning_content = await client.create(
             model_name="gpt-4",
             payloads=payloads,
             tools=[],
@@ -497,6 +514,7 @@ class TestOpenAIChatClient:
         assert tool_calls[0]["id"] == "call_123"
         assert tool_calls[0]["name"] == "calculator"
         assert tool_calls[0]["args"] == {"a": 1, "b": 2}
+        assert reasoning_content is None
 
     @pytest.mark.asyncio
     async def test_create_omits_tool_choice_without_tool_payloads(self):
@@ -771,6 +789,157 @@ class TestOpenAIChatClient:
         assert tool_call_message["reasoning_content"] == tool_call_message["content"]
 
     @pytest.mark.asyncio
+    async def test_create_backfills_reasoning_content_when_history_already_contains_it(self):
+        """测试当上下文中已有 reasoning_content 时，会为其他 assistant 历史回填。"""
+        from src.kernel.llm.model_client.openai_client import OpenAIChatClient
+
+        mock_completion = MagicMock()
+        mock_completion.choices = [MagicMock()]
+        mock_completion.choices[0].message.content = "OK"
+        mock_completion.choices[0].message.tool_calls = None
+
+        mock_chat = AsyncMock()
+        mock_chat.completions.create = AsyncMock(return_value=mock_completion)
+
+        mock_openai_client = MagicMock()
+        mock_openai_client.chat.completions.create = mock_chat.completions.create
+
+        client = OpenAIChatClient()
+        client._clients = {}
+        client._get_client = MagicMock(return_value=mock_openai_client)
+
+        payloads = [
+            LLMPayload(ROLE.USER, Text("Hi")),
+            LLMPayload(ROLE.ASSISTANT, [ReasoningText("先思考"), Text("已有思考回复")]),
+            LLMPayload(
+                ROLE.ASSISTANT,
+                [
+                    Text("I'll call a tool"),
+                    ToolCall(id="call_1", name="calculator", args={"a": 1}),
+                ],
+            ),
+        ]
+        model_set = {
+            "api_key": "test-key",
+            "base_url": None,
+            "timeout": None,
+            "max_tokens": None,
+            "temperature": None,
+            "extra_params": {},
+        }
+
+        await client.create(
+            model_name="gpt-4",
+            payloads=payloads,
+            tools=[],
+            request_name="test",
+            model_set=model_set,
+            stream=False,
+        )
+
+        call_kwargs = mock_chat.completions.create.call_args.kwargs
+        messages = call_kwargs["messages"]
+        first_assistant_message = messages[1]
+        tool_call_message = messages[2]
+        assert first_assistant_message["reasoning_content"] == "先思考"
+        assert tool_call_message["role"] == "assistant"
+        assert tool_call_message["reasoning_content"] == tool_call_message["content"]
+
+    @pytest.mark.asyncio
+    async def test_create_does_not_backfill_reasoning_content_without_reasoning_history(self):
+        """测试当历史中没有 reasoning_content 时，不会额外回填。"""
+        from src.kernel.llm.model_client.openai_client import OpenAIChatClient
+
+        mock_completion = MagicMock()
+        mock_completion.choices = [MagicMock()]
+        mock_completion.choices[0].message.content = "OK"
+        mock_completion.choices[0].message.tool_calls = None
+
+        mock_chat = AsyncMock()
+        mock_chat.completions.create = AsyncMock(return_value=mock_completion)
+
+        mock_openai_client = MagicMock()
+        mock_openai_client.chat.completions.create = mock_chat.completions.create
+
+        client = OpenAIChatClient()
+        client._clients = {}
+        client._get_client = MagicMock(return_value=mock_openai_client)
+
+        payloads = [
+            LLMPayload(ROLE.USER, Text("Hi")),
+            LLMPayload(
+                ROLE.ASSISTANT,
+                [
+                    Text("I'll call a tool"),
+                    ToolCall(id="call_1", name="calculator", args={"a": 1}),
+                ],
+            ),
+        ]
+        model_set = {
+            "api_key": "test-key",
+            "base_url": None,
+            "timeout": None,
+            "max_tokens": None,
+            "temperature": None,
+            "extra_params": {},
+        }
+
+        await client.create(
+            model_name="gpt-4",
+            payloads=payloads,
+            tools=[],
+            request_name="test",
+            model_set=model_set,
+            stream=False,
+        )
+
+        call_kwargs = mock_chat.completions.create.call_args.kwargs
+        messages = call_kwargs["messages"]
+        tool_call_message = messages[1]
+        assert tool_call_message["role"] == "assistant"
+        assert "reasoning_content" not in tool_call_message
+
+    @pytest.mark.asyncio
+    async def test_create_preserves_reasoning_content_from_completion_message(self):
+        """测试非流式响应中的 reasoning_content 会被返回。"""
+        from src.kernel.llm.model_client.openai_client import OpenAIChatClient
+
+        mock_completion = MagicMock()
+        mock_completion.choices = [MagicMock()]
+        mock_completion.choices[0].message.content = "最终回答"
+        mock_completion.choices[0].message.reasoning_content = "中间思考"
+        mock_completion.choices[0].message.tool_calls = None
+
+        mock_chat = AsyncMock()
+        mock_chat.completions.create = AsyncMock(return_value=mock_completion)
+
+        mock_openai_client = MagicMock()
+        mock_openai_client.chat.completions.create = mock_chat.completions.create
+
+        client = OpenAIChatClient()
+        client._clients = {}
+        client._get_client = MagicMock(return_value=mock_openai_client)
+
+        result = await client.create(
+            model_name="moonshotai/kimi-k2.5",
+            payloads=[LLMPayload(ROLE.USER, Text("Hi"))],
+            tools=[],
+            request_name="test",
+            model_set={
+                "api_key": "test-key",
+                "base_url": None,
+                "timeout": None,
+                "max_tokens": None,
+                "temperature": None,
+                "extra_params": {"enable_thinking": True},
+            },
+            stream=False,
+        )
+
+        assert result[0] == "最终回答"
+        assert result[3] == "中间思考"
+
+    @pytest.mark.asyncio
     async def test_default_tool_choice_is_auto_for_deepseek(self):
         """测试 DeepSeek 场景下默认 tool_choice 为 auto（避免 required 触发 grammar 编译失败）。"""
         from src.kernel.llm.model_client.openai_client import OpenAIChatClient
@@ -925,7 +1094,7 @@ class TestOpenAIChatClient:
             "extra_params": {},
         }
 
-        message, tool_calls, _ = await client.create(
+        message, tool_calls, _, reasoning_content = await client.create(
             model_name="gpt-4",
             payloads=payloads,
             tools=[],
@@ -945,6 +1114,7 @@ class TestOpenAIChatClient:
         assert len(tool_calls) == 1
         assert tool_calls[0]["name"] == "calculator"
         assert tool_calls[0]["args"] == {"a": 1}
+        assert reasoning_content is None
 
     @pytest.mark.asyncio
     async def test_stream_iterator_closes_underlying_stream_on_early_stop(self):
@@ -1001,7 +1171,7 @@ class TestOpenAIChatClient:
             "extra_params": {},
         }
 
-        message, tool_calls, stream_iter = await client.create(
+        message, tool_calls, stream_iter, reasoning_content = await client.create(
             model_name="gpt-4",
             payloads=payloads,
             tools=[],
@@ -1013,6 +1183,7 @@ class TestOpenAIChatClient:
         assert message is None
         assert tool_calls is None
         assert stream_iter is not None
+        assert reasoning_content is None
 
         event = await anext(stream_iter)
         assert event.text_delta == "hello"
