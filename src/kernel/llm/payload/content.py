@@ -154,6 +154,13 @@ class Text(Content):
     text: str
 
 
+@dataclass(frozen=True, slots=True)
+class ReasoningText(Content):
+    """思维链/推理内容。"""
+
+    text: str
+
+
 class Image(File):
     """图片内容。
 
@@ -204,3 +211,54 @@ class Audio(File):
         """返回对象的字符串表示。"""
         preview = self.value[:16] + "..." if len(self.value) > 16 else self.value
         return f"Audio(value={preview!r})"
+
+
+class Video(File):
+    """视频内容，用于多模态 LLM。
+
+    继承自 :class:`File`，在构造时将输入统一规范化为纯 base64 字符串。
+    同时记录 MIME 类型（默认 ``video/mp4``），可从 data URL 自动推断。
+
+    支持与 :class:`File` 完全相同的三种输入形式：
+
+    - **文件路径**（``str`` 或 ``Path``）：读取视频文件并 base64 编码。
+    - **文件对象**（``BinaryIO``）：读取并编码。
+    - **base64 / data URL / base64| 字符串**：剥离前缀后存储纯 base64。
+
+    示例::
+
+        v1 = Video("clip.mp4")                             # 文件路径，默认 video/mp4
+        v2 = Video("clip.webm", mime_type="video/webm")    # 指定 MIME 类型
+        v3 = Video(open("clip.mp4", "rb"))                 # 文件对象
+        v4 = Video("data:video/webm;base64,AAAAB...")      # data URL，自动推断 mime_type
+        v5 = Video("AAAAB...")                             # 纯 base64 字符串
+    """
+
+    __slots__ = ("value", "mime_type")
+
+    mime_type: str
+
+    def __init__(
+        self,
+        source: Union[str, "PathLike[str]", BinaryIO],
+        mime_type: str = "video/mp4",
+    ) -> None:
+        """构造 Video 实例。
+
+        Args:
+            source: 文件路径（str/Path）、文件对象（BinaryIO）或 base64/data URL 字符串。
+            mime_type: 视频 MIME 类型，默认 ``video/mp4``。
+                当 source 为 data URL 时，会自动从中提取 MIME 类型并忽略此参数。
+        """
+        # 从 data URL 自动提取 mime_type
+        if isinstance(source, str) and source.startswith("data:") and ";base64," in source:
+            extracted = source.split(";", 1)[0][len("data:"):]
+            if extracted:
+                mime_type = extracted
+        super().__init__(source)
+        object.__setattr__(self, "mime_type", mime_type)
+
+    def __repr__(self) -> str:
+        """返回对象的字符串表示。"""
+        preview = self.value[:16] + "..." if len(self.value) > 16 else self.value
+        return f"Video(mime_type={self.mime_type!r}, value={preview!r})"

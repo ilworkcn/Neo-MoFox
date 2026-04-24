@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
-from src.kernel.llm.payload.content import Audio, Content, File, Image, Text
+from src.kernel.llm.payload.content import Audio, Content, File, Image, Text, Video
 
 
 class TestContent:
@@ -355,3 +355,64 @@ class TestMixedContent:
         assert len(content_list) == 2
         assert any(isinstance(c, Text) for c in content_list)
         assert any(isinstance(c, Image) for c in content_list)
+
+
+class TestVideo:
+    """Test cases for Video content."""
+
+    def test_video_default_mime_type(self) -> None:
+        """Test that Video defaults to video/mp4 MIME type."""
+        b64 = base64.b64encode(b"fake_video_data").decode("utf-8")
+        video = Video(b64)
+        assert video.mime_type == "video/mp4"
+        assert video.value == b64
+
+    def test_video_infers_mime_type_from_data_url(self) -> None:
+        """Test that Video infers MIME type from data URL."""
+        b64 = base64.b64encode(b"fake_video_data").decode("utf-8")
+        video = Video(f"data:video/webm;base64,{b64}")
+        assert video.mime_type == "video/webm"
+        assert video.value == b64
+
+    def test_video_explicit_mime_type(self) -> None:
+        """Test that Video accepts explicit MIME type."""
+        b64 = base64.b64encode(b"fake_video_data").decode("utf-8")
+        video = Video(b64, mime_type="video/mov")
+        assert video.mime_type == "video/mov"
+
+    def test_video_creation_with_file_path(self, tmp_path: Path) -> None:
+        """Test creating Video with a file path."""
+        video_file = tmp_path / "clip.mp4"
+        video_file.write_bytes(b"\x00\x00\x00\x18ftyp")
+        video = Video(str(video_file))
+        assert video.value == base64.b64encode(b"\x00\x00\x00\x18ftyp").decode("utf-8")
+        assert video.mime_type == "video/mp4"
+
+    def test_video_creation_from_bytesio(self) -> None:
+        """Test creating Video from a BytesIO object."""
+        data = b"fake_video_bytes"
+        video = Video(BytesIO(data))
+        assert video.value == base64.b64encode(data).decode("utf-8")
+
+    def test_video_is_content_subclass(self) -> None:
+        """Test that Video is a Content subclass."""
+        b64 = base64.b64encode(b"x").decode("utf-8")
+        assert isinstance(Video(b64), Content)
+
+    def test_video_is_file_subclass(self) -> None:
+        """Test that Video is also a File subclass."""
+        b64 = base64.b64encode(b"x").decode("utf-8")
+        assert isinstance(Video(b64), File)
+
+    def test_video_is_frozen(self) -> None:
+        """Test that Video is frozen (immutable)."""
+        b64 = base64.b64encode(b"x").decode("utf-8")
+        video = Video(b64)
+        with pytest.raises(AttributeError):
+            video.value = "modified"  # type: ignore[misc]
+
+    def test_video_repr_includes_mime_type(self) -> None:
+        """Test that repr includes mime_type."""
+        b64 = base64.b64encode(b"x").decode("utf-8")
+        video = Video(b64, mime_type="video/webm")
+        assert "video/webm" in repr(video)

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import math
 import re
 import time
 import uuid
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -24,6 +27,18 @@ logger = get_logger("booku_knowledge_service")
 
 _KNOWLEDGE_REMINDER_BUCKET = "actor"
 _KNOWLEDGE_REMINDER_NAME = "专业知识引导语"
+_SEMANTIC_CONTINUE_SIMILARITY = 0.68
+_SEMANTIC_MIN_TITLE_MERGE_SIMILARITY = 0.56
+_SHORT_CHUNK_RATIO = 0.35
+_TITLE_MAX_CHARS = 64
+
+
+@dataclass(slots=True)
+class _ChunkDraft:
+    """知识块草稿，包含标题与正文。"""
+
+    title: str
+    content: str
 
 
 def _create_memory_service(plugin: Any) -> BookuMemoryService:
@@ -53,6 +68,16 @@ def _collect_unique_titles(records: list[Any]) -> list[str]:
     titles: list[str] = []
     for record in records:
         title = _normalize_document_title(str(getattr(record, "title", "") or ""))
+        if title and title not in titles:
+            titles.append(title)
+    return titles
+
+
+def _collect_unique_titles_from_strings(raw_titles: list[str]) -> list[str]:
+    """从字符串列表中提取去重后的文档标题（去掉片段后缀）。"""
+    titles: list[str] = []
+    for raw in raw_titles:
+        title = _normalize_document_title(raw)
         if title and title not in titles:
             titles.append(title)
     return titles
@@ -192,6 +217,292 @@ def _split_document_into_chunks(
     return compacted
 
 
+def _split_markdown_by_structure(
+    text: str,
+    *,
+    max_chunk_chars: int,
+    overlap_chars: int,
+) -> list[_ChunkDraft]:
+    """按 Markdown 标题结构切分文档。"""
+    normalized = _normalize_text(text)
+    if not normalized:
+        return []
+
+    heading_pattern = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+    heading_stack: list[str] = []
+    current_section_title = "导言"
+    section_lines: list[str] = []
+    section_items: list[tuple[str, str]] = []
+
+    def flush_section() -> None:
+        section_body = "\n".join(section_lines).strip()
+        if section_body:
+            section_items.append((current_section_title, section_body))
+
+    for raw_line in normalized.split("\n"):
+        line = raw_line.rstrip()
+        matched = heading_pattern.match(line)
+        if not matched:
+            section_lines.append(line)
+            continue
+
+        flush_section()
+        section_lines = []
+        level = len(matched.group(1))
+        heading_text = matched.group(2).strip("# ").strip()
+        if not heading_text:
+            heading_text = f"章节{level}"
+
+        while len(heading_stack) >= level:
+            heading_stack.pop()
+        heading_stack.append(heading_text)
+        current_section_title = "：".join(heading_stack)
+
+    flush_section()
+
+    chunk_items: list[_ChunkDraft] = []
+    for section_title, section_body in section_items:
+        pieces = _split_document_into_chunks(
+            section_body,
+            max_chunk_chars=max_chunk_chars,
+            overlap_chars=overlap_chars,
+        )
+        for index, piece in enumerate(pieces, start=1):
+            title = section_title if len(pieces) == 1 else f"{section_title}（{index}）"
+            chunk_items.append(_ChunkDraft(title=_sanitize_title(title), content=piece))
+
+    return chunk_items
+
+
+def _split_text_to_semantic_units(text: str) -> list[str]:
+    """将文档拆分为语义单元（优先段落，其次句子）。"""
+    normalized = _normalize_text(text)
+    if not normalized:
+        return []
+
+    units: list[str] = []
+    paragraphs = [
+        part.strip() for part in re.split(r"\n\s*\n", normalized) if part.strip()
+    ]
+    sentence_pattern = re.compile(r"(?<=[。！？!?；;\.])\s+")
+    for paragraph in paragraphs:
+        if len(paragraph) <= 260:
+            units.append(paragraph)
+            continue
+        sentences = [s.strip() for s in sentence_pattern.split(paragraph) if s.strip()]
+        if len(sentences) <= 1:
+            units.append(paragraph)
+            continue
+        units.extend(sentences)
+    return units
+
+
+def _cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
+    """计算两条向量的余弦相似度。"""
+    if not vec1 or not vec2:
+        return 0.0
+    length = min(len(vec1), len(vec2))
+    if length <= 0:
+        return 0.0
+    dot = sum(vec1[i] * vec2[i] for i in range(length))
+    norm1 = math.sqrt(sum(vec1[i] * vec1[i] for i in range(length)))
+    norm2 = math.sqrt(sum(vec2[i] * vec2[i] for i in range(length)))
+    if norm1 <= 1e-12 or norm2 <= 1e-12:
+        return 0.0
+    return dot / (norm1 * norm2)
+
+
+def _mean_embedding(vectors: list[list[float]]) -> list[float]:
+    """计算向量集合的平均向量。"""
+    if not vectors:
+        return []
+    base_len = len(vectors[0])
+    if base_len == 0:
+        return []
+    sums = [0.0] * base_len
+    for vector in vectors:
+        if len(vector) < base_len:
+            continue
+        for idx in range(base_len):
+            sums[idx] += vector[idx]
+    count = max(1, len(vectors))
+    return [value / count for value in sums]
+
+
+def _build_semantic_title(text: str) -> str:
+    """根据块内容生成简洁标题。"""
+    normalized = _normalize_text(text)
+    if not normalized:
+        return "未命名片段"
+
+    first_line = normalized.split("\n", 1)[0].strip()
+    if len(first_line) >= 8:
+        head = re.sub(r"[\s\t]+", " ", first_line)[:_TITLE_MAX_CHARS]
+    else:
+        head = ""
+    keywords = _extract_keywords(normalized, limit=3)
+    if keywords:
+        kw = " / ".join(keywords)
+        title = f"{head} | {kw}" if head else kw
+    else:
+        title = head or "知识片段"
+    return _sanitize_title(title[:_TITLE_MAX_CHARS])
+
+
+async def _split_document_semantically(
+    text: str,
+    *,
+    max_chunk_chars: int,
+    overlap_chars: int,
+    memory_service: BookuMemoryService,
+) -> list[_ChunkDraft]:
+    """通过句段 embedding 相似度进行语义分块。"""
+    units = _split_text_to_semantic_units(text)
+    if not units:
+        return []
+
+    unit_vectors = [await memory_service._embed_text(unit) for unit in units]
+    groups: list[list[str]] = []
+    current_units: list[str] = [units[0]]
+    current_vectors: list[list[float]] = [unit_vectors[0]]
+
+    for idx in range(1, len(units)):
+        unit = units[idx]
+        vector = unit_vectors[idx]
+        candidate = "\n\n".join([*current_units, unit])
+        centroid = _mean_embedding(current_vectors)
+        similarity = _cosine_similarity(centroid, vector)
+        should_continue = (
+            similarity >= _SEMANTIC_CONTINUE_SIMILARITY
+            and len(candidate) <= max_chunk_chars
+        )
+        if should_continue:
+            current_units.append(unit)
+            current_vectors.append(vector)
+            continue
+
+        groups.append(current_units)
+        current_units = [unit]
+        current_vectors = [vector]
+
+    if current_units:
+        groups.append(current_units)
+
+    drafts: list[_ChunkDraft] = []
+    for group in groups:
+        merged = "\n\n".join(group).strip()
+        if not merged:
+            continue
+        pieces = _split_document_into_chunks(
+            merged,
+            max_chunk_chars=max_chunk_chars,
+            overlap_chars=overlap_chars,
+        )
+        for piece in pieces:
+            drafts.append(_ChunkDraft(title=_build_semantic_title(piece), content=piece))
+    return drafts
+
+
+async def _merge_short_chunks_by_title_similarity(
+    chunks: list[_ChunkDraft],
+    *,
+    min_chunk_chars: int,
+    memory_service: BookuMemoryService,
+) -> list[_ChunkDraft]:
+    """将过短块按标题语义相似度与相邻块合并，并更新标题摘要。"""
+    if len(chunks) <= 1:
+        return chunks
+
+    working = [_ChunkDraft(title=item.title, content=item.content) for item in chunks]
+    title_embedding_cache: dict[str, list[float]] = {}
+
+    async def embed_title(text: str) -> list[float]:
+        if text not in title_embedding_cache:
+            title_embedding_cache[text] = await memory_service._embed_text(text)
+        return title_embedding_cache[text]
+
+    index = 0
+    while index < len(working):
+        current = working[index]
+        if len(current.content) >= min_chunk_chars:
+            index += 1
+            continue
+
+        candidate_positions: list[tuple[int, float]] = []
+        current_vector = await embed_title(current.title)
+        if index > 0:
+            prev_vector = await embed_title(working[index - 1].title)
+            candidate_positions.append(
+                (index - 1, _cosine_similarity(current_vector, prev_vector))
+            )
+        if index + 1 < len(working):
+            next_vector = await embed_title(working[index + 1].title)
+            candidate_positions.append(
+                (index + 1, _cosine_similarity(current_vector, next_vector))
+            )
+
+        if not candidate_positions:
+            index += 1
+            continue
+
+        best_pos, best_score = max(candidate_positions, key=lambda item: item[1])
+        if best_score < _SEMANTIC_MIN_TITLE_MERGE_SIMILARITY:
+            index += 1
+            continue
+
+        left = min(index, best_pos)
+        right = max(index, best_pos)
+        merged_content = (
+            f"{working[left].content}\n\n{working[right].content}".strip()
+        )
+        merged_title = _build_semantic_title(merged_content)
+        working[left] = _ChunkDraft(title=merged_title, content=merged_content)
+        working.pop(right)
+        title_embedding_cache.pop(current.title, None)
+        if left < index:
+            index = max(0, left)
+
+    return working
+
+
+async def _build_document_chunks(
+    *,
+    text: str,
+    is_markdown: bool,
+    max_chunk_chars: int,
+    overlap_chars: int,
+    memory_service: BookuMemoryService,
+) -> list[_ChunkDraft]:
+    """按文档类型执行分块，再对短块进行语义合并。"""
+    if is_markdown:
+        drafts = _split_markdown_by_structure(
+            text,
+            max_chunk_chars=max_chunk_chars,
+            overlap_chars=overlap_chars,
+        )
+        if not drafts:
+            drafts = await _split_document_semantically(
+                text,
+                max_chunk_chars=max_chunk_chars,
+                overlap_chars=overlap_chars,
+                memory_service=memory_service,
+            )
+    else:
+        drafts = await _split_document_semantically(
+            text,
+            max_chunk_chars=max_chunk_chars,
+            overlap_chars=overlap_chars,
+            memory_service=memory_service,
+        )
+
+    min_chunk_chars = max(80, int(max_chunk_chars * _SHORT_CHUNK_RATIO))
+    return await _merge_short_chunks_by_title_similarity(
+        drafts,
+        min_chunk_chars=min_chunk_chars,
+        memory_service=memory_service,
+    )
+
+
 def _extract_keywords(text: str, *, limit: int = 8) -> list[str]:
     """从文本中提取关键词（英文单词和中文字符）。
 
@@ -245,16 +556,11 @@ async def build_booku_knowledge_actor_reminder(plugin: Any) -> str:
     repo = BookuMemoryMetadataRepository(db_path=config.storage.metadata_db_path)
     await repo.initialize()
     try:
-        records = await repo.list_records_by_bucket(
-            bucket="knowledge",
-            folder_id="default",
-            limit=800,
-            include_deleted=False,
-        )
+        raw_titles = await repo.list_knowledge_chunk_titles(folder_id="default")
     finally:
         await repo.close()
 
-    titles = _collect_unique_titles(records)
+    titles = _collect_unique_titles_from_strings(raw_titles)
 
     if not titles:
         return ""
@@ -373,13 +679,16 @@ class BookuKnowledgeService(BaseService):
             PermissionError: 若 ``file_path`` 指向的文件权限不足。
         """
         config = self._get_config()
+        memory_service = self._get_memory_service()
         resolved_title = _sanitize_title(title)
         text = content.strip()
         resolved_path = Path(file_path).expanduser().resolve() if file_path else None
+        is_markdown = False
         if not text and resolved_path is not None:
             if not resolved_path.exists() or not resolved_path.is_file():
                 raise FileNotFoundError(f"文件不存在: {resolved_path}")
             suffix = resolved_path.suffix.lower()
+            is_markdown = suffix in {".md", ".markdown"}
             if suffix in {".txt", ".md", ".markdown", ".json", ".csv", ".log"}:
                 text = resolved_path.read_text(encoding="utf-8", errors="ignore")
             elif suffix == ".docx":
@@ -392,37 +701,43 @@ class BookuKnowledgeService(BaseService):
         if not text.strip():
             raise ValueError("content 与 file_path 不能同时为空")
 
-        chunks = _split_document_into_chunks(
-            text,
+        chunk_drafts = await _build_document_chunks(
+            text=text,
+            is_markdown=is_markdown,
             max_chunk_chars=int(config.chunking.max_chunk_chars),
             overlap_chars=int(config.chunking.overlap_chars),
+            memory_service=memory_service,
         )
-        if not chunks:
+        if not chunk_drafts:
             raise ValueError("文档分块失败，文本内容为空")
 
         doc_id = f"doc-{uuid.uuid4().hex}"
         bucket = "knowledge"
         folder_id = "default"
-        memory_service = self._get_memory_service()
         collection = memory_service._collection_name(bucket, folder_id)
         vector_db = get_vector_db_service(config.storage.vector_db_path)
         repo = self._create_repo()
         await repo.initialize()
         try:
-            embeddings = [await memory_service._embed_text(chunk) for chunk in chunks]
+            embeddings: list[list[float]] = []
+            for chunk in chunk_drafts:
+                embeddings.append(await memory_service._embed_text(chunk.content))
+                await asyncio.sleep(0.1)
             now = time.time()
             ids: list[str] = []
             docs: list[str] = []
             metadatas: list[dict[str, Any]] = []
-            for index, chunk in enumerate(chunks):
+            for index, chunk in enumerate(chunk_drafts):
                 chunk_id = f"kb-{doc_id}-{index + 1:04d}"
-                chunk_title = f"《{resolved_title}》-片段{index + 1}"
+                chunk_title = f"《{resolved_title}》-片段{index + 1}：{chunk.title}"
                 ids.append(chunk_id)
-                docs.append(chunk)
+                docs.append(chunk.content)
                 core_tags = _extract_keywords(
-                    f"{resolved_title} {chunk[:120]}", limit=8
+                    f"{resolved_title} {chunk.title} {chunk.content[:120]}", limit=8
                 )
-                diffusion_tags = _extract_keywords(chunk[:300], limit=8) or ["文档检索"]
+                diffusion_tags = (
+                    _extract_keywords(chunk.content[:300], limit=8) or ["文档检索"]
+                )
                 opposing_tags = ["无关", "闲聊"]
                 metadata = {
                     "title": chunk_title,
@@ -432,8 +747,9 @@ class BookuKnowledgeService(BaseService):
                     "timestamp": now,
                     "document_id": doc_id,
                     "document_title": f"《{resolved_title}》",
+                    "chunk_title": chunk.title,
                     "chunk_index": index + 1,
-                    "chunk_total": len(chunks),
+                    "chunk_total": len(chunk_drafts),
                 }
                 metadatas.append(memory_service._sanitize_vector_metadata(metadata))
                 await repo.upsert_record(
@@ -441,7 +757,7 @@ class BookuKnowledgeService(BaseService):
                     title=chunk_title,
                     folder_id=folder_id,
                     bucket=bucket,
-                    content=chunk,
+                    content=chunk.content,
                     source=source,
                     novelty_energy=1.0,
                     tags=["booku_knowledge", resolved_title],
@@ -464,7 +780,7 @@ class BookuKnowledgeService(BaseService):
             "action": "booku_knowledge_ingest",
             "document_id": doc_id,
             "title": f"《{resolved_title}》",
-            "chunk_count": len(chunks),
+            "chunk_count": len(chunk_drafts),
             "bucket": bucket,
             "folder_id": folder_id,
             "collection": collection,
@@ -472,8 +788,13 @@ class BookuKnowledgeService(BaseService):
         }
 
     async def export_document_titles(self) -> list[str]:
-        records = await self._list_knowledge_records(limit=1000)
-        return _collect_unique_titles(records)
+        repo = self._create_repo()
+        await repo.initialize()
+        try:
+            raw_titles = await repo.list_knowledge_chunk_titles(folder_id="default")
+        finally:
+            await repo.close()
+        return _collect_unique_titles_from_strings(raw_titles)
 
     async def dump_documents(self, *, limit: int = 100) -> dict[str, Any]:
         """导出知识库文档内容(该方法导出所有文档数据，未封装进tool)

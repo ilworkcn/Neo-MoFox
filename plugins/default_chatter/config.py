@@ -73,11 +73,19 @@ class DefaultChatterConfig(BaseConfig):
             hint="关闭可避免因 LLM 设置过长冷却时间导致长时间无法回复",
             order=3
         )
+        enable_programmatic_controller: bool = Field(
+            default=True,
+            description="是否启用 sub-agent 的程序化控制器。开启后会先按本地概率规则判断是否直接响应，关闭后始终交由 LLM sub-agent 决策。",
+            label="启用程序化控制器",
+            tag="ai",
+            hint="关闭后群聊消息将始终经过 LLM sub-agent 过滤，不再使用本地概率直通逻辑",
+            order=4
+        )
         theme_guide: ThemeGuideSection = Field(
             default_factory=ThemeGuideSection,
             description="按聊天类型区分的额外提示词",
             label="场景引导配置",
-            order=4
+            order=5
         )
 
     plugin: PluginSection = Field(default_factory=PluginSection)
