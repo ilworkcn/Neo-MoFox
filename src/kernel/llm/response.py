@@ -18,7 +18,7 @@ from typing import Any, AsyncIterator, Self, TYPE_CHECKING
 
 from .exceptions import LLMResponseConsumedError
 from .model_client import StreamEvent
-from .payload import LLMPayload, Text, ToolCall
+from .payload import LLMPayload, ReasoningText, Text, ToolCall
 from .roles import ROLE
 from .tool_call_compat import parse_tool_call_compat_response
 
@@ -41,6 +41,7 @@ class LLMResponse:
     context_manager: LLMContextManager | None = None
 
     message: str | None = None
+    reasoning_content: str | None = None
     call_list: list[ToolCall] | None = None
     tool_call_compat: bool = False
 
@@ -90,6 +91,7 @@ class LLMResponse:
             return
 
         full_content: list[str] = []
+        full_reasoning: list[str] = []
         tool_acc = _ToolCallAccumulator()
         stream_error: Exception | None = None
         try:
@@ -97,6 +99,8 @@ class LLMResponse:
                 if event.text_delta:
                     full_content.append(event.text_delta)
                     yield event.text_delta
+                if event.reasoning_delta:
+                    full_reasoning.append(event.reasoning_delta)
                 if event.tool_name or event.tool_args_delta or event.tool_call_id:
                     tool_acc.apply(event)
         except Exception as e:
@@ -105,6 +109,7 @@ class LLMResponse:
             stream_error = e
 
         self.message = "".join(full_content)
+        self.reasoning_content = "".join(full_reasoning) or self.reasoning_content
         self.call_list = tool_acc.finalize()
         self._maybe_apply_tool_call_compat()
         self._maybe_append_response_to_context()
@@ -126,12 +131,15 @@ class LLMResponse:
 
         # 流式处理的情况，收集完整文本并解析工具调用信息
         full_content: list[str] = []
+        full_reasoning: list[str] = []
         tool_acc = _ToolCallAccumulator()
         stream_error: Exception | None = None
         try:
             async for event in self._stream:
                 if event.text_delta:
                     full_content.append(event.text_delta)
+                if event.reasoning_delta:
+                    full_reasoning.append(event.reasoning_delta)
                 if event.tool_name or event.tool_args_delta or event.tool_call_id:
                     tool_acc.apply(event)
         except Exception as e:
@@ -140,6 +148,7 @@ class LLMResponse:
             stream_error = e
 
         self.message = "".join(full_content)
+        self.reasoning_content = "".join(full_reasoning) or self.reasoning_content
         self.call_list = tool_acc.finalize()
         self._maybe_apply_tool_call_compat()
         self._maybe_append_response_to_context()
@@ -156,6 +165,8 @@ class LLMResponse:
             return
 
         content_parts: list[object] = []
+        if self.reasoning_content:
+            content_parts.append(ReasoningText(self.reasoning_content))
         if self.message:
             content_parts.append(Text(self.message))
         if self.call_list:
@@ -181,6 +192,8 @@ class LLMResponse:
     def to_payload(self) -> LLMPayload:
         """将当前响应转换为一个 LLMPayload 对象，适用于需要将响应作为消息追加到上下文中的场景。"""
         content_parts: list[object] = []
+        if self.reasoning_content:
+            content_parts.append(ReasoningText(self.reasoning_content))
         if self.message:
             content_parts.append(Text(self.message))
         if self.call_list:

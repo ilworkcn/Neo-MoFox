@@ -27,6 +27,7 @@ from .payload import (
 	Image,
 	LLMPayload,
 	LLMUsable,
+	ReasoningText,
 	Text,
 	ToolCall,
 	ToolResult,
@@ -73,6 +74,7 @@ __all__ = [
 	"ModelSet",
 	# 内容类型
 	"Content",
+	"ReasoningText",
 	"Text",
 	"Image",
 	"Audio",

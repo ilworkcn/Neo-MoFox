@@ -21,7 +21,7 @@ from src.kernel.llm.tool_call_compat import (
 )
 
 from ..exceptions import LLMConfigurationError, LLMContentFilterError
-from ..payload import Image, LLMPayload, Text, ToolCall, ToolResult
+from ..payload import Image, LLMPayload, ReasoningText, Text, ToolCall, ToolResult
 from ..roles import ROLE
 from ..token_counter import count_payload_tokens
 from .base import StreamEvent
@@ -317,6 +317,7 @@ def _payloads_to_openai_messages(
         if payload.role == ROLE.ASSISTANT:
             tool_calls_list: list[dict[str, Any]] = []
             text_parts: list[str] = []
+            reasoning_parts: list[str] = []
 
             for idx, part in enumerate(payload.content):
                 if isinstance(part, ToolCall):
@@ -338,18 +339,31 @@ def _payloads_to_openai_messages(
                     )
                     continue
 
+                if isinstance(part, ReasoningText):
+                    reasoning_parts.append(part.text)
+                    continue
+
                 if isinstance(part, Text):
                     text_parts.append(part.text)
                     continue
 
+            reasoning_content = "".join(reasoning_parts)
             if tool_calls_list:
-                messages.append(
-                    {
-                        "role": role,
-                        "content": "".join(text_parts),
-                        "tool_calls": tool_calls_list,
-                    }
-                )
+                message: dict[str, Any] = {
+                    "role": role,
+                    "content": "".join(text_parts),
+                    "tool_calls": tool_calls_list,
+                }
+                if reasoning_content:
+                    message["reasoning_content"] = reasoning_content
+                messages.append(message)
+                continue
+
+            if all(isinstance(part, (Text, ReasoningText)) for part in payload.content):
+                message = {"role": role, "content": "".join(text_parts)}
+                if reasoning_content:
+                    message["reasoning_content"] = reasoning_content
+                messages.append(message)
                 continue
 
         # 单纯文本消息走简洁格式
@@ -359,34 +373,41 @@ def _payloads_to_openai_messages(
 
         # 多模态内容
         parts: list[dict[str, Any]] = []
+        reasoning_parts: list[str] = []
         for part in payload.content:
             if isinstance(part, Text):
                 parts.append({"type": "text", "text": part.text})
+            elif isinstance(part, ReasoningText):
+                reasoning_parts.append(part.text)
             elif isinstance(part, Image):
                 url = _image_to_data_url(part.value)
                 parts.append({"type": "image_url", "image_url": {"url": url}})
             else:
                 parts.append({"type": "text", "text": str(part)})
 
-        messages.append({"role": role, "content": parts})
+        message = {"role": role, "content": parts}
+        if payload.role == ROLE.ASSISTANT and reasoning_parts:
+            message["reasoning_content"] = "".join(reasoning_parts)
+        messages.append(message)
 
     return messages, tools
 
 
 def _parse_completion_message(
     msg: Any,
-) -> tuple[str, list[dict[str, Any]]]:
+) -> tuple[str, list[dict[str, Any]], str | None]:
     """从 OpenAI 响应消息对象中提取文本内容与工具调用列表。
 
     Args:
         msg: OpenAI ``ChatCompletionMessage`` 对象。
 
     Returns:
-        二元组 (message_content, tool_calls)。
+        三元组 (message_content, tool_calls, reasoning_content)。
         tool_calls 中每个元素形如 ``{"id": ..., "name": ..., "args": ...}``。
     """
     message_content: str = msg.content or ""
     tool_calls: list[dict[str, Any]] = []
+    reasoning_content = _extract_reasoning_content(msg)
 
     if getattr(msg, "tool_calls", None):
         for tc in msg.tool_calls:
@@ -423,7 +444,47 @@ def _parse_completion_message(
             }
         )
 
-    return message_content, tool_calls
+    return message_content, tool_calls, reasoning_content
+
+
+def _extract_reasoning_content(message: Any) -> str | None:
+    """从 provider 响应对象中提取 reasoning_content。"""
+    for attr_name in ("reasoning_content", "reasoning"):
+        normalized = _normalize_reasoning_value(getattr(message, attr_name, None))
+        if normalized:
+            return normalized
+    return None
+
+
+def _normalize_reasoning_value(value: Any) -> str | None:
+    """将不同 provider 的 reasoning 字段统一归一化为字符串。"""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        chunks: list[str] = []
+        for item in value:
+            normalized = _normalize_reasoning_value(item)
+            if normalized:
+                chunks.append(normalized)
+        return "".join(chunks) or None
+
+    text = getattr(value, "text", None)
+    if isinstance(text, str):
+        return text
+
+    content = getattr(value, "content", None)
+    if isinstance(content, str):
+        return content
+
+    if isinstance(value, dict):
+        for key in ("text", "content", "reasoning_content", "reasoning"):
+            normalized = _normalize_reasoning_value(value.get(key))
+            if normalized:
+                return normalized
+
+    return None
 
 
 # _ClientCacheKey: (api_key, base_url, loop_id, timeout, trust_env, force_ipv4)
@@ -649,7 +710,7 @@ class OpenAIChatClient:
         request_name: str,
         model_set: Any,
         stream: bool,
-    ) -> tuple[str | None, list[dict[str, Any]] | None, AsyncIterator[StreamEvent] | None]:
+    ) -> tuple[str | None, list[dict[str, Any]] | None, AsyncIterator[StreamEvent] | None, str | None]:
         """发起一次聊天请求。
 
         Args:
@@ -661,10 +722,10 @@ class OpenAIChatClient:
             stream: 是否开启流式输出。
 
         Returns:
-            三元组 ``(message, tool_calls, stream_iter)``：
+            四元组 ``(message, tool_calls, stream_iter, reasoning_content)``：
 
-            - 非流时：``(完整文本, 工具调用列表, None)``
-            - 流式时：``(None, None, AsyncIterator[StreamEvent])``
+            - 非流时：``(完整文本, 工具调用列表, None, 推理内容)``
+            - 流式时：``(None, None, AsyncIterator[StreamEvent], None)``
 
         Raises:
             TypeError: model_set 不是 dict 时抛出。
@@ -740,8 +801,8 @@ class OpenAIChatClient:
                 params["extra_body"] = extra_body
 
         # 兼容：部分 OpenAI 兼容网关（如 Kimi）在开启 thinking 时，
-        # 要求所有包含 tool_calls 的 assistant 消息携带 reasoning_content 字段。
-        # 否则会返回 400（thinking enabled but reasoning_content is missing）。
+        # 要求 assistant 历史消息回传 reasoning_content 字段。
+        # 若旧上下文里缺失该字段，则做保底补齐，避免直接 400。
         thinking_enabled = False
         extra_body_params = params.get("extra_body")
         if isinstance(extra_body_params, dict):
@@ -752,7 +813,6 @@ class OpenAIChatClient:
             for msg in messages:
                 if (
                     msg.get("role") == "assistant"
-                    and msg.get("tool_calls")
                     and "reasoning_content" not in msg
                 ):
                     content = msg.get("content")
@@ -795,7 +855,7 @@ class OpenAIChatClient:
         trust_env: bool,
         force_ipv4: bool,
         model_name: str,
-    ) -> tuple[str | None, list[dict[str, Any]] | None, None]:
+    ) -> tuple[str | None, list[dict[str, Any]] | None, None, str | None]:
         """执行非流式聊天请求并返回解析结果。
 
         遇到网络/超时异常时会驱逐缓存的客户端，以便下次请求重建连接。
@@ -813,7 +873,7 @@ class OpenAIChatClient:
             model_name: 模型名称（用于错误信息）。
 
         Returns:
-            三元组 ``(message_content, tool_calls, None)``。
+            四元组 ``(message_content, tool_calls, None, reasoning_content)``。
 
         Raises:
             LLMContentFilterError: 模型返回空 choices 时抛出。
@@ -849,22 +909,22 @@ class OpenAIChatClient:
             )
 
         msg = resp.choices[0].message
-        message_content, tool_calls = _parse_completion_message(msg)
+        message_content, tool_calls, reasoning_content = _parse_completion_message(msg)
 
         if tool_call_compat and openai_tools and not tool_calls:
             parsed_message, parsed_calls = parse_tool_call_compat_response(
                 message_content
             )
-            return parsed_message, parsed_calls, None
+            return parsed_message, parsed_calls, None, reasoning_content
 
-        return message_content, tool_calls, None
+        return message_content, tool_calls, None, reasoning_content
 
     async def _create_stream(
         self,
         *,
         client: Any,
         params: dict[str, Any],
-    ) -> tuple[None, None, AsyncIterator[StreamEvent]]:
+    ) -> tuple[None, None, AsyncIterator[StreamEvent], None]:
         """执行流式聊天请求并返回事件迭代器。
 
         Args:
@@ -872,7 +932,7 @@ class OpenAIChatClient:
             params: 请求参数 dict（不含 ``stream`` 键）。
 
         Returns:
-            三元组 ``(None, None, AsyncIterator[StreamEvent])``。
+            四元组 ``(None, None, AsyncIterator[StreamEvent], None)``。
         """
         stream_params = dict(params)
         stream_params["stream"] = True
@@ -896,6 +956,10 @@ class OpenAIChatClient:
                     content = getattr(delta, "content", None)
                     if content:
                         yield StreamEvent(text_delta=content)
+
+                    reasoning_content = _extract_reasoning_content(delta)
+                    if reasoning_content:
+                        yield StreamEvent(reasoning_delta=reasoning_content)
 
                     tool_calls_delta = getattr(delta, "tool_calls", None)
                     if tool_calls_delta:
@@ -942,7 +1006,7 @@ class OpenAIChatClient:
                 if callable(close_sync):
                     close_sync()
 
-        return None, None, iter_events()
+        return None, None, iter_events(), None
 
     async def create_embedding(
         self,

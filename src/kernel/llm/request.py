@@ -284,12 +284,12 @@ class LLMRequest:
                         isinstance(timeout_seconds, (int, float))
                         and timeout_seconds > 0
                     ):
-                        message, tool_calls, stream_iter = await asyncio.wait_for(
+                        message, tool_calls, stream_iter, reasoning_content = await asyncio.wait_for(
                             create_task,
                             timeout=float(timeout_seconds),
                         )
                     else:
-                        message, tool_calls, stream_iter = await create_task
+                        message, tool_calls, stream_iter, reasoning_content = await create_task
 
                 resp = LLMResponse(
                     _stream=stream_iter,
@@ -300,6 +300,7 @@ class LLMRequest:
                     context_manager=self.context_manager,
                     tool_call_compat=bool(model.get("tool_call_compat", False)),
                     message=message,
+                    reasoning_content=reasoning_content,
                     call_list=[],
                 )
 

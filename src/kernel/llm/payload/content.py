@@ -154,6 +154,13 @@ class Text(Content):
     text: str
 
 
+@dataclass(frozen=True, slots=True)
+class ReasoningText(Content):
+    """思维链/推理内容。"""
+
+    text: str
+
+
 class Image(File):
     """图片内容。
 
