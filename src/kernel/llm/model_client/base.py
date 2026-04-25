@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Protocol
 
-from ..payload import LLMPayload, LLMUsable
+from ..payload import LLMPayload, LLMUsable, ReasoningText
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,6 +12,8 @@ class StreamEvent:
 
     text_delta: str | None = None
     reasoning_delta: str | None = None
+    reasoning_signature_delta: str | None = None
+    reasoning_block_type: str | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None
     tool_args_delta: str | None = None
@@ -27,7 +29,12 @@ class ChatModelClient(Protocol):
         request_name: str,
         model_set: Any,
         stream: bool,
-    ) -> tuple[str | None, list[dict[str, Any]] | None, AsyncIterator[StreamEvent] | None, str | None]:
+    ) -> tuple[
+        str | None,
+        list[dict[str, Any]] | None,
+        AsyncIterator[StreamEvent] | None,
+        str | list[ReasoningText] | None,
+    ]:
         """发起一次聊天请求。
 
         返回四元组：

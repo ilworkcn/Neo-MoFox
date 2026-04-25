@@ -85,6 +85,35 @@ def _format_tool_args(args: Any) -> str:
     return ", ".join(display_items)
 
 
+def _get_response_client_type(response: object) -> str | None:
+    """从 response/request 的 model_set 中提取首选客户端类型。"""
+    model_set = getattr(response, "model_set", None)
+    if not isinstance(model_set, list) or not model_set:
+        return None
+
+    first = model_set[0]
+    if not isinstance(first, dict):
+        return None
+
+    client_type = first.get("client_type")
+    return str(client_type).lower() if isinstance(client_type, str) else None
+
+
+def _is_action_only_call_list(calls: list[Any]) -> bool:
+    """判断当前调用列表是否全部为 action 调用。"""
+    return bool(calls) and all(str(getattr(call, "name", "")).startswith("action-") for call in calls)
+
+
+def _should_force_action_follow_up(response: object, calls: list[Any]) -> bool:
+    """Anthropic 下 action-only 回合需要由模型真实 follow-up 收尾。"""
+    return _get_response_client_type(response) == "anthropic" and _is_action_only_call_list(calls)
+
+
+def _is_suspend_message(message: str | None, suspend_text: str) -> bool:
+    """判断模型返回是否为 SUSPEND 挂起文本。"""
+    return isinstance(message, str) and message.strip() == suspend_text
+
+
 def _build_actor_decision_panel(chat_stream: ChatStream, response: LLMResponseLike) -> str:
     """构建 actor 本次决策摘要面板内容。"""
     stream_name = (
@@ -257,10 +286,15 @@ async def run_enhanced(
 
         if rt.phase == _ToolCallWorkflowPhase.TOOL_EXEC:
             llm_response = _require_response(rt.response)
+            current_calls = llm_response.call_list or []
 
             _print_actor_decision_panel(chat_stream, llm_response, logger)
 
             if not llm_response.call_list:
+                if _is_suspend_message(llm_response.message, suspend_text):
+                    yield Wait()
+                    _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.WAIT_USER, logger=logger, reason="model returned suspend")
+                    continue
                 if llm_response.message and llm_response.message.strip():
                     logger.warning(
                         f"LLM 返回了纯文本而非 tool call: "
@@ -272,15 +306,15 @@ async def run_enhanced(
                 _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.WAIT_USER, logger=logger, reason="no call_list")
                 continue
 
-            logger.info(f"本轮调用列表：{[call.name for call in llm_response.call_list or []]}")
-            for call in llm_response.call_list or []:
+            logger.info(f"本轮调用列表：{[call.name for call in current_calls]}")
+            for call in current_calls:
                 args = call.args if isinstance(call.args, dict) else {}
                 reason = args.pop("reason", "未提供原因")
                 logger.info(f"LLM 调用 {call.name}，原因: {reason}，参数: {args}")
 
             call_outcome = await process_tool_calls(
                 stream_id=chat_stream.stream_id,
-                calls=llm_response.call_list or [],
+                calls=current_calls,
                 response=llm_response,
                 run_tool_call=chatter.run_tool_call,
                 usable_map=usable_map,
@@ -298,12 +332,16 @@ async def run_enhanced(
                 yield Stop(cooldown_seconds)
                 return
 
+            if _should_force_action_follow_up(llm_response, current_calls):
+                _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.FOLLOW_UP, logger=logger, reason="anthropic action-only round requires model follow-up")
+                continue
+
             if call_outcome.has_pending_tool_results:
                 _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.FOLLOW_UP, logger=logger, reason="pending tool results")
                 continue
 
             append_suspend_payload_if_action_only(
-                calls=llm_response.call_list or [],
+                calls=current_calls,
                 response=llm_response,
                 suspend_text=suspend_text,
                 logger=logger,
@@ -393,6 +431,10 @@ async def run_classical(
             _print_actor_decision_panel(chat_stream, response, logger)
 
             if not response.call_list:
+                if _is_suspend_message(response.message, suspend_text):
+                    await chatter.flush_unreads(unread_msgs)
+                    yield Wait()
+                    break
                 if response.message and response.message.strip():
                     logger.warning(
                         f"LLM 返回了纯文本而非 tool call: "
@@ -402,14 +444,16 @@ async def run_classical(
                 yield Stop(0)
                 return
 
-            for call in response.call_list or []:
+            current_calls = response.call_list or []
+
+            for call in current_calls:
                 args = call.args if isinstance(call.args, dict) else {}
                 reason = args.pop("reason", "未提供原因")
                 logger.info(f"LLM 调用 {call.name}，原因: {reason}，参数: {args}")
 
             call_outcome = await process_tool_calls(
                 stream_id=chat_stream.stream_id,
-                calls=response.call_list or [],
+                calls=current_calls,
                 response=response,
                 run_tool_call=chatter.run_tool_call,
                 usable_map=usable_map,
@@ -421,9 +465,11 @@ async def run_classical(
                 cross_round_seen_signatures=cross_round_seen_signatures,
             )
             has_pending_tool_results = call_outcome.has_pending_tool_results
-            if not call_outcome.has_pending_tool_results:
+            if _should_force_action_follow_up(response, current_calls):
+                has_pending_tool_results = True
+            elif not call_outcome.has_pending_tool_results:
                 append_suspend_payload_if_action_only(
-                    calls=response.call_list or [],
+                    calls=current_calls,
                     response=response,
                     suspend_text=suspend_text,
                     logger=logger,

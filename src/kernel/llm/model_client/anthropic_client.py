@@ -241,6 +241,51 @@ def _to_plain_text(parts: list[object]) -> str:
     return "".join(chunks)
 
 
+def _reasoning_part_to_anthropic_block(part: ReasoningText) -> _ProviderPayload | None:
+    """将带元数据的 ReasoningText 转换为 Anthropic thinking block。"""
+    if isinstance(part.redacted_data, str) and part.redacted_data:
+        return {
+            "type": "redacted_thinking",
+            "data": part.redacted_data,
+        }
+
+    if isinstance(part.signature, str):
+        return {
+            "type": "thinking",
+            "thinking": part.text,
+            "signature": part.signature,
+        }
+
+    return None
+
+
+def _extract_anthropic_reasoning_parts(message: object) -> list[ReasoningText]:
+    """从 Anthropic 响应中提取可回传的 thinking block。"""
+    reasoning_parts: list[ReasoningText] = []
+    content = _get_attr(message, "content", [])
+    if not isinstance(content, list):
+        return reasoning_parts
+
+    for block in content:
+        block_type = _get_attr(block, "type")
+        if block_type == "thinking":
+            thinking_text = _get_attr(block, "thinking", "")
+            signature = _get_attr(block, "signature")
+            reasoning_parts.append(
+                ReasoningText(
+                    thinking_text if isinstance(thinking_text, str) else "",
+                    signature=str(signature) if isinstance(signature, str) else None,
+                )
+            )
+            continue
+        if block_type == "redacted_thinking":
+            data = _get_attr(block, "data")
+            if isinstance(data, str):
+                reasoning_parts.append(ReasoningText("", redacted_data=data))
+
+    return reasoning_parts
+
+
 def _payloads_to_anthropic_messages(
     payloads: list[LLMPayload],
     *,
@@ -343,6 +388,10 @@ def _payloads_to_anthropic_messages(
                 continue
 
             if isinstance(part, ReasoningText):
+                if role == "assistant":
+                    reasoning_block = _reasoning_part_to_anthropic_block(part)
+                    if reasoning_block is not None:
+                        content_blocks.append(reasoning_block)
                 continue
 
             to_text = getattr(part, "to_text", None)
@@ -511,7 +560,12 @@ class AnthropicChatClient:
         request_name: str,
         model_set: object,
         stream: bool,
-    ) -> tuple[str | None, list[dict[str, Any]] | None, AsyncIterator[StreamEvent] | None, str | None]:
+    ) -> tuple[
+        str | None,
+        list[dict[str, Any]] | None,
+        AsyncIterator[StreamEvent] | None,
+        str | list[ReasoningText] | None,
+    ]:
         """发起一次 Anthropic 消息请求。"""
         del tools
 
@@ -566,11 +620,14 @@ class AnthropicChatClient:
         *,
         client: Any,
         params: dict[str, object],
-    ) -> tuple[str | None, list[dict[str, Any]] | None, None, str | None]:
+    ) -> tuple[str | None, list[dict[str, Any]] | None, None, list[ReasoningText] | None]:
         """执行非流式 Anthropic 请求。"""
         response = await client.messages.create(**params)
         message_text, tool_calls, reasoning_content = _parse_anthropic_message(response)
-        return message_text, tool_calls, None, reasoning_content
+        reasoning_parts = _extract_anthropic_reasoning_parts(response)
+        if not reasoning_parts and reasoning_content:
+            reasoning_parts = [ReasoningText(reasoning_content)]
+        return message_text, tool_calls, None, reasoning_parts or None
 
     async def _create_stream(
         self,
@@ -599,6 +656,9 @@ class AnthropicChatClient:
                         index = _get_attr(event, "index", -1)
                         content_block = _get_attr(event, "content_block")
                         block_type = _get_attr(content_block, "type")
+                        if block_type in {"thinking", "redacted_thinking"}:
+                            yield StreamEvent(reasoning_block_type=str(block_type))
+                            continue
                         if block_type in {"tool_use", "server_tool_use"}:
                             tool_call_id = _get_attr(content_block, "id")
                             tool_name = _get_attr(content_block, "name")
@@ -619,6 +679,10 @@ class AnthropicChatClient:
 
                     if delta_type == "thinking_delta":
                         yield StreamEvent(reasoning_delta=str(_get_attr(delta, "thinking", "")))
+                        continue
+
+                    if delta_type == "signature_delta":
+                        yield StreamEvent(reasoning_signature_delta=str(_get_attr(delta, "signature", "")))
                         continue
 
                     if delta_type == "input_json_delta":

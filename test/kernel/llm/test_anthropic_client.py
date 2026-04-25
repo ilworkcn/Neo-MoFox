@@ -90,7 +90,7 @@ class TestPayloadsToAnthropicMessages:
             LLMPayload(ROLE.USER, [Text("Hello"), Image("base64|aGVsbG8=")]),
             LLMPayload(
                 ROLE.ASSISTANT,
-                [ReasoningText("think"), Text("Need tool"), ToolCall(id="toolu_1", name="get_weather", args={"city": "Paris"})],
+                [ReasoningText("think", signature="sig_1"), Text("Need tool"), ToolCall(id="toolu_1", name="get_weather", args={"city": "Paris"})],
             ),
             LLMPayload(
                 ROLE.TOOL_RESULT,
@@ -122,8 +122,13 @@ class TestPayloadsToAnthropicMessages:
         assert messages[0]["content"][0] == {"type": "text", "text": "Hello"}
         assert messages[0]["content"][1]["type"] == "image"
         assert messages[1]["role"] == "assistant"
-        assert messages[1]["content"][0] == {"type": "text", "text": "Need tool"}
-        assert messages[1]["content"][1] == {
+        assert messages[1]["content"][0] == {
+            "type": "thinking",
+            "thinking": "think",
+            "signature": "sig_1",
+        }
+        assert messages[1]["content"][1] == {"type": "text", "text": "Need tool"}
+        assert messages[1]["content"][2] == {
             "type": "tool_use",
             "id": "toolu_1",
             "name": "get_weather",
@@ -167,7 +172,7 @@ def test_parse_anthropic_message_extracts_text_tools_and_reasoning() -> None:
     """测试 Anthropic 响应解析。"""
     message = SimpleNamespace(
         content=[
-            SimpleNamespace(type="thinking", thinking="analyze first"),
+            SimpleNamespace(type="thinking", thinking="analyze first", signature="sig_1"),
             SimpleNamespace(type="text", text="Here is the answer."),
             SimpleNamespace(type="tool_use", id="toolu_1", name="get_weather", input={"city": "Paris"}),
         ]
@@ -180,12 +185,34 @@ def test_parse_anthropic_message_extracts_text_tools_and_reasoning() -> None:
     assert reasoning == "analyze first"
 
 
+def test_convert_assistant_preserves_redacted_thinking_block() -> None:
+    """Anthropic 的 redacted_thinking block 应原样回传。"""
+    payloads = [
+        LLMPayload(
+            ROLE.ASSISTANT,
+            [ReasoningText("", redacted_data="opaque-data"), Text("after think")],
+        )
+    ]
+
+    messages, _, _ = _payloads_to_anthropic_messages(payloads)
+
+    assert messages == [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "redacted_thinking", "data": "opaque-data"},
+                {"type": "text", "text": "after think"},
+            ],
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_create_non_stream_returns_text_tool_calls_and_reasoning(monkeypatch: pytest.MonkeyPatch) -> None:
     """测试非流式 create 路径。"""
     response = SimpleNamespace(
         content=[
-            SimpleNamespace(type="thinking", thinking="reasoning"),
+            SimpleNamespace(type="thinking", thinking="reasoning", signature="sig_1"),
             SimpleNamespace(type="text", text="done"),
             SimpleNamespace(type="tool_use", id="toolu_1", name="lookup", input={"keyword": "neo"}),
         ]
@@ -211,7 +238,7 @@ async def test_create_non_stream_returns_text_tool_calls_and_reasoning(monkeypat
 
     assert message == "done"
     assert tool_calls == [{"id": "toolu_1", "name": "lookup", "args": {"keyword": "neo"}}]
-    assert reasoning == "reasoning"
+    assert reasoning == [ReasoningText("reasoning", signature="sig_1")]
     assert stream_iter is None
     create_params = messages_api.create_calls[0]
     assert create_params["tool_choice"] == {"type": "auto"}
@@ -330,6 +357,11 @@ async def test_create_stream_emits_text_reasoning_and_tool_deltas(monkeypatch: p
             delta=SimpleNamespace(type="thinking_delta", thinking="step "),
         ),
         SimpleNamespace(
+            type="content_block_delta",
+            index=0,
+            delta=SimpleNamespace(type="signature_delta", signature="sig_stream"),
+        ),
+        SimpleNamespace(
             type="content_block_start",
             index=1,
             content_block=SimpleNamespace(type="tool_use", id="toolu_1", name="lookup", input={}),
@@ -381,11 +413,13 @@ async def test_create_stream_emits_text_reasoning_and_tool_deltas(monkeypatch: p
 
     collected = [event async for event in stream_iter]
 
-    assert collected[0].reasoning_delta == "step "
-    assert collected[1].tool_call_id == "toolu_1"
-    assert collected[1].tool_name == "lookup"
-    assert collected[2].tool_args_delta == '{"keyword": "n'
-    assert collected[3].tool_args_delta == 'eo"}'
-    assert collected[4].text_delta == "answer"
+    assert collected[0].reasoning_block_type == "thinking"
+    assert collected[1].reasoning_delta == "step "
+    assert collected[2].reasoning_signature_delta == "sig_stream"
+    assert collected[3].tool_call_id == "toolu_1"
+    assert collected[3].tool_name == "lookup"
+    assert collected[4].tool_args_delta == '{"keyword": "n'
+    assert collected[5].tool_args_delta == 'eo"}'
+    assert collected[6].text_delta == "answer"
     stream_params = messages_api.stream_calls[0]
     assert stream_params["thinking"] == {"type": "adaptive", "display": "summarized"}

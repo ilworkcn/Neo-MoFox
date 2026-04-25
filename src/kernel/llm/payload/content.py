@@ -159,6 +159,8 @@ class ReasoningText(Content):
     """思维链/推理内容。"""
 
     text: str
+    signature: str | None = None
+    redacted_data: str | None = None
 
 
 class Image(File):
