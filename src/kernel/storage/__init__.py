@@ -34,6 +34,3 @@ __all__ = [
     "json_store",
     "JSONStore",
 ]
-
-# 版本信息
-__version__ = "1.1.0-alpha"
