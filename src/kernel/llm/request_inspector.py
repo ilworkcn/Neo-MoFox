@@ -76,32 +76,40 @@ def _build_overview(
     api_name: str,
     model: str,
     params: dict[str, Any],
-  metadata: dict[str, Any],
+    metadata: dict[str, Any],
 ) -> list[dict[str, str]]:
     """构造顶层请求摘要。"""
-    messages = params.get("messages", [])
+    messages = _get_inspector_messages(params)
     tools = params.get("tools", [])
     overview = [
         {"label": "API", "value": api_name},
-      {"label": "提供商", "value": _format_scalar(metadata.get("api_provider", "-"))},
+        {"label": "提供商", "value": _format_scalar(metadata.get("api_provider", "-"))},
         {"label": "模型", "value": model or "-"},
-        {"label": "消息数", "value": str(len(messages) if isinstance(messages, list) else 0)},
+        {
+            "label": "消息数",
+            "value": str(len(messages) if isinstance(messages, list) else 0),
+        },
         {"label": "工具数", "value": str(len(tools) if isinstance(tools, list) else 0)},
     ]
 
     estimated_input_tokens = metadata.get("estimated_input_tokens")
     if estimated_input_tokens is not None:
-      overview.append({"label": "预估输入 Tokens", "value": _format_scalar(estimated_input_tokens)})
+        overview.append(
+            {
+                "label": "预估输入 Tokens",
+                "value": _format_scalar(estimated_input_tokens),
+            }
+        )
 
     request_name = metadata.get("request_name")
     if request_name:
-      overview.append({"label": "请求名称", "value": _format_scalar(request_name)})
+        overview.append({"label": "请求名称", "value": _format_scalar(request_name)})
 
     for key, label in _OVERVIEW_FIELDS:
         if key in params:
             overview.append({"label": label, "value": _format_scalar(params[key])})
 
-    reserved_keys = {"messages", "tools", "model"}
+    reserved_keys = {"messages", "tools", "model", "system"}
     reserved_keys.update(name for name, _ in _OVERVIEW_FIELDS)
     for key in sorted(key for key in params.keys() if key not in reserved_keys):
         overview.append({"label": key, "value": _format_scalar(params[key])})
@@ -149,13 +157,19 @@ def _build_tools_view(params: dict[str, Any]) -> list[dict[str, Any]]:
 
         function_obj = tool.get("function")
         if isinstance(function_obj, dict):
-          function_schema: dict[str, Any] = function_obj
+            function_schema: dict[str, Any] = function_obj
         else:
-          function_schema = tool
+            function_schema = tool
         parameters_obj = function_schema.get("parameters")
-        parameters: dict[str, Any] = parameters_obj if isinstance(parameters_obj, dict) else {}
+        if not isinstance(parameters_obj, dict):
+            parameters_obj = function_schema.get("input_schema")
+        parameters: dict[str, Any] = (
+            parameters_obj if isinstance(parameters_obj, dict) else {}
+        )
         properties_obj = parameters.get("properties")
-        properties: dict[str, Any] = properties_obj if isinstance(properties_obj, dict) else {}
+        properties: dict[str, Any] = (
+            properties_obj if isinstance(properties_obj, dict) else {}
+        )
         required_obj = parameters.get("required")
         required: list[Any] = required_obj if isinstance(required_obj, list) else []
         rendered_tools.append(
@@ -168,8 +182,16 @@ def _build_tools_view(params: dict[str, Any]) -> list[dict[str, Any]]:
                 "properties": [
                     {
                         "name": str(prop_name),
-                        "type": _schema_type_text(prop_schema) if isinstance(prop_schema, dict) else "unknown",
-                        "description": str(prop_schema.get("description", "")) if isinstance(prop_schema, dict) else "",
+                        "type": (
+                            _schema_type_text(prop_schema)
+                            if isinstance(prop_schema, dict)
+                            else "unknown"
+                        ),
+                        "description": (
+                            str(prop_schema.get("description", ""))
+                            if isinstance(prop_schema, dict)
+                            else ""
+                        ),
                         "required": prop_name in required,
                     }
                     for prop_name, prop_schema in properties.items()
@@ -211,7 +233,9 @@ def _render_content_list(content: list[Any]) -> list[dict[str, Any]]:
 
         if item_type in {"image_url", "input_image"}:
             image_url_obj = item.get("image_url")
-            image_url: dict[str, Any] = image_url_obj if isinstance(image_url_obj, dict) else {}
+            image_url: dict[str, Any] = (
+                image_url_obj if isinstance(image_url_obj, dict) else {}
+            )
             url = image_url.get("url") or item.get("url") or ""
             blocks.append(
                 _make_block(
@@ -220,6 +244,21 @@ def _render_content_list(content: list[Any]) -> list[dict[str, Any]]:
                     title="图片内容",
                     text="请求中包含图片输入。",
                     meta=_format_scalar(url)[:120],
+                )
+            )
+            continue
+
+        if item_type == "image":
+            source_obj = item.get("source")
+            source = source_obj if isinstance(source_obj, dict) else {}
+            meta = source.get("media_type") or source.get("type") or "image"
+            blocks.append(
+                _make_block(
+                    "media",
+                    media_type="image",
+                    title="图片内容",
+                    text="请求中包含图片输入。",
+                    meta=_format_scalar(meta),
                 )
             )
             continue
@@ -237,11 +276,66 @@ def _render_content_list(content: list[Any]) -> list[dict[str, Any]]:
             continue
 
         if item_type == "refusal":
-            blocks.append(_make_block("markdown", text=str(item.get("refusal", "")), label="拒绝说明"))
+            blocks.append(
+                _make_block(
+                    "markdown", text=str(item.get("refusal", "")), label="拒绝说明"
+                )
+            )
             continue
 
-        blocks.append(_render_unknown_content(item, label=f"未知 content 类型: {item_type}"))
+        if item_type == "thinking":
+            blocks.append(
+                _make_block(
+                    "markdown",
+                    text=str(item.get("thinking", "")),
+                    label="Reasoning",
+                )
+            )
+            continue
+
+        if item_type == "tool_use":
+            blocks.append(
+                _make_block(
+                    "tool_call",
+                    call_id=str(item.get("id", "") or ""),
+                    name=str(item.get("name", "unknown_tool")),
+                    arguments_text=_json_dumps(item.get("input", {})),
+                )
+            )
+            continue
+
+        if item_type == "tool_result":
+            blocks.append(
+                _make_block(
+                    "tool_result",
+                    name=str(item.get("tool_name", "")),
+                    call_id=str(item.get("tool_use_id", "") or ""),
+                    text=_format_scalar(item.get("content", "")),
+                )
+            )
+            continue
+
+        blocks.append(
+            _render_unknown_content(item, label=f"未知 content 类型: {item_type}")
+        )
     return blocks
+
+
+def _get_inspector_messages(params: dict[str, Any]) -> list[Any]:
+    """获取用于检视器展示的消息列表，兼容 Anthropic 的 system 字段。"""
+    rendered_messages: list[Any] = []
+
+    system = params.get("system")
+    if isinstance(system, str):
+        rendered_messages.append({"role": "system", "content": system})
+    elif isinstance(system, list):
+        rendered_messages.append({"role": "system", "content": system})
+
+    messages = params.get("messages", [])
+    if isinstance(messages, list):
+        rendered_messages.extend(messages)
+
+    return rendered_messages
 
 
 def _build_message_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
@@ -271,7 +365,9 @@ def _build_message_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
 
     reasoning_content = message.get("reasoning_content")
     if isinstance(reasoning_content, str) and reasoning_content.strip():
-        blocks.append(_make_block("markdown", text=reasoning_content, label="Reasoning"))
+        blocks.append(
+            _make_block("markdown", text=reasoning_content, label="Reasoning")
+        )
 
     tool_calls = message.get("tool_calls")
     if isinstance(tool_calls, list):
@@ -280,10 +376,16 @@ def _build_message_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
                 blocks.append(_render_unknown_content(tool_call, label="未知工具调用"))
                 continue
             function_block_obj = tool_call.get("function")
-            function_block: dict[str, Any] = function_block_obj if isinstance(function_block_obj, dict) else {}
-            name = str(function_block.get("name", tool_call.get("name", "unknown_tool")))
+            function_block: dict[str, Any] = (
+                function_block_obj if isinstance(function_block_obj, dict) else {}
+            )
+            name = str(
+                function_block.get("name", tool_call.get("name", "unknown_tool"))
+            )
             arguments = function_block.get("arguments", tool_call.get("args", {}))
-            arguments_text = arguments if isinstance(arguments, str) else _json_dumps(arguments)
+            arguments_text = (
+                arguments if isinstance(arguments, str) else _json_dumps(arguments)
+            )
             blocks.append(
                 _make_block(
                     "tool_call",
@@ -301,8 +403,8 @@ def _build_message_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _build_messages_view(params: dict[str, Any]) -> list[dict[str, Any]]:
     """将请求中的 messages 转换为卡片化展示模型。"""
-    messages = params.get("messages", [])
-    if not isinstance(messages, list):
+    messages = _get_inspector_messages(params)
+    if not messages:
         return []
 
     rendered_messages: list[dict[str, Any]] = []
@@ -388,7 +490,9 @@ class CapturedRequest:
         summary = self.to_summary()
         summary["params"] = self.params
         summary["metadata"] = self.metadata
-        summary["rendered"] = build_render_view(self.api_name, self.model, self.params, self.metadata)
+        summary["rendered"] = build_render_view(
+            self.api_name, self.model, self.params, self.metadata
+        )
         return summary
 
 
@@ -479,17 +583,17 @@ class RequestInspector:
 
         @router.post("/api/import")
         async def import_requests(payload: Any = Body(...)) -> JSONResponse:
-          try:
-            imported = self.import_json(payload)
-          except ValueError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=400)
-          return JSONResponse(
-            {
-              "ok": True,
-              "count": len(imported),
-              "items": [record.to_summary() for record in imported],
-            }
-          )
+            try:
+                imported = self.import_json(payload)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "count": len(imported),
+                    "items": [record.to_summary() for record in imported],
+                }
+            )
 
         @router.get("/api/stream", include_in_schema=False)
         async def sse_stream() -> StreamingResponse:
@@ -568,7 +672,9 @@ def _normalize_import_entries(
         return entries
 
     if not isinstance(payload, dict):
-        raise ValueError("导入 JSON 必须是对象、对象数组，或包含 requests/params 的对象")
+        raise ValueError(
+            "导入 JSON 必须是对象、对象数组，或包含 requests/params 的对象"
+        )
 
     requests_payload = payload.get("requests")
     if requests_payload is not None:
@@ -598,7 +704,9 @@ def _normalize_import_entries(
         params.pop("metadata", None)
         return [(api_name, params, metadata)]
 
-    raise ValueError("无法识别导入 JSON 结构；请提供原始请求体、包含 params 的对象，或 requests 数组")
+    raise ValueError(
+        "无法识别导入 JSON 结构；请提供原始请求体、包含 params 的对象，或 requests 数组"
+    )
 
 
 _WEBUI_HTML = r"""<!DOCTYPE html>

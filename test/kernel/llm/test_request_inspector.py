@@ -1,10 +1,15 @@
 """request_inspector 结构化渲染测试。"""
 
+from types import SimpleNamespace
+from typing import Any
+
 from src.kernel.llm.request_inspector import (
     CapturedRequest,
     RequestInspector,
     build_render_view,
 )
+from src.kernel.llm import LLMPayload, ROLE, Text
+from src.kernel.llm.model_client.anthropic_client import AnthropicChatClient
 
 
 def test_build_render_view_renders_messages_tools_and_overview() -> None:
@@ -106,6 +111,62 @@ def test_build_render_view_handles_unknown_message_shapes() -> None:
     assert rendered["messages"][1]["blocks"][0]["label"] == "未知 content 类型: custom"
 
 
+def test_build_render_view_handles_anthropic_system_tools_and_blocks() -> None:
+    """Anthropic 请求应能在 inspector 中正常展示。"""
+    params = {
+        "model": "claude-sonnet-4-6",
+        "system": [{"type": "text", "text": "You are helpful."}],
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hello"},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abc"}},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "considering"},
+                    {"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {"city": "Paris"}},
+                    {"type": "text", "text": "done"},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "tool_name": "get_weather", "content": '{"temp": 23}'},
+                ],
+            },
+        ],
+        "tools": [
+            {
+                "name": "get_weather",
+                "description": "Get weather",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string", "description": "city name"}},
+                    "required": ["city"],
+                },
+            }
+        ],
+    }
+
+    rendered = build_render_view("messages.create", "claude-sonnet-4-6", params, {"api_provider": "Anthropic"})
+
+    overview = {item["label"]: item["value"] for item in rendered["overview"]}
+    assert overview["消息数"] == "4"
+    assert "system" not in overview
+    assert "System" not in overview
+    assert rendered["tools"][0]["name"] == "get_weather"
+    assert rendered["tools"][0]["properties"][0]["name"] == "city"
+    assert rendered["messages"][0]["role"] == "system"
+    assert rendered["messages"][1]["blocks"][1]["type"] == "media"
+    assert rendered["messages"][2]["blocks"][0]["label"] == "Reasoning"
+    assert rendered["messages"][2]["blocks"][1]["type"] == "tool_call"
+    assert rendered["messages"][3]["blocks"][0]["type"] == "tool_result"
+
+
 def test_captured_request_to_full_includes_rendered_payload() -> None:
     """完整详情应同时返回 params 与 rendered 结构。"""
     record = CapturedRequest(
@@ -144,6 +205,50 @@ def test_request_inspector_imports_raw_request_json() -> None:
     assert detail["params"]["model"] == "gpt-4.1"
     assert detail["rendered"]["messages"][0]["blocks"][0]["text"] == "请帮我排查问题"
     assert detail["metadata"]["imported"] is True
+
+
+async def test_anthropic_client_logs_request_to_inspector(monkeypatch) -> None:
+    """Anthropic client 应把请求体送进 request_inspector。"""
+
+    class _FakeMessagesAPI:
+        async def create(self, **kwargs):
+            return SimpleNamespace(content=[SimpleNamespace(type="text", text="done")])
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.messages = _FakeMessagesAPI()
+
+    captured: dict[str, Any] = {}
+
+    def fake_capture(api_name, params, metadata=None):
+        captured["api_name"] = api_name
+        captured["params"] = params
+        captured["metadata"] = metadata or {}
+
+    client = AnthropicChatClient()
+    monkeypatch.setattr(client, "_get_client", lambda **_: _FakeClient())
+    import src.kernel.llm.request_inspector as inspector_module
+    monkeypatch.setattr(inspector_module, "capture", fake_capture)
+
+    await client.create(
+        model_name="claude-sonnet-4-6",
+        payloads=[LLMPayload(ROLE.USER, Text("hello"))],
+        tools=[],
+        request_name="inspector-test",
+        model_set={
+            "api_key": "sk-ant-test",
+            "max_tokens": 128,
+            "client_type": "anthropic",
+            "api_provider": "Anthropic",
+            "extra_params": {},
+        },
+        stream=False,
+    )
+
+    assert captured["api_name"] == "messages.create"
+    assert captured["params"]["model"] == "claude-sonnet-4-6"
+    assert captured["metadata"]["api_provider"] == "Anthropic"
+    assert captured["metadata"]["request_name"] == "inspector-test"
 
 
 def test_request_inspector_imports_wrapped_requests_array() -> None:

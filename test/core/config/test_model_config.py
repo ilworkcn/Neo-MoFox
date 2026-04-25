@@ -32,8 +32,8 @@ class TestAPIProviderSection:
         assert provider.base_url == "https://api.openai.com/v1"
         assert provider.api_key == "sk-test123"
         assert provider.client_type == "openai"
-        assert provider.max_retry == 2
-        assert provider.timeout == 10
+        assert provider.max_retry == 3
+        assert provider.timeout == 30
         assert provider.retry_interval == 10
 
     def test_provider_with_multiple_api_keys(self):
@@ -81,6 +81,17 @@ class TestAPIProviderSection:
 
         with pytest.raises(ValueError, match="API密钥列表为空"):
             provider.get_api_key()
+
+    def test_provider_supports_anthropic_client_type(self):
+        """测试 provider 支持 anthropic 客户端类型。"""
+        provider = APIProviderSection(
+            name="anthropic",
+            base_url="https://api.anthropic.com/v1",
+            api_key="sk-ant-test",
+            client_type="anthropic",
+        )
+
+        assert provider.client_type == "anthropic"
 
 
 class TestModelInfoSection:
@@ -198,7 +209,7 @@ class TestModelTasksSection:
     def test_get_none_task_raises(self):
         """测试获取 None 任务抛出异常。"""
         tasks = ModelTasksSection()
-        tasks.utils = None
+        object.__setattr__(tasks, "utils", None)
 
         with pytest.raises(ValueError, match="任务 'utils' 未配置"):
             tasks.get_task("utils")
@@ -211,8 +222,10 @@ class TestModelConfig:
         """测试创建空配置。"""
         config = ModelConfig()
 
-        assert config.api_providers == []
-        assert config.models == []
+        assert len(config.api_providers) == 1
+        assert config.api_providers[0].name == "SiliconFlow"
+        assert len(config.models) == 5
+        assert config.models[0].api_provider == "SiliconFlow"
         assert isinstance(config.model_tasks, ModelTasksSection)
 
     def test_create_config_with_providers(self):

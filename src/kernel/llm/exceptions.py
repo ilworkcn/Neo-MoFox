@@ -122,6 +122,42 @@ def classify_exception(error: BaseException, model: str | None = None) -> BaseEx
     except ImportError:
         pass
 
+    # Anthropic SDK 异常处理
+    try:
+        from anthropic import (
+            APITimeoutError as AnthropicAPITimeoutError,
+            APIError as AnthropicAPIError,
+            APIStatusError as AnthropicAPIStatusError,
+            AuthenticationError as AnthropicAuthenticationError,
+            BadRequestError as AnthropicBadRequestError,
+            RateLimitError as AnthropicRateLimitError,
+        )
+
+        if isinstance(error, AnthropicRateLimitError):
+            retry_after = getattr(error, "retry_after", None)
+            return LLMRateLimitError(str(error), retry_after=retry_after, model=model)
+
+        if isinstance(error, AnthropicAPITimeoutError):
+            return LLMTimeoutError(str(error), model=model)
+
+        if isinstance(error, AnthropicAuthenticationError):
+            return LLMAuthenticationError(str(error), model=model)
+
+        if isinstance(error, AnthropicBadRequestError):
+            if "maximum context length" in error_msg or "token" in error_msg and "limit" in error_msg:
+                return LLMTokenLimitError(str(error), model=model)
+            if "content" in error_msg and ("filter" in error_msg or "policy" in error_msg):
+                return LLMContentFilterError(str(error), model=model)
+
+        for error_type in (AnthropicAPIStatusError, AnthropicAPIError):
+            if isinstance(error, error_type):
+                status_code = getattr(error, "status_code", None)
+                error_code = getattr(error, "type", None) or getattr(error, "error_code", None)
+                return LLMAPIError(str(error), status_code=status_code, error_code=error_code, model=model)
+
+    except ImportError:
+        pass
+
     # 通用错误检查（基于错误消息）
     if "rate" in error_msg and "limit" in error_msg:
         return LLMRateLimitError(str(error), model=model)

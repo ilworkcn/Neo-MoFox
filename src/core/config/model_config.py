@@ -57,7 +57,7 @@ class APIProviderSection(SectionBase):
         default="your-siliconflow-api-key-here",
         description="API 密钥，支持单个密钥或密钥列表轮询",
     )
-    client_type: Literal["openai", "gemini", "aiohttp_gemini", "bedrock"] = Field(
+    client_type: Literal["openai", "anthropic", "gemini", "aiohttp_gemini", "bedrock"] = Field(
         default="openai",
         description="客户端类型（openai/gemini/bedrock等）",
     )

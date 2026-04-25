@@ -6,6 +6,7 @@ from .base import (
 	RerankModelClient,
 	StreamEvent,
 )
+from .anthropic_client import AnthropicChatClient
 from .openai_client import OpenAIChatClient
 from .registry import ModelClientRegistry
 
@@ -14,6 +15,7 @@ __all__ = [
 	"EmbeddingModelClient",
 	"RerankModelClient",
 	"StreamEvent",
+	"AnthropicChatClient",
 	"OpenAIChatClient",
 	"ModelClientRegistry",
 ]

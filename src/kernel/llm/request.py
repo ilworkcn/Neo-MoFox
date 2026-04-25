@@ -75,6 +75,24 @@ def _extract_tools(payloads: list[LLMPayload]) -> list[LLMUsable]:
     return tools
 
 
+def _normalize_client_create_result(
+    result: tuple[Any, ...],
+) -> tuple[str | None, list[dict[str, Any]] | None, Any, str | None]:
+    """兼容 provider client 的 3 元组与 4 元组返回格式。"""
+    if len(result) == 4:
+        message, tool_calls, stream_iter, reasoning_content = result
+        return message, tool_calls, stream_iter, reasoning_content
+
+    if len(result) == 3:
+        message, tool_calls, stream_iter = result
+        return message, tool_calls, stream_iter, None
+
+    raise ValueError(
+        "client.create 必须返回长度为 3 或 4 的元组："
+        "(message, tool_calls, stream_iter[, reasoning_content])"
+    )
+
+
 @dataclass(slots=True)
 class LLMRequest:
     """LLMRequest：构建 payload 并执行请求。"""
@@ -284,12 +302,16 @@ class LLMRequest:
                         isinstance(timeout_seconds, (int, float))
                         and timeout_seconds > 0
                     ):
-                        message, tool_calls, stream_iter, reasoning_content = await asyncio.wait_for(
-                            create_task,
-                            timeout=float(timeout_seconds),
+                        message, tool_calls, stream_iter, reasoning_content = _normalize_client_create_result(
+                            await asyncio.wait_for(
+                                create_task,
+                                timeout=float(timeout_seconds),
+                            )
                         )
                     else:
-                        message, tool_calls, stream_iter, reasoning_content = await create_task
+                        message, tool_calls, stream_iter, reasoning_content = _normalize_client_create_result(
+                            await create_task
+                        )
 
                 resp = LLMResponse(
                     _stream=stream_iter,
