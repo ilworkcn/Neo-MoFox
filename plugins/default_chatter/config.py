@@ -81,6 +81,22 @@ class DefaultChatterConfig(BaseConfig):
             hint="关闭后群聊消息将始终经过 LLM sub-agent 过滤，不再使用本地概率直通逻辑",
             order=4
         )
+        enable_stop_direct_message_wake: bool = Field(
+            default=False,
+            description="是否允许私聊或 @Bot 消息按概率提前解除 stop 冷却。",
+            label="启用 stop 直接唤醒",
+            tag="performance",
+            hint="开启后，stop 冷却期间收到新私聊或 @Bot 消息时，可能在冷却结束前重新启动 chatter。",
+            order=5
+        )
+        stop_direct_message_wake_probability: float = Field(
+            default=0.5,
+            description="私聊或 @Bot 消息提前解除 stop 冷却的概率。",
+            label="stop 唤醒概率",
+            tag="performance",
+            hint="有效范围为 0.0 到 1.0。",
+            order=6
+        )
         theme_guide: ThemeGuideSection = Field(
             default_factory=ThemeGuideSection,
             description="按聊天类型区分的额外提示词",

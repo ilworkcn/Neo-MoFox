@@ -619,6 +619,24 @@ class DefaultChatter(BaseChatter):
             plugin_config.plugin.enable_programmatic_controller
         )
 
+    def _apply_stop_wake_config(self, result: Stop) -> Stop:
+        """将 default_chatter 的 stop 唤醒配置写入 Stop 结果。"""
+        plugin_config = getattr(self.plugin, "config", None)
+        if not isinstance(plugin_config, DefaultChatterConfig):
+            return result
+
+        probability = max(
+            0.0,
+            min(1.0, float(plugin_config.plugin.stop_direct_message_wake_probability)),
+        )
+        return Stop(
+            time=result.time,
+            direct_message_wake_enabled=bool(
+                plugin_config.plugin.enable_stop_direct_message_wake
+            ),
+            direct_message_wake_probability=probability,
+        )
+
     def _build_negative_behaviors_extra(self) -> str:
         """若配置启用，构建用于 user extra 板块的负面行为再次强调文本。
 
@@ -795,6 +813,8 @@ class DefaultChatter(BaseChatter):
             suspend_text=_SUSPEND_TEXT,
             enable_cooldown=enable_cooldown,
         ):
+            if isinstance(result, Stop):
+                result = self._apply_stop_wake_config(result)
             yield result
 
     async def _execute_classical(
@@ -817,6 +837,8 @@ class DefaultChatter(BaseChatter):
             suspend_text=_SUSPEND_TEXT,
             enable_cooldown=enable_cooldown,
         ):
+            if isinstance(result, Stop):
+                result = self._apply_stop_wake_config(result)
             yield result
 
     async def run_tool_call(
