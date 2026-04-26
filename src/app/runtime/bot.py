@@ -288,7 +288,9 @@ class Bot:
         # Step 4: Task Manager
         from src.kernel.concurrency import get_task_manager, get_watchdog
 
-        self.task_manager = get_task_manager()
+        self.task_manager = get_task_manager(
+            process_workers=self.config.advanced.process_workers
+        )
         
         # 仅在启用时启动 WatchDog
         if self.config.bot.enable_watchdog:
@@ -881,6 +883,7 @@ class Bot:
 
                 # 清理已完成的任务
                 self.task_manager.cleanup_tasks()
+                self.task_manager.shutdown_process_pool(wait=False)
 
             # 8. 关闭数据库
             from src.kernel.db import close_engine

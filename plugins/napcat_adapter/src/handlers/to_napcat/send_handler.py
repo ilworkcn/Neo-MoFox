@@ -271,7 +271,7 @@ class SendHandler:
             new_payload = self.build_payload(payload, self.handle_image_message(str(image)), False)
         elif seg_type == "emoji":
             emoji = seg.get("data")
-            new_payload = self.build_payload(payload, self.handle_emoji_message(str(emoji)), False)
+            new_payload = self.build_payload(payload, await self.handle_emoji_message(str(emoji)), False)
         elif seg_type == "voice":
             voice = seg.get("data")
             new_payload = self.build_payload(payload, self.handle_voice_message(str(voice)), False)
@@ -396,12 +396,12 @@ class SendHandler:
             },
         }
 
-    def handle_emoji_message(self, encoded_emoji: str) -> dict:
+    async def handle_emoji_message(self, encoded_emoji: str) -> dict:
         """处理表情消息"""
         encoded_image = encoded_emoji
-        image_format = get_image_format(encoded_emoji)
+        image_format = await get_image_format(encoded_emoji)
         if image_format != "gif":
-            encoded_image = convert_image_to_gif(encoded_emoji)
+            encoded_image = await convert_image_to_gif(encoded_emoji)
         return {
             "type": "image",
             "data": {

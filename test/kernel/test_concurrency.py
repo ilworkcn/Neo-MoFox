@@ -30,6 +30,17 @@ from src.kernel.concurrency.exceptions import (
 )
 
 
+def process_add(a: int, b: int) -> int:
+    return a + b
+
+
+def process_sleep(seconds: float) -> str:
+    import time
+
+    time.sleep(seconds)
+    return "done"
+
+
 class TestTaskInfo:
     """测试 TaskInfo 数据类"""
 
@@ -195,6 +206,29 @@ class TestTaskManager:
 
         assert stats["total_tasks"] >= 2
         assert stats["daemon_tasks"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_to_process(self) -> None:
+        """测试提交函数到进程池执行"""
+        tm = TaskManager(process_workers=1)
+
+        try:
+            result = await tm.to_process(process_add, 1, 2)
+        finally:
+            tm.shutdown_process_pool(wait=False)
+
+        assert result == 3
+
+    @pytest.mark.asyncio
+    async def test_to_process_timeout(self) -> None:
+        """测试进程池任务超时"""
+        tm = TaskManager(process_workers=1)
+
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                await tm.to_process(process_sleep, 0.3, timeout=0.05)
+        finally:
+            tm.shutdown_process_pool(wait=False)
 
 
 class TestTaskGroup:

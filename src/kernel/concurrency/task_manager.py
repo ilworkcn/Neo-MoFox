@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import weakref
+from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from threading import Lock
-from typing import TYPE_CHECKING, Any, Coroutine
+from typing import TYPE_CHECKING, Any, Coroutine, ParamSpec, TypeVar
 from uuid import uuid4
 
 from .task_info import TaskInfo
@@ -18,6 +21,9 @@ from .exceptions import TaskNotFoundError
 
 if TYPE_CHECKING:
     from .watchdog import WatchDog
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 class TaskManager:
@@ -33,7 +39,7 @@ class TaskManager:
         _watchdog: WatchDog 实例引用
     """
 
-    def __init__(self) -> None:
+    def __init__(self, process_workers: int = 4) -> None:
         """初始化任务管理器"""
         self._tasks: dict[str, TaskInfo] = {}
         self._groups: dict[str, TaskGroup] = {}
@@ -42,7 +48,31 @@ class TaskManager:
             weakref.WeakKeyDictionary()
         )
         self._watchdog: WatchDog | None = None  # WatchDog 实例，稍后注入
+        self._process_workers = max(1, process_workers)
+        self._process_pool: ProcessPoolExecutor | None = ProcessPoolExecutor(
+            max_workers=self._process_workers
+        )
         self._initialized = True
+
+    def configure_process_pool(self, process_workers: int) -> None:
+        """重新配置进程池大小。
+
+        Args:
+            process_workers: 进程池进程数量，最小为 1
+        """
+        process_workers = max(1, process_workers)
+        if process_workers == self._process_workers and self._process_pool is not None:
+            return
+
+        self.shutdown_process_pool(wait=False, cancel_futures=True)
+        self._process_workers = process_workers
+        self._process_pool = ProcessPoolExecutor(max_workers=self._process_workers)
+
+    def _ensure_process_pool(self) -> ProcessPoolExecutor:
+        """确保进程池存在。"""
+        if self._process_pool is None:
+            self._process_pool = ProcessPoolExecutor(max_workers=self._process_workers)
+        return self._process_pool
 
     def set_watchdog(self, watchdog: WatchDog) -> None:
         """设置 WatchDog 实例
@@ -51,6 +81,41 @@ class TaskManager:
             watchdog: WatchDog 实例
         """
         self._watchdog = watchdog
+
+    async def to_process(
+        self,
+        func: Callable[P, R],
+        *args: P.args,
+        timeout: float | None = 15.0,
+        **kwargs: P.kwargs,
+    ) -> R:
+        """在独立进程中执行同步函数，适合 CPU 密集任务。
+
+        Args:
+            func: 要提交到进程池执行的可 pickle 同步函数
+            *args: 函数位置参数
+            timeout: 超时时间（秒），默认 15 秒；None 表示不限制
+            **kwargs: 函数关键字参数
+
+        Returns:
+            R: 函数返回值
+
+        Raises:
+            RuntimeError: 如果不在异步上下文中调用
+            asyncio.TimeoutError: 如果执行超过 timeout
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            raise RuntimeError(
+                "TaskManager.to_process must be called within an async context"
+            )
+
+        call = partial(func, *args, **kwargs)
+        future = loop.run_in_executor(self._ensure_process_pool(), call)
+        if timeout is None:
+            return await future
+        return await asyncio.wait_for(future, timeout=timeout)
 
     def create_task(
         self,
@@ -344,7 +409,21 @@ class TaskManager:
                 "daemon_tasks": daemon,
                 "grouped_tasks": grouped,
                 "groups": len(self._groups),
+                "process_workers": self._process_workers,
+                "process_pool_running": self._process_pool is not None,
             }
+
+    def shutdown_process_pool(
+        self,
+        wait: bool = True,
+        cancel_futures: bool = True,
+    ) -> None:
+        """关闭 TaskManager 持有的进程池。"""
+        if self._process_pool is None:
+            return
+
+        self._process_pool.shutdown(wait=wait, cancel_futures=cancel_futures)
+        self._process_pool = None
 
     def __repr__(self) -> str:
         """任务管理器字符串表示"""
@@ -361,13 +440,18 @@ class TaskManager:
 _task_manager: TaskManager | None = None
 
 
-def get_task_manager() -> TaskManager:
+def get_task_manager(process_workers: int | None = None) -> TaskManager:
     """获取全局 TaskManager 实例
+
+    Args:
+        process_workers: 可选进程池大小；首次创建时使用，已存在时会重新配置
 
     Returns:
         TaskManager: 全局任务管理器单例
     """
     global _task_manager
     if _task_manager is None:
-        _task_manager = TaskManager()
+        _task_manager = TaskManager(process_workers=process_workers or 4)
+    elif process_workers is not None:
+        _task_manager.configure_process_pool(process_workers)
     return _task_manager

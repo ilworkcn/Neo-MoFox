@@ -379,6 +379,10 @@ class CoreConfig(ConfigBase):
             default=True,
             description="是否信任系统代理与环境变量（httpx trust_env）",
         )
+        process_workers: int = Field(
+            default=4,
+            description="TaskManager 进程池大小，用于承载 CPU 密集型任务",
+        )
 
     advanced: AdvancedSection = Field(default_factory=AdvancedSection)
 

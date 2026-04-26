@@ -1,4 +1,3 @@
-import base64
 import io
 import time
 import weakref
@@ -10,6 +9,11 @@ import orjson
 from PIL import Image
 
 from src.app.plugin_system.api.log_api import get_logger
+from src.core.utils.base64_helper import (
+    base64_decode_to_bytes,
+    base64_encode_bytes,
+)
+from src.kernel.concurrency import get_task_manager
 
 if TYPE_CHECKING:
     from ...plugin import NapcatAdapter
@@ -257,7 +261,7 @@ async def get_image_base64(url: str) -> str:
 
         if not image_bytes:
             raise ValueError("图片内容为空")
-        return base64.b64encode(image_bytes).decode("utf-8")
+        return await get_task_manager().to_process(base64_encode_bytes, image_bytes)
     except httpx.TimeoutException as e:
         logger.error(f"图片下载超时: {e!s}")
         raise
@@ -266,7 +270,7 @@ async def get_image_base64(url: str) -> str:
         raise
 
 
-def convert_image_to_gif(image_base64: str) -> str:
+async def convert_image_to_gif(image_base64: str) -> str:
     # sourcery skip: extract-method
     """
     将Base64编码的图片转换为GIF格式
@@ -277,12 +281,18 @@ def convert_image_to_gif(image_base64: str) -> str:
     """
     logger.debug("转换图片为GIF格式")
     try:
-        image_bytes = base64.b64decode(image_base64)
+        image_bytes = await get_task_manager().to_process(
+            base64_decode_to_bytes,
+            image_base64,
+        )
         image = Image.open(io.BytesIO(image_bytes))
         output_buffer = io.BytesIO()
         image.save(output_buffer, format="GIF")
         output_buffer.seek(0)
-        return base64.b64encode(output_buffer.read()).decode("utf-8")
+        return await get_task_manager().to_process(
+            base64_encode_bytes,
+            output_buffer.read(),
+        )
     except Exception as e:
         logger.error(f"图片转换为GIF失败: {e!s}")
         return image_base64
@@ -311,7 +321,7 @@ async def get_self_info(
     return data
 
 
-def get_image_format(raw_data: str) -> str:
+async def get_image_format(raw_data: str) -> str:
     """
     从Base64编码的数据中确定图片的格式类型
     Parameters:
@@ -319,7 +329,7 @@ def get_image_format(raw_data: str) -> str:
     Returns:
         format: str: 图片的格式类型，如 'jpeg', 'png', 'gif'等
     """
-    image_bytes = base64.b64decode(raw_data)
+    image_bytes = await get_task_manager().to_process(base64_decode_to_bytes, raw_data)
     return Image.open(io.BytesIO(image_bytes)).format.lower()
 
 
