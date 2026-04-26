@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import random
 from typing import AsyncGenerator
@@ -47,6 +48,8 @@ _SUB_AGENT_ALIAS_MENTION_BONUS = 0.4
 _SUB_AGENT_UNREAD_MESSAGE_BONUS = 0.05
 _SUB_AGENT_NEXT_TICK_REPLY_BONUS = 0.5
 _SUB_AGENT_NEXT_TICK_BONUS_ATTR = "_default_chatter_next_tick_bonus"
+_SEND_TEXT_TYPING_DELAY_PER_CHAR = 0.045
+_SEND_TEXT_TYPING_DELAY_MAX_SECONDS = 3.0
 
 
 def _set_next_tick_sub_agent_bonus(chat_stream: ChatStream, bonus: float) -> None:
@@ -264,6 +267,17 @@ class SendTextAction(BaseAction):
                 _SUB_AGENT_NEXT_TICK_REPLY_BONUS,
             )
 
+    @staticmethod
+    def _typing_delay_seconds(content: str) -> float:
+        """根据文本长度估算发送前的打字等待时间。"""
+        delay = len(content) * _SEND_TEXT_TYPING_DELAY_PER_CHAR
+        return min(delay, _SEND_TEXT_TYPING_DELAY_MAX_SECONDS)
+
+    async def _sleep_for_typing_delay(self, content: str) -> None:
+        delay = self._typing_delay_seconds(content)
+        if delay > 0:
+            await asyncio.sleep(delay)
+
     async def execute(
         self,
         content: str,
@@ -299,6 +313,8 @@ class SendTextAction(BaseAction):
 
         if not content:
             return True, "内容为空，跳过发送"
+
+        await self._sleep_for_typing_delay(content)
         
         # 如果需要引用消息，创建带reply_to的Message对象
         if reply_to:

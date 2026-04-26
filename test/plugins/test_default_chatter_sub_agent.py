@@ -13,6 +13,8 @@ from plugins.default_chatter.plugin import (
     DefaultChatter,
     DefaultChatterPlugin,
     SendTextAction,
+    _SEND_TEXT_TYPING_DELAY_MAX_SECONDS,
+    _SEND_TEXT_TYPING_DELAY_PER_CHAR,
 )
 from src.core.models.message import Message
 from src.core.models.stream import ChatStream
@@ -141,6 +143,15 @@ async def test_send_text_marks_next_tick_bonus_after_success(
 
     assert success is True
     assert getattr(stream.context, "_default_chatter_next_tick_bonus", None) == 0.5
+
+
+def test_send_text_typing_delay_uses_length_and_max_cap() -> None:
+    """send_text 打字延迟应随字符长度增长，并受最大等待时间限制。"""
+    short_delay = SendTextAction._typing_delay_seconds("你好呀")
+    long_delay = SendTextAction._typing_delay_seconds("x" * 10_000)
+
+    assert short_delay == pytest.approx(3 * _SEND_TEXT_TYPING_DELAY_PER_CHAR)
+    assert long_delay == _SEND_TEXT_TYPING_DELAY_MAX_SECONDS
 
 
 @pytest.mark.asyncio
