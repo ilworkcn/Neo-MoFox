@@ -7,7 +7,7 @@ from typing import Literal
 
 from src.kernel.config import ConfigBase, SectionBase, config_section, Field
 
-CORE_VERSION = "1.1.0-alpha"
+CORE_VERSION = "1.1.0-alpha.1"
 
 class CoreConfig(ConfigBase):
     """Core 层配置类
@@ -71,12 +71,12 @@ class CoreConfig(ConfigBase):
             description="主循环 tick 间隔（秒），过短可能增加消耗，过长可能降低响应速度",
         )
         stream_warning_threshold: float = Field(
-            default=15.0,
-            description="流循环警告阈值（倍数），距上次心跳超过 tick_interval × 此值时输出警告",
+            default=150.0,
+            description="流循环警告阈值（秒），距上次心跳超过此值时输出警告",
         )
         stream_restart_threshold: float = Field(
-            default=30.0,
-            description="流循环重启阈值（倍数），距上次心跳超过 tick_interval × 此值时尝试重启",
+            default=300.0,
+            description="流循环重启阈值（秒），距上次心跳超过此值时尝试重启",
         )
         message_buffer_window: float = Field(
             default=8.0,
@@ -378,6 +378,10 @@ class CoreConfig(ConfigBase):
         trust_env: bool = Field(
             default=True,
             description="是否信任系统代理与环境变量（httpx trust_env）",
+        )
+        process_workers: int = Field(
+            default=4,
+            description="TaskManager 进程池大小，用于承载 CPU 密集型任务",
         )
 
     advanced: AdvancedSection = Field(default_factory=AdvancedSection)

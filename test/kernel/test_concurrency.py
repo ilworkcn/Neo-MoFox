@@ -30,6 +30,17 @@ from src.kernel.concurrency.exceptions import (
 )
 
 
+def process_add(a: int, b: int) -> int:
+    return a + b
+
+
+def process_sleep(seconds: float) -> str:
+    import time
+
+    time.sleep(seconds)
+    return "done"
+
+
 class TestTaskInfo:
     """测试 TaskInfo 数据类"""
 
@@ -196,6 +207,29 @@ class TestTaskManager:
         assert stats["total_tasks"] >= 2
         assert stats["daemon_tasks"] >= 1
 
+    @pytest.mark.asyncio
+    async def test_to_process(self) -> None:
+        """测试提交函数到进程池执行"""
+        tm = TaskManager(process_workers=1)
+
+        try:
+            result = await tm.to_process(process_add, 1, 2)
+        finally:
+            tm.shutdown_process_pool(wait=False)
+
+        assert result == 3
+
+    @pytest.mark.asyncio
+    async def test_to_process_timeout(self) -> None:
+        """测试进程池任务超时"""
+        tm = TaskManager(process_workers=1)
+
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                await tm.to_process(process_sleep, 0.3, timeout=0.05)
+        finally:
+            tm.shutdown_process_pool(wait=False)
+
 
 class TestTaskGroup:
     """测试 TaskGroup 类"""
@@ -304,8 +338,8 @@ class TestWatchDog:
         heartbeat = wd.register_stream(
             stream_id="test_stream",
             tick_interval=0.1,
-            warning_threshold=0.2,
-            restart_threshold=0.5,
+            warning_threshold=150.0,
+            restart_threshold=300.0,
         )
 
         assert isinstance(heartbeat, StreamHeartbeat)
@@ -1015,7 +1049,7 @@ class TestWatchDogStreamMonitoring:
         wd.register_stream(
             stream_id="slow_stream",
             tick_interval=0.01,
-            warning_threshold=2.0,
+            warning_threshold=0.001,
         )
 
         # 等待足够长的时间触发警告
@@ -1040,7 +1074,7 @@ class TestWatchDogStreamMonitoring:
         wd.register_stream(
             stream_id="restart_stream",
             tick_interval=0.01,
-            restart_threshold=2.0,
+            restart_threshold=0.001,
             restart_callback=restart_callback,
         )
 
@@ -1088,7 +1122,7 @@ class TestWatchDogStreamMonitoring:
         wd.register_stream(
             stream_id="failing_restart_stream",
             tick_interval=0.01,
-            restart_threshold=2.0,
+            restart_threshold=0.001,
             restart_callback=failing_callback,
         )
 
@@ -1786,9 +1820,6 @@ class TestAdditionalCoverage:
         async with tg:
             tg.create_task(slow_task())
 
-            # 创建外部取消源
-            cancel_event = asyncio.Event()
-
             async def wait_and_cancel():
                 await asyncio.sleep(0.05)
                 # 取消当前正在运行的任务
@@ -1868,9 +1899,6 @@ class TestAdditionalCoverage:
 
         async def failing_task():
             raise RuntimeError("Callback test error")
-
-        # 创建组
-        group = tm.group(name="callback_path_test")
 
         # 直接在组外创建任务但设置 group_name
         # 这样可以手动控制回调的触发

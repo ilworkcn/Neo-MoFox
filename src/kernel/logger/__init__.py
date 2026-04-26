@@ -80,6 +80,3 @@ __all__ = [
     # 事件广播相关
     "LOG_OUTPUT_EVENT",
 ]
-
-# 版本信息
-__version__ = "1.1.0-alpha"

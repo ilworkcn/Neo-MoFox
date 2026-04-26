@@ -213,7 +213,7 @@ def example_manager() -> None:
         logger.info(f"使用 greet 模板: {result}")
 
     # get_or_create
-    tmpl3 = manager.get_or_create(
+    manager.get_or_create(
         name="question",
         template="{question}？",
     )

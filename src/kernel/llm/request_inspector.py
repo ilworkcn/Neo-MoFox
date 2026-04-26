@@ -27,7 +27,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 
@@ -76,32 +76,40 @@ def _build_overview(
     api_name: str,
     model: str,
     params: dict[str, Any],
-  metadata: dict[str, Any],
+    metadata: dict[str, Any],
 ) -> list[dict[str, str]]:
     """构造顶层请求摘要。"""
-    messages = params.get("messages", [])
+    messages = _get_inspector_messages(params)
     tools = params.get("tools", [])
     overview = [
         {"label": "API", "value": api_name},
-      {"label": "提供商", "value": _format_scalar(metadata.get("api_provider", "-"))},
+        {"label": "提供商", "value": _format_scalar(metadata.get("api_provider", "-"))},
         {"label": "模型", "value": model or "-"},
-        {"label": "消息数", "value": str(len(messages) if isinstance(messages, list) else 0)},
+        {
+            "label": "消息数",
+            "value": str(len(messages) if isinstance(messages, list) else 0),
+        },
         {"label": "工具数", "value": str(len(tools) if isinstance(tools, list) else 0)},
     ]
 
     estimated_input_tokens = metadata.get("estimated_input_tokens")
     if estimated_input_tokens is not None:
-      overview.append({"label": "预估输入 Tokens", "value": _format_scalar(estimated_input_tokens)})
+        overview.append(
+            {
+                "label": "预估输入 Tokens",
+                "value": _format_scalar(estimated_input_tokens),
+            }
+        )
 
     request_name = metadata.get("request_name")
     if request_name:
-      overview.append({"label": "请求名称", "value": _format_scalar(request_name)})
+        overview.append({"label": "请求名称", "value": _format_scalar(request_name)})
 
     for key, label in _OVERVIEW_FIELDS:
         if key in params:
             overview.append({"label": label, "value": _format_scalar(params[key])})
 
-    reserved_keys = {"messages", "tools", "model"}
+    reserved_keys = {"messages", "tools", "model", "system"}
     reserved_keys.update(name for name, _ in _OVERVIEW_FIELDS)
     for key in sorted(key for key in params.keys() if key not in reserved_keys):
         overview.append({"label": key, "value": _format_scalar(params[key])})
@@ -149,13 +157,19 @@ def _build_tools_view(params: dict[str, Any]) -> list[dict[str, Any]]:
 
         function_obj = tool.get("function")
         if isinstance(function_obj, dict):
-          function_schema: dict[str, Any] = function_obj
+            function_schema: dict[str, Any] = function_obj
         else:
-          function_schema = tool
+            function_schema = tool
         parameters_obj = function_schema.get("parameters")
-        parameters: dict[str, Any] = parameters_obj if isinstance(parameters_obj, dict) else {}
+        if not isinstance(parameters_obj, dict):
+            parameters_obj = function_schema.get("input_schema")
+        parameters: dict[str, Any] = (
+            parameters_obj if isinstance(parameters_obj, dict) else {}
+        )
         properties_obj = parameters.get("properties")
-        properties: dict[str, Any] = properties_obj if isinstance(properties_obj, dict) else {}
+        properties: dict[str, Any] = (
+            properties_obj if isinstance(properties_obj, dict) else {}
+        )
         required_obj = parameters.get("required")
         required: list[Any] = required_obj if isinstance(required_obj, list) else []
         rendered_tools.append(
@@ -168,8 +182,16 @@ def _build_tools_view(params: dict[str, Any]) -> list[dict[str, Any]]:
                 "properties": [
                     {
                         "name": str(prop_name),
-                        "type": _schema_type_text(prop_schema) if isinstance(prop_schema, dict) else "unknown",
-                        "description": str(prop_schema.get("description", "")) if isinstance(prop_schema, dict) else "",
+                        "type": (
+                            _schema_type_text(prop_schema)
+                            if isinstance(prop_schema, dict)
+                            else "unknown"
+                        ),
+                        "description": (
+                            str(prop_schema.get("description", ""))
+                            if isinstance(prop_schema, dict)
+                            else ""
+                        ),
                         "required": prop_name in required,
                     }
                     for prop_name, prop_schema in properties.items()
@@ -211,7 +233,9 @@ def _render_content_list(content: list[Any]) -> list[dict[str, Any]]:
 
         if item_type in {"image_url", "input_image"}:
             image_url_obj = item.get("image_url")
-            image_url: dict[str, Any] = image_url_obj if isinstance(image_url_obj, dict) else {}
+            image_url: dict[str, Any] = (
+                image_url_obj if isinstance(image_url_obj, dict) else {}
+            )
             url = image_url.get("url") or item.get("url") or ""
             blocks.append(
                 _make_block(
@@ -220,6 +244,21 @@ def _render_content_list(content: list[Any]) -> list[dict[str, Any]]:
                     title="图片内容",
                     text="请求中包含图片输入。",
                     meta=_format_scalar(url)[:120],
+                )
+            )
+            continue
+
+        if item_type == "image":
+            source_obj = item.get("source")
+            source = source_obj if isinstance(source_obj, dict) else {}
+            meta = source.get("media_type") or source.get("type") or "image"
+            blocks.append(
+                _make_block(
+                    "media",
+                    media_type="image",
+                    title="图片内容",
+                    text="请求中包含图片输入。",
+                    meta=_format_scalar(meta),
                 )
             )
             continue
@@ -237,11 +276,66 @@ def _render_content_list(content: list[Any]) -> list[dict[str, Any]]:
             continue
 
         if item_type == "refusal":
-            blocks.append(_make_block("markdown", text=str(item.get("refusal", "")), label="拒绝说明"))
+            blocks.append(
+                _make_block(
+                    "markdown", text=str(item.get("refusal", "")), label="拒绝说明"
+                )
+            )
             continue
 
-        blocks.append(_render_unknown_content(item, label=f"未知 content 类型: {item_type}"))
+        if item_type == "thinking":
+            blocks.append(
+                _make_block(
+                    "markdown",
+                    text=str(item.get("thinking", "")),
+                    label="Reasoning",
+                )
+            )
+            continue
+
+        if item_type == "tool_use":
+            blocks.append(
+                _make_block(
+                    "tool_call",
+                    call_id=str(item.get("id", "") or ""),
+                    name=str(item.get("name", "unknown_tool")),
+                    arguments_text=_json_dumps(item.get("input", {})),
+                )
+            )
+            continue
+
+        if item_type == "tool_result":
+            blocks.append(
+                _make_block(
+                    "tool_result",
+                    name=str(item.get("tool_name", "")),
+                    call_id=str(item.get("tool_use_id", "") or ""),
+                    text=_format_scalar(item.get("content", "")),
+                )
+            )
+            continue
+
+        blocks.append(
+            _render_unknown_content(item, label=f"未知 content 类型: {item_type}")
+        )
     return blocks
+
+
+def _get_inspector_messages(params: dict[str, Any]) -> list[Any]:
+    """获取用于检视器展示的消息列表，兼容 Anthropic 的 system 字段。"""
+    rendered_messages: list[Any] = []
+
+    system = params.get("system")
+    if isinstance(system, str):
+        rendered_messages.append({"role": "system", "content": system})
+    elif isinstance(system, list):
+        rendered_messages.append({"role": "system", "content": system})
+
+    messages = params.get("messages", [])
+    if isinstance(messages, list):
+        rendered_messages.extend(messages)
+
+    return rendered_messages
 
 
 def _build_message_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
@@ -271,7 +365,9 @@ def _build_message_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
 
     reasoning_content = message.get("reasoning_content")
     if isinstance(reasoning_content, str) and reasoning_content.strip():
-        blocks.append(_make_block("markdown", text=reasoning_content, label="Reasoning"))
+        blocks.append(
+            _make_block("markdown", text=reasoning_content, label="Reasoning")
+        )
 
     tool_calls = message.get("tool_calls")
     if isinstance(tool_calls, list):
@@ -280,10 +376,16 @@ def _build_message_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
                 blocks.append(_render_unknown_content(tool_call, label="未知工具调用"))
                 continue
             function_block_obj = tool_call.get("function")
-            function_block: dict[str, Any] = function_block_obj if isinstance(function_block_obj, dict) else {}
-            name = str(function_block.get("name", tool_call.get("name", "unknown_tool")))
+            function_block: dict[str, Any] = (
+                function_block_obj if isinstance(function_block_obj, dict) else {}
+            )
+            name = str(
+                function_block.get("name", tool_call.get("name", "unknown_tool"))
+            )
             arguments = function_block.get("arguments", tool_call.get("args", {}))
-            arguments_text = arguments if isinstance(arguments, str) else _json_dumps(arguments)
+            arguments_text = (
+                arguments if isinstance(arguments, str) else _json_dumps(arguments)
+            )
             blocks.append(
                 _make_block(
                     "tool_call",
@@ -301,8 +403,8 @@ def _build_message_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _build_messages_view(params: dict[str, Any]) -> list[dict[str, Any]]:
     """将请求中的 messages 转换为卡片化展示模型。"""
-    messages = params.get("messages", [])
-    if not isinstance(messages, list):
+    messages = _get_inspector_messages(params)
+    if not messages:
         return []
 
     rendered_messages: list[dict[str, Any]] = []
@@ -388,7 +490,9 @@ class CapturedRequest:
         summary = self.to_summary()
         summary["params"] = self.params
         summary["metadata"] = self.metadata
-        summary["rendered"] = build_render_view(self.api_name, self.model, self.params, self.metadata)
+        summary["rendered"] = build_render_view(
+            self.api_name, self.model, self.params, self.metadata
+        )
         return summary
 
 
@@ -433,6 +537,18 @@ class RequestInspector:
             except asyncio.QueueFull:
                 pass
 
+    def import_json(self, payload: Any) -> list[CapturedRequest]:
+        """导入外部 JSON，并转换为可渲染的捕获记录。"""
+        imported: list[CapturedRequest] = []
+        for api_name, params, metadata in _normalize_import_payload(payload):
+            next_id = self._counter + 1
+            self.capture(api_name, params, metadata)
+            record = self._records[-1]
+            if record.id != next_id:
+                raise RuntimeError("导入记录 ID 不连续")
+            imported.append(record)
+        return imported
+
     def mount(self, app: Any, prefix: str = "/_inspector") -> None:
         """将 WebUI 路由挂载到 FastAPI 应用。"""
         if self._mounted:
@@ -464,6 +580,20 @@ class RequestInspector:
         async def clear_requests() -> JSONResponse:
             self._records.clear()
             return JSONResponse({"ok": True})
+
+        @router.post("/api/import")
+        async def import_requests(payload: Any = Body(...)) -> JSONResponse:
+            try:
+                imported = self.import_json(payload)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "count": len(imported),
+                    "items": [record.to_summary() for record in imported],
+                }
+            )
 
         @router.get("/api/stream", include_in_schema=False)
         async def sse_stream() -> StreamingResponse:
@@ -519,6 +649,64 @@ def capture(
 ) -> None:
     """捕获一条 OpenAI 请求体。"""
     get_inspector().capture(api_name, params, metadata)
+
+
+def _normalize_import_payload(
+    payload: Any,
+) -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
+    """将导入 JSON 归一化为 capture 所需的记录列表。"""
+    entries = _normalize_import_entries(payload)
+    if not entries:
+        raise ValueError("导入 JSON 为空，无法渲染")
+    return entries
+
+
+def _normalize_import_entries(
+    payload: Any,
+) -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
+    """递归解析导入 JSON，支持单条、列表和包装对象。"""
+    if isinstance(payload, list):
+        entries: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+        for item in payload:
+            entries.extend(_normalize_import_entries(item))
+        return entries
+
+    if not isinstance(payload, dict):
+        raise ValueError(
+            "导入 JSON 必须是对象、对象数组，或包含 requests/params 的对象"
+        )
+
+    requests_payload = payload.get("requests")
+    if requests_payload is not None:
+        if not isinstance(requests_payload, list):
+            raise ValueError("requests 字段必须是数组")
+        entries: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+        for item in requests_payload:
+            entries.extend(_normalize_import_entries(item))
+        return entries
+
+    metadata_raw = payload.get("metadata")
+    metadata = metadata_raw.copy() if isinstance(metadata_raw, dict) else {}
+    metadata.setdefault("imported", True)
+
+    api_name = str(payload.get("api_name") or payload.get("api") or "imported.request")
+
+    if "params" in payload:
+        params = payload.get("params")
+        if not isinstance(params, dict):
+            raise ValueError("params 字段必须是对象")
+        if "source" in payload and "import_source" not in metadata:
+            metadata["import_source"] = str(payload.get("source"))
+        return [(api_name, params, metadata)]
+
+    if any(key in payload for key in ("messages", "tools", "model", "input")):
+        params = payload.copy()
+        params.pop("metadata", None)
+        return [(api_name, params, metadata)]
+
+    raise ValueError(
+        "无法识别导入 JSON 结构；请提供原始请求体、包含 params 的对象，或 requests 数组"
+    )
 
 
 _WEBUI_HTML = r"""<!DOCTYPE html>
@@ -604,6 +792,7 @@ _WEBUI_HTML = r"""<!DOCTYPE html>
     font-weight: 700;
   }
   .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+  .toolbar-group { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   button {
     border: 1px solid var(--border);
     background: rgba(255, 255, 255, 0.72);
@@ -631,7 +820,44 @@ _WEBUI_HTML = r"""<!DOCTYPE html>
     outline: none;
   }
   input[type=text]:focus { border-color: rgba(14, 116, 144, 0.45); }
+  textarea {
+    width: 100%;
+    min-height: 220px;
+    resize: vertical;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.8);
+    color: var(--text);
+    border-radius: 16px;
+    padding: 14px;
+    outline: none;
+    font-family: 'JetBrains Mono', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  textarea:focus { border-color: rgba(14, 116, 144, 0.45); }
   .main { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+  .import-panel {
+    display: none;
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(255, 250, 243, 0.82);
+    backdrop-filter: blur(12px);
+    flex-direction: column;
+    gap: 12px;
+  }
+  .import-panel.open { display: flex; }
+  .import-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+  .import-hint { color: var(--muted); font-size: 12px; }
+  .import-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .status-text { color: var(--muted); font-size: 12px; min-height: 18px; }
+  .status-text.error { color: var(--danger); }
+  .status-text.success { color: var(--success); }
   .list-panel {
     width: 360px;
     flex-shrink: 0;
@@ -879,16 +1105,44 @@ _WEBUI_HTML = r"""<!DOCTYPE html>
     <span class="badge" id="total-badge">0</span>
   </div>
   <div class="toolbar">
-    <input type="text" id="filter-input" placeholder="过滤 model / api…">
-    <button id="auto-scroll-btn" class="active" title="自动滚动到最新">跟随最新</button>
-    <button id="pretty-btn" class="active">渲染视图</button>
-    <button id="json-btn">JSON 视图</button>
-    <button id="copy-btn">复制 JSON</button>
-    <button id="clear-btn" class="danger">清空</button>
+    <div class="toolbar-group">
+      <input type="text" id="filter-input" placeholder="过滤 model / api…">
+      <button id="import-toggle-btn">导入 JSON</button>
+      <button id="auto-scroll-btn" class="active" title="自动滚动到最新">跟随最新</button>
+    </div>
+    <div class="toolbar-group">
+      <button id="pretty-btn" class="active">渲染视图</button>
+      <button id="json-btn">JSON 视图</button>
+      <button id="copy-btn">复制 JSON</button>
+      <button id="clear-btn" class="danger">清空</button>
+    </div>
   </div>
 </header>
 <div class="main">
   <div class="list-panel">
+    <div class="import-panel" id="import-panel">
+      <div class="import-row">
+        <div>
+          <strong>导入外部请求 JSON</strong>
+          <div class="import-hint">支持原始请求体、包含 params 的对象、对象数组，或带 requests 数组的导出文件。</div>
+        </div>
+        <div class="import-actions">
+          <input type="file" id="import-file-input" accept=".json,application/json" multiple hidden>
+          <button id="import-file-btn">选择文件</button>
+          <button id="import-submit-btn">导入文本</button>
+        </div>
+      </div>
+      <textarea id="import-textarea" placeholder='可直接粘贴 JSON，例如：
+{
+  "api_name": "chat.completions.create",
+  "params": {
+    "model": "gpt-4.1",
+    "messages": [{"role": "user", "content": "hello"}]
+  },
+  "metadata": {"api_provider": "OpenAI"}
+}'></textarea>
+      <div class="status-text" id="import-status"></div>
+    </div>
     <div class="list-scroll" id="list-scroll">
       <div class="empty-tip" id="empty-tip">等待请求捕获…</div>
     </div>
@@ -912,6 +1166,13 @@ const statusDot = document.getElementById('status-dot');
 const autoScrollBtn = document.getElementById('auto-scroll-btn');
 const prettyBtn = document.getElementById('pretty-btn');
 const jsonBtn = document.getElementById('json-btn');
+const importToggleBtn = document.getElementById('import-toggle-btn');
+const importPanel = document.getElementById('import-panel');
+const importTextarea = document.getElementById('import-textarea');
+const importStatus = document.getElementById('import-status');
+const importFileInput = document.getElementById('import-file-input');
+const importFileBtn = document.getElementById('import-file-btn');
+const importSubmitBtn = document.getElementById('import-submit-btn');
 
 let requests = [];
 let activeId = null;
@@ -941,6 +1202,12 @@ function connectSSE() {
   };
 }
 connectSSE();
+
+async function refreshRequests() {
+  const response = await fetch('/_inspector/api/requests');
+  requests = await response.json();
+  renderList();
+}
 
 function filterText() {
   return filterInput.value.trim().toLowerCase();
@@ -1190,6 +1457,74 @@ document.getElementById('clear-btn').addEventListener('click', async () => {
 document.getElementById('copy-btn').addEventListener('click', async () => {
   if (activeId == null || !fullCache[activeId]) return;
   await navigator.clipboard.writeText(JSON.stringify(fullCache[activeId].params, null, 2));
+});
+
+function setImportStatus(message, kind = '') {
+  importStatus.textContent = message;
+  importStatus.className = 'status-text' + (kind ? ` ${kind}` : '');
+}
+
+async function importJsonPayload(payload) {
+  setImportStatus('正在导入…');
+  const response = await fetch('/_inspector/api/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json();
+  if (!response.ok) {
+    throw new Error(result.error || '导入失败');
+  }
+  await refreshRequests();
+  fullCache = {};
+  const latest = (result.items || []).at(-1);
+  if (latest) {
+    await selectItem(latest.id);
+  } else {
+    renderActiveDetail();
+  }
+  const count = Number(result.count || 0);
+  setImportStatus(`已导入 ${count} 条记录`, 'success');
+}
+
+importToggleBtn.addEventListener('click', () => {
+  const isOpen = importPanel.classList.toggle('open');
+  importToggleBtn.classList.toggle('active', isOpen);
+  if (isOpen) {
+    importTextarea.focus();
+  }
+});
+
+importSubmitBtn.addEventListener('click', async () => {
+  const text = importTextarea.value.trim();
+  if (!text) {
+    setImportStatus('请输入或粘贴 JSON 内容', 'error');
+    return;
+  }
+  try {
+    await importJsonPayload(JSON.parse(text));
+  } catch (error) {
+    setImportStatus(error.message || '导入失败', 'error');
+  }
+});
+
+importFileBtn.addEventListener('click', () => importFileInput.click());
+
+importFileInput.addEventListener('change', async event => {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  try {
+    const payloads = [];
+    for (const file of files) {
+      const text = await file.text();
+      payloads.push(JSON.parse(text));
+    }
+    await importJsonPayload(payloads.length === 1 ? payloads[0] : payloads);
+  } catch (error) {
+    setImportStatus(error.message || '文件导入失败', 'error');
+  } finally {
+    importFileInput.value = '';
+  }
 });
 
 function escHtml(text) {

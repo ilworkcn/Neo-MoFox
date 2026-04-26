@@ -313,7 +313,7 @@ allow_operator_promotion = true
 
         try:
             config_path = temp_dir / "core.toml"
-            config1 = init_core_config(str(config_path))
+            init_core_config(str(config_path))
             config2 = init_core_config(str(config_path))
 
             # 第二次应该返回新创建的实例（因为重新初始化了）

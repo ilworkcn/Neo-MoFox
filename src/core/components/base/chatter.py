@@ -83,6 +83,8 @@ class Stop:
     """
 
     time: float | int
+    direct_message_wake_enabled: bool = False
+    direct_message_wake_probability: float = 0.0
 
 # 类型别名
 ChatterResult = Wait | Success | Failure | Stop

@@ -66,5 +66,3 @@ __all__ = [
     "TaskExecution",
 ]
 
-# 版本信息
-__version__ = "1.1.0-alpha"

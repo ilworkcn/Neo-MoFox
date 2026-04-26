@@ -151,7 +151,7 @@ class TestBaseConfig:
         mock_exists.return_value = False
         mock_load.return_value = MagicMock()
 
-        result = TestConfig.load_for_plugin("test_plugin", auto_generate=True)
+        TestConfig.load_for_plugin("test_plugin", auto_generate=True)
 
         # 应该先生成默认配置
         mock_generate.assert_called_once()
@@ -173,7 +173,7 @@ class TestBaseConfig:
         mock_exists.return_value = True
         mock_load.return_value = MagicMock()
 
-        result = TestConfig.load_for_plugin("test_plugin")
+        TestConfig.load_for_plugin("test_plugin")
 
         # 不应该生成，应该直接加载
         mock_load.assert_called_once()
@@ -186,7 +186,7 @@ class TestBaseConfig:
         mock_exists.return_value = True
         mock_load.return_value = MagicMock()
 
-        result = TestConfig.reload()
+        TestConfig.reload()
 
         mock_load.assert_called_once()
         # 检查是否传递了 auto_update=True

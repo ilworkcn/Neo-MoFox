@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import io
 import json
@@ -33,6 +32,8 @@ from src.app.plugin_system.api.llm_api import (
 from src.app.plugin_system.api.send_api import send_emoji
 from src.core.components.base.service import BaseService
 from src.core.config import get_core_config
+from src.kernel.concurrency import get_task_manager
+from src.core.utils.base64_helper import base64_encode_bytes
 from src.kernel.logger import get_logger
 from src.kernel.vector_db import get_vector_db_service
 
@@ -649,7 +650,7 @@ class EmojiSenderService(BaseService):
                 logger.warning(f"压缩图片失败: {source} - {e}")
                 return
 
-            image_base64 = base64.b64encode(vlm_bytes).decode("utf-8")
+            image_base64 = await get_task_manager().to_process(base64_encode_bytes, vlm_bytes)
 
             labeled = await self._vlm_decide_and_label(
                 image_base64=image_base64, 
@@ -868,7 +869,7 @@ class EmojiSenderService(BaseService):
             logger.warning(f"读取表情包失败: {path} - {e}")
             return False, result, "读取表情包文件失败"
 
-        image_base64 = base64.b64encode(payload).decode("utf-8")
+        image_base64 = await get_task_manager().to_process(base64_encode_bytes, payload)
         desc = str(result.get("description") or "").strip()
         tag = str(result.get("tag") or "").strip()
         processed_plain_text = f"[表情包:{tag}:{desc}]" if desc else f"[表情包:{tag}]"

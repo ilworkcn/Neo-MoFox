@@ -26,7 +26,7 @@ class TestScheduler:
     @pytest.fixture(autouse=True)
     async def setup_scheduler(self):
         """在每个测试前后启动和停止调度器"""
-        unified_scheduler = get_unified_scheduler()
+        get_unified_scheduler()
         await get_unified_scheduler().start()
         yield
         await get_unified_scheduler().stop()
@@ -126,7 +126,7 @@ class TestScheduler:
             executed.append((a, b, c))
 
         # 创建带参数的任务
-        schedule_id = await get_unified_scheduler().create_schedule(
+        await get_unified_scheduler().create_schedule(
             callback=task_with_params,
             trigger_type=TriggerType.TIME,
             trigger_config={"delay_seconds": 0.5},
@@ -555,7 +555,7 @@ class TestSchedulerTimeUtils:
             is_recurring=True,
         )
 
-        execution = task.start_execution()
+        task.start_execution()
         task.finish_execution(success=True)
 
         # 循环任务完成后状态应为PENDING
@@ -677,7 +677,7 @@ class TestSchedulerTimeUtils:
         def sync_task():
             executed.append(1)
 
-        schedule_id = await get_unified_scheduler().create_schedule(
+        await get_unified_scheduler().create_schedule(
             callback=sync_task,
             trigger_type=TriggerType.TIME,
             trigger_config={"delay_seconds": 0.5},
@@ -1198,7 +1198,7 @@ class TestSchedulerTimeUtils:
         async def timeout_handler(**kwargs):
             await asyncio.sleep(100)
 
-        schedule_id = await get_unified_scheduler().create_schedule(
+        await get_unified_scheduler().create_schedule(
             callback=timeout_handler,
             trigger_type=TriggerType.EVENT,
             trigger_config={"event_name": "timeout_test_event"},

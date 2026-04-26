@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 from src.app.plugin_system.api import llm_api

@@ -13,7 +13,7 @@ from typing import Any, cast
 
 import pytest
 
-from plugins.default_chatter.runners import run_enhanced
+from plugins.default_chatter.runners import run_classical, run_enhanced
 from src.core.components.base import Stop
 from src.kernel.llm import ROLE
 
@@ -33,11 +33,20 @@ class _FakeResponse:
     - 具备 message/call_list 供 runner 分支判断
     """
 
-    def __init__(self, payload_roles: list[str], *, message: str = "ok") -> None:
+    def __init__(
+        self,
+        payload_roles: list[str],
+        *,
+        message: str = "ok",
+        reasoning_content: str | None = None,
+        model_set: list[dict[str, object]] | None = None,
+    ) -> None:
         self.payloads: list[_FakePayload] = [_FakePayload(r) for r in payload_roles]
         self.message: str = message
+        self.reasoning_content: str | None = reasoning_content
         self.call_list: list[Any] = []
         self.send_count: int = 0
+        self.model_set: list[dict[str, object]] = model_set or []
 
     def add_payload(self, payload: Any) -> None:
         role = getattr(payload, "role", None)
@@ -273,6 +282,7 @@ async def test_run_enhanced_does_not_yield_wait_when_pending_tool_results(monkey
         (
             "聊天流名称：s1\n\n"
             "思考：（无）\n"
+            "独白：（无）\n"
             "调用工具：\n"
             "    tool-x",
             "Actor 决策",
@@ -289,7 +299,11 @@ async def test_run_enhanced_prints_actor_decision_panel_before_processing_tool_c
 
     from plugins.default_chatter import runners as runners_mod
 
-    resp = _FakeResponse(payload_roles=[ROLE.USER], message="先回一句，再调工具")
+    resp = _FakeResponse(
+        payload_roles=[ROLE.USER],
+        message="先回一句，再调工具",
+        reasoning_content="先判断语境，再安排动作。",
+    )
     resp.call_list = [
         SimpleNamespace(name="tool-x", args={"reason": "测试", "foo": "bar"}, id="1"),
         SimpleNamespace(name="tool-y", args={"count": 2}, id="2"),
@@ -325,7 +339,8 @@ async def test_run_enhanced_prints_actor_decision_panel_before_processing_tool_c
     assert fake_logger.panels == [
         (
             "聊天流名称：测试流\n\n"
-            "思考：先回一句，再调工具\n"
+            "思考：先判断语境，再安排动作。\n"
+            "独白：先回一句，再调工具\n"
             "调用工具：\n"
             "    tool-x (foo: bar)\n"
             "    tool-y (count: 2)",
@@ -333,3 +348,63 @@ async def test_run_enhanced_prints_actor_decision_panel_before_processing_tool_c
             "cyan",
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_run_enhanced_waits_after_anthropic_action_only_suspend() -> None:
+    """Anthropic action-only 回合注入 SUSPEND 后应直接等待。"""
+    resp = _FakeResponse(
+        payload_roles=[ROLE.USER],
+        message="",
+        model_set=[{"client_type": "anthropic"}],
+    )
+    resp.call_list = [SimpleNamespace(name="action-send_text", args={}, id="1")]
+    resp.reasoning_content = "think"
+
+    chatter = _FakeChatterAllowUser(resp)
+    chat_stream = cast(Any, SimpleNamespace(stream_id="s1", stream_name="测试流"))
+    fake_logger = cast(Any, _FakeLogger())
+
+    gen = run_enhanced(
+        chatter=cast(Any, chatter),
+        chat_stream=chat_stream,
+        logger=fake_logger,
+        pass_call_name="action-pass_and_wait",
+        stop_call_name="action-stop_conversation",
+        send_text_call_name="action-send_text",
+        suspend_text="__SUSPEND__",
+    )
+
+    first = await anext(gen)
+    assert first.__class__.__name__ == "Wait"
+    assert resp.send_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_classical_waits_after_anthropic_action_only_suspend() -> None:
+    """classical 下 Anthropic action-only 回合注入 SUSPEND 后应直接等待。"""
+    resp = _FakeResponse(
+        payload_roles=[ROLE.USER],
+        message="",
+        model_set=[{"client_type": "anthropic"}],
+    )
+    resp.call_list = [SimpleNamespace(name="action-send_text", args={}, id="1")]
+    resp.reasoning_content = "think"
+
+    chatter = _FakeChatterAllowUser(resp)
+    chat_stream = cast(Any, SimpleNamespace(stream_id="s1", stream_name="测试流"))
+    fake_logger = cast(Any, _FakeLogger())
+
+    gen = run_classical(
+        chatter=cast(Any, chatter),
+        chat_stream=chat_stream,
+        logger=fake_logger,
+        pass_call_name="action-pass_and_wait",
+        stop_call_name="action-stop_conversation",
+        send_text_call_name="action-send_text",
+        suspend_text="__SUSPEND__",
+    )
+
+    first = await anext(gen)
+    assert first.__class__.__name__ == "Wait"
+    assert resp.send_count == 1

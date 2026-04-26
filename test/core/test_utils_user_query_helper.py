@@ -266,7 +266,7 @@ class TestGetUserQueryHelper:
     def test_singleton_persistence(self):
         """测试单例持久性。"""
         with patch("src.core.utils.user_query_helper.UserQueryHelper"):
-            helper = get_user_query_helper()
+            get_user_query_helper()
             # 全局变量应该被设置
             from src.core.utils.user_query_helper import _user_query_helper
             assert _user_query_helper is not None

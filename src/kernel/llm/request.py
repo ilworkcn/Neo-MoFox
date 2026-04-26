@@ -23,7 +23,7 @@ from .context import LLMContextManager
 from .exceptions import LLMAPIError, LLMConfigurationError, LLMRateLimitError, LLMTimeoutError, classify_exception
 from .model_client import ModelClientRegistry
 from .monitor import RequestMetrics, RequestTimer, get_global_collector
-from .payload import LLMPayload, Text, ToolResult
+from .payload import LLMPayload, ReasoningText, Text, ToolResult
 from .policy import create_default_policy
 from .policy.base import Policy
 from .response import LLMResponse
@@ -73,6 +73,39 @@ def _extract_tools(payloads: list[LLMPayload]) -> list[LLMUsable]:
             if isinstance(part, LLMUsable):
                 tools.append(part)
     return tools
+
+
+def _normalize_client_create_result(
+    result: tuple[Any, ...],
+) -> tuple[
+    str | None,
+    list[dict[str, Any]] | None,
+    Any,
+    str | list[ReasoningText] | None,
+]:
+    """兼容 provider client 的 3 元组与 4 元组返回格式。"""
+    if len(result) == 4:
+        message, tool_calls, stream_iter, reasoning_content = result
+        return message, tool_calls, stream_iter, reasoning_content
+
+    if len(result) == 3:
+        message, tool_calls, stream_iter = result
+        return message, tool_calls, stream_iter, None
+
+    raise ValueError(
+        "client.create 必须返回长度为 3 或 4 的元组："
+        "(message, tool_calls, stream_iter[, reasoning_content])"
+    )
+
+
+def _split_reasoning_result(
+    reasoning_result: str | list[ReasoningText] | None,
+) -> tuple[str | None, list[ReasoningText] | None]:
+    """将 provider 返回的 reasoning 结果拆分为文本摘要和结构化 block。"""
+    if isinstance(reasoning_result, list):
+        text = "".join(part.text for part in reasoning_result if isinstance(part.text, str)) or None
+        return text, reasoning_result
+    return reasoning_result, None
 
 
 @dataclass(slots=True)
@@ -284,12 +317,18 @@ class LLMRequest:
                         isinstance(timeout_seconds, (int, float))
                         and timeout_seconds > 0
                     ):
-                        message, tool_calls, stream_iter, reasoning_content = await asyncio.wait_for(
-                            create_task,
-                            timeout=float(timeout_seconds),
+                        message, tool_calls, stream_iter, reasoning_content = _normalize_client_create_result(
+                            await asyncio.wait_for(
+                                create_task,
+                                timeout=float(timeout_seconds),
+                            )
                         )
                     else:
-                        message, tool_calls, stream_iter, reasoning_content = await create_task
+                        message, tool_calls, stream_iter, reasoning_content = _normalize_client_create_result(
+                            await create_task
+                        )
+
+                reasoning_text, reasoning_parts = _split_reasoning_result(reasoning_content)
 
                 resp = LLMResponse(
                     _stream=stream_iter,
@@ -300,7 +339,8 @@ class LLMRequest:
                     context_manager=self.context_manager,
                     tool_call_compat=bool(model.get("tool_call_compat", False)),
                     message=message,
-                    reasoning_content=reasoning_content,
+                    reasoning_content=reasoning_text,
+                    reasoning_parts=reasoning_parts,
                     call_list=[],
                 )
 
@@ -330,6 +370,7 @@ class LLMRequest:
                     )
                     get_global_collector().record_request(metrics)
 
+                session.record_success(latency=timer.elapsed)
                 return resp
 
             except BaseException as e:

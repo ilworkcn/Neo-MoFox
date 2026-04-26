@@ -42,6 +42,7 @@ class LLMResponse:
 
     message: str | None = None
     reasoning_content: str | None = None
+    reasoning_parts: list[ReasoningText] | None = None
     call_list: list[ToolCall] | None = None
     tool_call_compat: bool = False
 
@@ -52,6 +53,12 @@ class LLMResponse:
         """确保 message 和 call_list 不为 None，方便后续处理；如果 context_manager 为空且上层存在，则继承上层的 context_manager。"""
         if self.call_list is None:
             self.call_list = []
+        if self.reasoning_parts is None:
+            self.reasoning_parts = []
+        elif self.reasoning_content is None:
+            self.reasoning_content = (
+                "".join(part.text for part in self.reasoning_parts if isinstance(part.text, str)) or None
+            )
         if self.context_manager is None:
             ctx = getattr(self._upper, "context_manager", None)
             if ctx:
@@ -94,12 +101,15 @@ class LLMResponse:
         full_content: list[str] = []
         full_reasoning: list[str] = []
         tool_acc = _ToolCallAccumulator()
+        reasoning_acc = _ReasoningBlockAccumulator()
         stream_error: Exception | None = None
         try:
             async for event in self._stream:
                 if event.text_delta:
                     full_content.append(event.text_delta)
                     yield event.text_delta
+                if event.reasoning_block_type or event.reasoning_delta or event.reasoning_signature_delta:
+                    reasoning_acc.apply(event)
                 if event.reasoning_delta:
                     full_reasoning.append(event.reasoning_delta)
                 if event.tool_name or event.tool_args_delta or event.tool_call_id:
@@ -110,6 +120,7 @@ class LLMResponse:
             stream_error = e
 
         self.message = "".join(full_content)
+        self.reasoning_parts = reasoning_acc.finalize() or self.reasoning_parts
         self.reasoning_content = "".join(full_reasoning) or self.reasoning_content
         self.call_list = tool_acc.finalize()
         self._maybe_apply_tool_call_compat()
@@ -134,11 +145,14 @@ class LLMResponse:
         full_content: list[str] = []
         full_reasoning: list[str] = []
         tool_acc = _ToolCallAccumulator()
+        reasoning_acc = _ReasoningBlockAccumulator()
         stream_error: Exception | None = None
         try:
             async for event in self._stream:
                 if event.text_delta:
                     full_content.append(event.text_delta)
+                if event.reasoning_block_type or event.reasoning_delta or event.reasoning_signature_delta:
+                    reasoning_acc.apply(event)
                 if event.reasoning_delta:
                     full_reasoning.append(event.reasoning_delta)
                 if event.tool_name or event.tool_args_delta or event.tool_call_id:
@@ -149,6 +163,7 @@ class LLMResponse:
             stream_error = e
 
         self.message = "".join(full_content)
+        self.reasoning_parts = reasoning_acc.finalize() or self.reasoning_parts
         self.reasoning_content = "".join(full_reasoning) or self.reasoning_content
         self.call_list = tool_acc.finalize()
         self._maybe_apply_tool_call_compat()
@@ -165,8 +180,20 @@ class LLMResponse:
         if not self._auto_append_response:
             return
 
+        self._append_current_response_payload()
+
+    def _append_current_response_payload(self) -> None:
+        """将当前响应对应的 assistant payload 写回上下文。"""
+        if self._appended_to_context:
+            return
+
+        if not self._has_response_payload_content():
+            return
+
         content_parts: list[object] = []
-        if self.reasoning_content:
+        if self.reasoning_parts:
+            content_parts.extend(self.reasoning_parts)
+        elif self.reasoning_content:
             content_parts.append(ReasoningText(self.reasoning_content))
         if self.message:
             content_parts.append(Text(self.message))
@@ -186,6 +213,15 @@ class LLMResponse:
         self._maybe_apply_context_manager()
         self._appended_to_context = True
 
+    def _has_response_payload_content(self) -> bool:
+        """判断当前响应是否已有可写回上下文的内容。"""
+        return bool(
+            self.reasoning_parts
+            or self.reasoning_content
+            or self.message
+            or self.call_list
+        )
+
     def _maybe_apply_context_manager(self) -> None:
         """如果启用了上下文管理器，则尝试裁剪 payloads，以适应上下文限制。"""
         if not self.context_manager:
@@ -195,7 +231,9 @@ class LLMResponse:
     def to_payload(self) -> LLMPayload:
         """将当前响应转换为一个 LLMPayload 对象，适用于需要将响应作为消息追加到上下文中的场景。"""
         content_parts: list[object] = []
-        if self.reasoning_content:
+        if self.reasoning_parts:
+            content_parts.extend(self.reasoning_parts)
+        elif self.reasoning_content:
             content_parts.append(ReasoningText(self.reasoning_content))
         if self.message:
             content_parts.append(Text(self.message))
@@ -209,6 +247,8 @@ class LLMResponse:
         """在当前响应的 payloads 中追加一个新的 payload，可以是一个 LLMPayload 对象，也可以是另一个 LLMResponse 对象（会被转换为 LLMPayload）。"""
         if isinstance(payload, LLMResponse):
             payload = payload.to_payload()
+
+        self._append_current_response_payload()
 
         if self.context_manager is not None:
             self.payloads = self.context_manager.add_payload(
@@ -230,6 +270,8 @@ class LLMResponse:
 
     def add_call_reflex(self, results: list[LLMPayload]) -> Self:
         """在当前响应的 payloads 中追加一个新的工具调用结果列表，适用于工具调用完成后需要将结果写回上下文的场景。"""
+        self._append_current_response_payload()
+
         if self.context_manager is not None:
             for payload in results:
                 self.payloads = self.context_manager.add_payload(self.payloads, payload)
@@ -299,14 +341,20 @@ class LLMResponse:
 
         full_content: list[str] = []
         tool_acc = _ToolCallAccumulator()
+        reasoning_acc = _ReasoningBlockAccumulator()
         async for event in self._stream:
             if event.text_delta:
                 full_content.append(event.text_delta)
                 await on_chunk(event.text_delta)
+            if event.reasoning_block_type or event.reasoning_delta or event.reasoning_signature_delta:
+                reasoning_acc.apply(event)
             if event.tool_name or event.tool_args_delta or event.tool_call_id:
                 tool_acc.apply(event)
 
         self.message = "".join(full_content)
+        self.reasoning_parts = reasoning_acc.finalize() or self.reasoning_parts
+        if self.reasoning_parts and not self.reasoning_content:
+            self.reasoning_content = "".join(part.text for part in self.reasoning_parts) or None
         self.call_list = tool_acc.finalize()
         self._maybe_apply_tool_call_compat()
         self._maybe_append_response_to_context()
@@ -342,6 +390,7 @@ class LLMResponse:
         buffer: list[str] = []
         buffer_len = 0
         tool_acc = _ToolCallAccumulator()
+        reasoning_acc = _ReasoningBlockAccumulator()
 
         stream_error: Exception | None = None
         try:
@@ -357,6 +406,8 @@ class LLMResponse:
                         buffer.clear()
                         buffer_len = 0
 
+                if event.reasoning_block_type or event.reasoning_delta or event.reasoning_signature_delta:
+                    reasoning_acc.apply(event)
                 if event.tool_name or event.tool_args_delta or event.tool_call_id:
                     tool_acc.apply(event)
         except Exception as e:
@@ -370,6 +421,9 @@ class LLMResponse:
             yield "".join(buffer)
 
         self.message = "".join(full_content)
+        self.reasoning_parts = reasoning_acc.finalize() or self.reasoning_parts
+        if self.reasoning_parts and not self.reasoning_content:
+            self.reasoning_content = "".join(part.text for part in self.reasoning_parts) or None
         self.call_list = tool_acc.finalize()
         self._maybe_apply_tool_call_compat()
         self._maybe_append_response_to_context()
@@ -435,3 +489,52 @@ class _ToolCallAccumulator:
 
             out.append(ToolCall(id=tool_call_id, name=name, args=args))
         return out
+
+
+class _ReasoningBlockAccumulator:
+    """把 Anthropic thinking/redacted_thinking 增量拼成最终 ReasoningText 列表。"""
+
+    def __init__(self) -> None:
+        self._current_type: str | None = None
+        self._current_text: list[str] = []
+        self._current_signature: str | None = None
+        self._blocks: list[ReasoningText] = []
+
+    def apply(self, event: StreamEvent) -> None:
+        """处理一个新的 reasoning 相关流事件。"""
+        if event.reasoning_block_type:
+            self._flush_current()
+            self._current_type = event.reasoning_block_type
+            self._current_text = []
+            self._current_signature = None
+
+        if event.reasoning_delta:
+            if self._current_type is None:
+                self._current_type = "thinking"
+            self._current_text.append(event.reasoning_delta)
+
+        if event.reasoning_signature_delta:
+            if self._current_type is None:
+                self._current_type = "thinking"
+            self._current_signature = (self._current_signature or "") + event.reasoning_signature_delta
+
+    def finalize(self) -> list[ReasoningText]:
+        """返回所有已累积的 reasoning block。"""
+        self._flush_current()
+        return list(self._blocks)
+
+    def _flush_current(self) -> None:
+        if self._current_type == "thinking":
+            if self._current_text or self._current_signature:
+                self._blocks.append(
+                    ReasoningText(
+                        "".join(self._current_text),
+                        signature=self._current_signature,
+                    )
+                )
+        elif self._current_type == "redacted_thinking" and self._current_signature:
+            self._blocks.append(ReasoningText("", redacted_data=self._current_signature))
+
+        self._current_type = None
+        self._current_text = []
+        self._current_signature = None

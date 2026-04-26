@@ -85,6 +85,11 @@ def _format_tool_args(args: Any) -> str:
     return ", ".join(display_items)
 
 
+def _is_suspend_message(message: str | None, suspend_text: str) -> bool:
+    """判断模型返回是否为 SUSPEND 挂起文本。"""
+    return isinstance(message, str) and message.strip() == suspend_text
+
+
 def _build_actor_decision_panel(chat_stream: ChatStream, response: LLMResponseLike) -> str:
     """构建 actor 本次决策摘要面板内容。"""
     stream_name = (
@@ -92,7 +97,8 @@ def _build_actor_decision_panel(chat_stream: ChatStream, response: LLMResponseLi
         or getattr(chat_stream, "stream_id", "")
         or "未知聊天流"
     )
-    thought = response.message.strip() if response.message else "（无）"
+    thought = response.reasoning_content.strip() if response.reasoning_content else "（无）"
+    monologue = response.message.strip() if response.message else "（无）"
 
     tool_lines = []
     for call in response.call_list or []:
@@ -105,7 +111,8 @@ def _build_actor_decision_panel(chat_stream: ChatStream, response: LLMResponseLi
     tools_text = "\n".join(tool_lines) if tool_lines else "    （无）"
     return (
         f"聊天流名称：{stream_name}\n\n"
-        f"思考：{thought}\n"
+        f"思考：{thought}\n\n"
+        f"独白：{monologue}\n\n"
         f"调用工具：\n{tools_text}"
     )
 
@@ -255,10 +262,15 @@ async def run_enhanced(
 
         if rt.phase == _ToolCallWorkflowPhase.TOOL_EXEC:
             llm_response = _require_response(rt.response)
+            current_calls = llm_response.call_list or []
 
             _print_actor_decision_panel(chat_stream, llm_response, logger)
 
             if not llm_response.call_list:
+                if _is_suspend_message(llm_response.message, suspend_text):
+                    yield Wait()
+                    _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.WAIT_USER, logger=logger, reason="model returned suspend")
+                    continue
                 if llm_response.message and llm_response.message.strip():
                     logger.warning(
                         f"LLM 返回了纯文本而非 tool call: "
@@ -270,15 +282,15 @@ async def run_enhanced(
                 _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.WAIT_USER, logger=logger, reason="no call_list")
                 continue
 
-            logger.info(f"本轮调用列表：{[call.name for call in llm_response.call_list or []]}")
-            for call in llm_response.call_list or []:
+            logger.info(f"本轮调用列表：{[call.name for call in current_calls]}")
+            for call in current_calls:
                 args = call.args if isinstance(call.args, dict) else {}
                 reason = args.pop("reason", "未提供原因")
                 logger.info(f"LLM 调用 {call.name}，原因: {reason}，参数: {args}")
 
             call_outcome = await process_tool_calls(
                 stream_id=chat_stream.stream_id,
-                calls=llm_response.call_list or [],
+                calls=current_calls,
                 response=llm_response,
                 run_tool_call=chatter.run_tool_call,
                 usable_map=usable_map,
@@ -301,7 +313,7 @@ async def run_enhanced(
                 continue
 
             append_suspend_payload_if_action_only(
-                calls=llm_response.call_list or [],
+                calls=current_calls,
                 response=llm_response,
                 suspend_text=suspend_text,
                 logger=logger,
@@ -377,7 +389,6 @@ async def run_classical(
         response = request
         cross_round_seen_signatures: set[str] = set()
         has_pending_tool_results = False
-        plain_text_retry_count = 0
 
         while True:
             try:
@@ -391,6 +402,10 @@ async def run_classical(
             _print_actor_decision_panel(chat_stream, response, logger)
 
             if not response.call_list:
+                if _is_suspend_message(response.message, suspend_text):
+                    await chatter.flush_unreads(unread_msgs)
+                    yield Wait()
+                    break
                 if response.message and response.message.strip():
                     logger.warning(
                         f"LLM 返回了纯文本而非 tool call: "
@@ -400,14 +415,16 @@ async def run_classical(
                 yield Stop(0)
                 return
 
-            for call in response.call_list or []:
+            current_calls = response.call_list or []
+
+            for call in current_calls:
                 args = call.args if isinstance(call.args, dict) else {}
                 reason = args.pop("reason", "未提供原因")
                 logger.info(f"LLM 调用 {call.name}，原因: {reason}，参数: {args}")
 
             call_outcome = await process_tool_calls(
                 stream_id=chat_stream.stream_id,
-                calls=response.call_list or [],
+                calls=current_calls,
                 response=response,
                 run_tool_call=chatter.run_tool_call,
                 usable_map=usable_map,
@@ -421,7 +438,7 @@ async def run_classical(
             has_pending_tool_results = call_outcome.has_pending_tool_results
             if not call_outcome.has_pending_tool_results:
                 append_suspend_payload_if_action_only(
-                    calls=response.call_list or [],
+                    calls=current_calls,
                     response=response,
                     suspend_text=suspend_text,
                     logger=logger,

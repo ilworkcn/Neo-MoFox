@@ -545,7 +545,7 @@ class TestLLMResponseSend:
             )
             mock_send.return_value = mock_response
 
-            result = await response.send(stream=False)
+            await response.send(stream=False)
 
             # Verify send was called with updated payloads
             assert mock_send.called

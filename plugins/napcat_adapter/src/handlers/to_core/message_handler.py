@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -13,6 +12,8 @@ from mofox_wire import MessageBuilder, SegPayload
 from mofox_wire.types import UserRole
 
 from src.app.plugin_system.api.log_api import get_logger
+from src.core.utils.base64_helper import base64_encode_bytes
+from src.kernel.concurrency import get_task_manager
 
 from ....config import NapcatAdapterConfig
 from ...event_models import ACCEPT_FORMAT, QQ_FACE, RealMessageType
@@ -353,7 +354,10 @@ class MessageHandler:
             if file_path and Path(file_path).exists():
                 # 本地文件处理
                 video_data = await asyncio.to_thread(Path(file_path).read_bytes)
-                video_base64 = base64.b64encode(video_data).decode("utf-8")
+                video_base64 = await get_task_manager().to_process(
+                    base64_encode_bytes,
+                    video_data,
+                )
                 logger.debug(f"视频文件大小: {len(video_data) / (1024 * 1024):.2f} MB")
 
                 return {
@@ -377,7 +381,10 @@ class MessageHandler:
                     logger.warning(f"视频下载失败: {download_result.get('error', '未知错误')}")
                     return {"type": "text", "data": f"[视频消息] ({download_result.get('error', '下载失败')})"}
 
-                video_base64 = base64.b64encode(download_result["data"]).decode("utf-8")
+                video_base64 = await get_task_manager().to_process(
+                    base64_encode_bytes,
+                    download_result["data"],
+                )
                 logger.debug(f"视频下载成功，大小: {len(download_result['data']) / (1024 * 1024):.2f} MB")
 
                 return {

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from ..exceptions import LLMConfigurationError
 from .base import ASRModelClient, ChatModelClient, EmbeddingModelClient, RerankModelClient
+from .anthropic_client import AnthropicChatClient
 from .openai_client import OpenAIChatClient
 from ..types import ModelEntry
 
@@ -18,23 +19,28 @@ class ModelClientRegistry:
     """
 
     openai: ChatModelClient | None = None
+    anthropic: ChatModelClient | None = None
     gemini: ChatModelClient | None = None
     bedrock: ChatModelClient | None = None
 
     def __post_init__(self) -> None:
         if self.openai is None:
             self.openai = OpenAIChatClient()
+        if self.anthropic is None:
+            self.anthropic = AnthropicChatClient()
 
     def get_client_for_model(self, model: ModelEntry) -> ChatModelClient:
         """根据单个模型配置决定使用哪个 provider。
 
-        当前阶段以 `client_type` 为准：openai/gemini/bedrock。
+        当前阶段以 `client_type` 为准：openai/anthropic/gemini/bedrock。
         """
 
         client_type = model.get("client_type")
         if isinstance(client_type, str):
             if client_type == "openai" and self.openai is not None:
                 return self.openai
+            if client_type == "anthropic" and self.anthropic is not None:
+                return self.anthropic
             if client_type in {"gemini", "aiohttp_gemini"} and self.gemini is not None:
                 return self.gemini
             if client_type == "bedrock" and self.bedrock is not None:

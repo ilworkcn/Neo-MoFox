@@ -291,7 +291,6 @@ class TestActionManagerGetActionSchemas:
         """测试获取多个 Action 的 schemas。"""
         manager = ActionManager()
         
-        actions = [TestAction, TestAction]
         
         with patch.object(manager, 'get_action_schema') as mock_get_schema:
             mock_get_schema.side_effect = [

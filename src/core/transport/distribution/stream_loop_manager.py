@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 import concurrent.futures
 from typing import TYPE_CHECKING, Any, AsyncGenerator, cast
@@ -19,6 +20,7 @@ from src.kernel.logger import get_logger, COLOR
 
 if TYPE_CHECKING:
     from src.core.models.stream import ChatStream, StreamContext
+    from src.core.models.message import Message
 
 logger = get_logger("stream_loop_manager", display="流循环", color=COLOR.MAGENTA)
 
@@ -420,6 +422,54 @@ class StreamLoopManager:
         )
         return False
 
+    @staticmethod
+    def _message_mentions_bot(message: Message) -> bool:
+        """判断消息是否显式 @ 了当前 Bot。"""
+        raw_data = getattr(message, "raw_data", None)
+        self_id = raw_data.get("self_id") if isinstance(raw_data, dict) else None
+
+        at_users = getattr(message, "extra", {}).get("at_users", [])
+        if self_id is not None and isinstance(at_users, list):
+            for at_user in at_users:
+                if isinstance(at_user, dict) and str(at_user.get("user_id")) == str(self_id):
+                    return True
+
+        content = message.processed_plain_text or str(message.content)
+        return self_id is not None and f":{self_id}>" in content
+
+    def _has_direct_stop_wake_message(
+        self,
+        context: "StreamContext",
+        unread_count_at_yield: int,
+    ) -> bool:
+        """判断 Stop 期间是否出现了可直接唤醒的新未读消息。"""
+        new_unreads = context.unread_messages[unread_count_at_yield:]
+        if not new_unreads:
+            return False
+
+        if str(context.chat_type).lower() == "private":
+            return True
+
+        return any(self._message_mentions_bot(message) for message in new_unreads)
+
+    def _should_wake_stop_early(
+        self,
+        last_yield: Any,
+        context: "StreamContext",
+        unread_count_at_yield: int,
+    ) -> bool:
+        """按 Stop 配置判断是否提前解除冷却。"""
+        if not bool(getattr(last_yield, "direct_message_wake_enabled", False)):
+            return False
+        if not self._has_direct_stop_wake_message(context, unread_count_at_yield):
+            return False
+
+        probability = max(
+            0.0,
+            min(1.0, float(getattr(last_yield, "direct_message_wake_probability", 0.0))),
+        )
+        return random.random() < probability
+
     def _wait_state_check(self, stream_id: str, context: "StreamContext") -> bool:
         """检查并更新等待状态。
 
@@ -452,6 +502,14 @@ class StreamLoopManager:
             # Stop(seconds): 冷却结束且出现新未读消息时恢复
             assert wait_time is not None
             
+            if self._should_wake_stop_early(
+                last_yield,
+                context,
+                unread_count_at_yield,
+            ):
+                self._wait_states.pop(stream_id, None)
+                return True
+
             cooldown_ready = now >= yielded_at + float(wait_time)
             message_ready = unread_count_now > unread_count_at_yield
             if not (cooldown_ready and message_ready):

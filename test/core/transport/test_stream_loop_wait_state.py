@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import cast
 
+from src.core.models.message import Message
 from src.core.models.stream import StreamContext
 from src.core.transport.distribution.stream_loop_manager import StreamLoopManager
 from src.core.components.base.chatter import Wait, Stop
@@ -24,6 +25,116 @@ def test_wait_state_check_requires_new_message_after_stop() -> None:
     context_new = StreamContext(stream_id=stream_id)
     context_new.unread_messages = cast(list, [1, 2, 3])
     assert manager._wait_state_check(stream_id, context_new) is True
+
+
+def test_wait_state_check_stop_direct_message_wake_disabled() -> None:
+    """Stop 直接唤醒机制默认应由配置显式开启。"""
+    manager = StreamLoopManager()
+    stream_id = "stream-stop-direct-disabled"
+
+    manager._wait_states[stream_id] = (
+        Stop(
+            time=3600.0,
+            direct_message_wake_enabled=False,
+            direct_message_wake_probability=1.0,
+        ),
+        time.time(),
+        0,
+    )
+
+    context = StreamContext(stream_id=stream_id, chat_type="private")
+    context.unread_messages = [Message(content="hello", chat_type="private")]
+
+    assert manager._wait_state_check(stream_id, context) is False
+
+
+def test_wait_state_check_stop_direct_message_wakes_private(
+    monkeypatch,
+) -> None:
+    """启用后，私聊消息可在冷却结束前唤醒 Stop。"""
+    manager = StreamLoopManager()
+    stream_id = "stream-stop-private-wake"
+
+    manager._wait_states[stream_id] = (
+        Stop(
+            time=3600.0,
+            direct_message_wake_enabled=True,
+            direct_message_wake_probability=1.0,
+        ),
+        time.time(),
+        0,
+    )
+    monkeypatch.setattr(
+        "src.core.transport.distribution.stream_loop_manager.random.random",
+        lambda: 0.0,
+    )
+
+    context = StreamContext(stream_id=stream_id, chat_type="private")
+    context.unread_messages = [Message(content="hello", chat_type="private")]
+
+    assert manager._wait_state_check(stream_id, context) is True
+
+
+def test_wait_state_check_stop_direct_message_wakes_bot_mention(
+    monkeypatch,
+) -> None:
+    """启用后，@Bot 消息可在冷却结束前唤醒 Stop。"""
+    manager = StreamLoopManager()
+    stream_id = "stream-stop-at-wake"
+
+    manager._wait_states[stream_id] = (
+        Stop(
+            time=3600.0,
+            direct_message_wake_enabled=True,
+            direct_message_wake_probability=1.0,
+        ),
+        time.time(),
+        0,
+    )
+    monkeypatch.setattr(
+        "src.core.transport.distribution.stream_loop_manager.random.random",
+        lambda: 0.0,
+    )
+
+    context = StreamContext(stream_id=stream_id, chat_type="group")
+    context.unread_messages = [
+        Message(
+            content="@<Neo:10001> hello",
+            processed_plain_text="@<Neo:10001> hello",
+            chat_type="group",
+            raw_data={"self_id": "10001"},
+            at_users=[{"nickname": "Neo", "user_id": "10001"}],
+        )
+    ]
+
+    assert manager._wait_state_check(stream_id, context) is True
+
+
+def test_wait_state_check_stop_direct_message_respects_probability(
+    monkeypatch,
+) -> None:
+    """概率未命中时，直接消息不应唤醒 Stop。"""
+    manager = StreamLoopManager()
+    stream_id = "stream-stop-private-probability"
+
+    manager._wait_states[stream_id] = (
+        Stop(
+            time=3600.0,
+            direct_message_wake_enabled=True,
+            direct_message_wake_probability=0.5,
+        ),
+        time.time(),
+        0,
+    )
+    monkeypatch.setattr(
+        "src.core.transport.distribution.stream_loop_manager.random.random",
+        lambda: 0.99,
+    )
+
+    context = StreamContext(stream_id=stream_id, chat_type="private")
+    context.unread_messages = [Message(content="hello", chat_type="private")]
+
+    assert manager._wait_state_check(stream_id, context) is False
 
 
 def test_wait_state_check_wait_for_messages_only() -> None:

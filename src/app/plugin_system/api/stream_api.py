@@ -12,7 +12,7 @@ from src.core.components.types import ChatType
 if TYPE_CHECKING:
     from src.core.models.message import Message
     from src.core.models.stream import ChatStream, StreamContext
-    from src.core.models.sql_alchemy import ChatStreams, Messages
+    from src.core.models.sql_alchemy import Messages
     from src.core.managers.stream_manager import StreamManager
 
 

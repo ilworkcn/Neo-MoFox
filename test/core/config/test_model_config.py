@@ -32,8 +32,8 @@ class TestAPIProviderSection:
         assert provider.base_url == "https://api.openai.com/v1"
         assert provider.api_key == "sk-test123"
         assert provider.client_type == "openai"
-        assert provider.max_retry == 2
-        assert provider.timeout == 10
+        assert provider.max_retry == 3
+        assert provider.timeout == 30
         assert provider.retry_interval == 10
 
     def test_provider_with_multiple_api_keys(self):
@@ -81,6 +81,17 @@ class TestAPIProviderSection:
 
         with pytest.raises(ValueError, match="API密钥列表为空"):
             provider.get_api_key()
+
+    def test_provider_supports_anthropic_client_type(self):
+        """测试 provider 支持 anthropic 客户端类型。"""
+        provider = APIProviderSection(
+            name="anthropic",
+            base_url="https://api.anthropic.com/v1",
+            api_key="sk-ant-test",
+            client_type="anthropic",
+        )
+
+        assert provider.client_type == "anthropic"
 
 
 class TestModelInfoSection:
@@ -198,7 +209,7 @@ class TestModelTasksSection:
     def test_get_none_task_raises(self):
         """测试获取 None 任务抛出异常。"""
         tasks = ModelTasksSection()
-        tasks.utils = None
+        object.__setattr__(tasks, "utils", None)
 
         with pytest.raises(ValueError, match="任务 'utils' 未配置"):
             tasks.get_task("utils")
@@ -211,8 +222,10 @@ class TestModelConfig:
         """测试创建空配置。"""
         config = ModelConfig()
 
-        assert config.api_providers == []
-        assert config.models == []
+        assert len(config.api_providers) == 1
+        assert config.api_providers[0].name == "SiliconFlow"
+        assert len(config.models) == 5
+        assert config.models[0].api_provider == "SiliconFlow"
         assert isinstance(config.model_tasks, ModelTasksSection)
 
     def test_create_config_with_providers(self):
@@ -322,6 +335,26 @@ class TestModelConfig:
 
         with pytest.raises(KeyError, match="模型 'nonexistent' 未找到"):
             config.get_model("nonexistent")
+
+    def test_model_tasks_allow_custom_task(self):
+        """测试 model_tasks 允许用户自定义任务。"""
+        config = ModelConfig.model_validate(
+            {
+                "model_tasks": {
+                    "custom_task": {
+                        "model_list": ["siliconflow-deepseek-ai/DeepSeek-V3.2"],
+                        "max_tokens": 1234,
+                        "temperature": 0.2,
+                    }
+                }
+            }
+        )
+
+        task = config.model_tasks.get_task("custom_task")
+        assert isinstance(task, TaskConfigSection)
+        assert task.model_list == ["siliconflow-deepseek-ai/DeepSeek-V3.2"]
+        assert task.max_tokens == 1234
+        assert task.temperature == 0.2
 
     def test_api_providers_dict_property(self):
         """测试 api_providers_dict 属性。"""
@@ -554,6 +587,53 @@ max_tokens = 1000
             # 恢复原状态
             model_config_module._global_model_config = original_config
 
+    def test_init_model_config_preserves_custom_task_and_backfills_builtin(
+        self, temp_dir: Path
+    ):
+        """启动自动更新时保留自定义 task，并补齐缺失的内置 task。"""
+        import src.core.config.model_config as model_config_module
+        original_config = model_config_module._global_model_config
+        model_config_module._global_model_config = None
+
+        try:
+            config_file = temp_dir / "models.toml"
+            config_file.write_text(
+                """
+[[api_providers]]
+name = "openai"
+base_url = "https://api.openai.com/v1"
+api_key = "sk-test"
+
+[[models]]
+model_identifier = "gpt-4"
+name = "gpt4"
+api_provider = "openai"
+
+[model_tasks.utils]
+model_list = ["gpt4"]
+max_tokens = 1000
+
+[model_tasks.custom_task]
+model_list = ["gpt4"]
+max_tokens = 321
+temperature = 0.4
+"""
+            )
+
+            config = init_model_config(str(config_file))
+            custom_task = config.model_tasks.get_task("custom_task")
+            assert custom_task.model_list == ["gpt4"]
+            assert custom_task.max_tokens == 321
+            assert custom_task.temperature == 0.4
+
+            assert config.model_tasks.get_task("embedding") is not None
+
+            rendered = config_file.read_text(encoding="utf-8")
+            assert "[model_tasks.custom_task]" in rendered
+            assert "[model_tasks.embedding]" in rendered
+        finally:
+            model_config_module._global_model_config = original_config
+
     def test_get_model_config_before_init_raises(self):
         """测试未初始化时获取配置抛出异常。"""
         import src.core.config.model_config as model_config_module
@@ -590,7 +670,7 @@ max_tokens = 1000
         try:
             # 第一次初始化
             config_path = temp_dir / "models.toml"
-            config1 = init_model_config(str(config_path))
+            init_model_config(str(config_path))
             # 第二次初始化会更新全局配置
             config2 = init_model_config(str(config_path))
 

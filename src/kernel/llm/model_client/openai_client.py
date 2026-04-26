@@ -21,9 +21,7 @@ from src.kernel.llm.tool_call_compat import (
 )
 
 from ..exceptions import LLMConfigurationError, LLMContentFilterError
-from ..payload import Image, LLMPayload, ReasoningText, Text, ToolCall, ToolResult
-from ..payload import Image, LLMPayload, Text, ToolCall, ToolResult
-from ..payload.content import Video
+from ..payload import Image, LLMPayload, ReasoningText, Text, ToolCall, ToolResult, Video
 from ..roles import ROLE
 from ..token_counter import count_payload_tokens
 from .base import StreamEvent
