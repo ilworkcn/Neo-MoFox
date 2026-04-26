@@ -11,9 +11,7 @@
 from __future__ import annotations
 
 import pytest
-from pathlib import Path
-from unittest.mock import MagicMock, patch, mock_open
-from typing import Type
+from unittest.mock import MagicMock, patch
 
 from src.core.managers.config_manager import ConfigManager
 from src.core.components.base.config import BaseConfig, SectionBase, config_section

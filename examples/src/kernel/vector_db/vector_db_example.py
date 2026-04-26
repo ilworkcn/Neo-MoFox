@@ -42,10 +42,10 @@ async def main() -> None:
     logger.print_panel("1. 获取或创建集合")
 
     # 获取或创建集合
-    collection = await vector_db.get_or_create_collection(name="semantic_cache")
+    await vector_db.get_or_create_collection(name="semantic_cache")
     logger.info("[OK] 成功获取或创建集合: semantic_cache")
 
-    collection2 = await vector_db.get_or_create_collection(name="memory")
+    await vector_db.get_or_create_collection(name="memory")
     logger.info("[OK] 成功获取或创建集合: memory")
 
     logger.print_panel("2. 添加向量数据")
@@ -209,7 +209,7 @@ async def main() -> None:
     logger.info("[OK] 删除集合: semantic_cache")
 
     # 尝试获取已删除的集合（会创建新的空集合）
-    new_collection = await vector_db.get_or_create_collection(name="semantic_cache")
+    await vector_db.get_or_create_collection(name="semantic_cache")
     new_count = await vector_db.count(collection_name="semantic_cache")
     logger.info(f"[OK] 重新创建的集合条目数: {new_count}")
 

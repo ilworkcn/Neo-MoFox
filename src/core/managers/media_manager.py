@@ -25,7 +25,7 @@ from typing import Any
 from sqlalchemy import select
 
 from src.kernel.logger import get_logger
-from src.app.plugin_system.api.llm_api import get_model_set_by_task, create_llm_request
+from src.app.plugin_system.api.llm_api import get_model_set_by_task
 from src.kernel.llm.model_client.registry import ModelClientRegistry
 from src.core.prompt import PromptTemplate, get_prompt_manager
 from src.core.config import get_core_config

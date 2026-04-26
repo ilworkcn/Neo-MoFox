@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Callable
 
 from src.core.prompt import SystemReminderInsertType
 

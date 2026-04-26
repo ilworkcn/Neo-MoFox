@@ -389,7 +389,6 @@ async def run_classical(
         response = request
         cross_round_seen_signatures: set[str] = set()
         has_pending_tool_results = False
-        plain_text_retry_count = 0
 
         while True:
             try:

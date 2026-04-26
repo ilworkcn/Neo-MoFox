@@ -73,7 +73,7 @@ async def test_plugin_database_crud_read_write(tmp_path: pytest.TempdirFactory) 
         crud = db.crud(_Note)
         a = await crud.create({"title": "A"})
         b = await crud.create({"title": "B"})
-        c = await crud.create({"title": "C"})
+        await crud.create({"title": "C"})
 
         assert await crud.count() == 3
         assert await crud.exists(title="A")

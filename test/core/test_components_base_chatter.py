@@ -2,7 +2,7 @@
 
 import json
 from datetime import datetime
-from typing import AsyncGenerator, Generator, cast
+from typing import AsyncGenerator, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -99,7 +99,7 @@ class TestBaseChatter:
 
     def test_create_request_registers_system_reminder(self, mock_plugin):
         """测试 create_request 可登记 system reminder，且不会把 SYSTEM 挤到 USER 后面。"""
-        chatter = ConcreteChatter("stream_123", mock_plugin)
+        ConcreteChatter("stream_123", mock_plugin)
 
         reset_system_reminder_store()
 

@@ -439,7 +439,7 @@ class ConfigManager:
                 if 'invalid_models' in task_info:
                     models_str = task_info['models_str']
                     invalid_models = task_info['invalid_models']
-                    values = list(self.tasks_tree.item(item)['values'])
+                    list(self.tasks_tree.item(item)['values'])
                     # 标记每个无效的模型名称
                     for invalid_model in invalid_models:
                         if invalid_model in models_str:

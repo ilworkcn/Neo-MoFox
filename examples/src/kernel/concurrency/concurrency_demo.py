@@ -82,9 +82,9 @@ async def main():
         timeout=30,
         cancel_on_error=True,
     ) as tg:
-        result_a = tg.create_task(task_a())
-        result_b = tg.create_task(task_b())
-        result_c = tg.create_task(task_c())
+        tg.create_task(task_a())
+        tg.create_task(task_b())
+        tg.create_task(task_c())
 
     logger.info("TaskGroup 中的所有任务已完成\n")
 
