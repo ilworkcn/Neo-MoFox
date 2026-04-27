@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, AsyncGenerator
 from typing import cast
 
 from src.app.plugin_system.api.service_api import get_service
@@ -36,14 +36,16 @@ class SendEmojiMemeAction(BaseAction):
             list[str] | None,
             _EMOTION_TAG_DESC,
         ] = None,
-    ) -> tuple[bool, str]:
+    ) -> AsyncGenerator[tuple[bool, str] | None, None]:
         """执行发送表情包动作。"""
         service = get_service("emoji_sender:service:emoji_sender")
         if service is None:
-            return False, "emoji_sender service 未加载"
+            yield False, "emoji_sender service 未加载"
+            return
 
         service = cast(EmojiSenderService, service)
 
+        yield None
         ok, result, reason = await service.send_best_detailed(
             stream_id=self.chat_stream.stream_id,
             platform=self.chat_stream.platform,
@@ -53,7 +55,8 @@ class SendEmojiMemeAction(BaseAction):
 
         if ok:
             if not result:
-                return True, "已发送表情包"
+                yield True, "已发送表情包"
+                return
 
             tag = str(result.get("tag") or "").strip()
             desc = str(result.get("description") or "").strip()
@@ -64,7 +67,9 @@ class SendEmojiMemeAction(BaseAction):
             fallback_text = "（已触发fallback：未满足阈值但仍在指定标签内选最相似）" if fallback_used else ""
 
             detail = f"已发送表情包{fallback_text}\n- 标签: {tag}\n- 描述: {desc}\n- 距离: {dist_text}"
-            return True, detail
+            yield True, detail
+            return
 
         # 失败：尽量带上原因
-        return False, reason
+        yield False, reason
+        return

@@ -139,7 +139,7 @@ async def test_send_text_marks_next_tick_bonus_after_success(
 
     monkeypatch.setattr(action, "_send_to_stream", AsyncMock(return_value=True))
 
-    success, _detail = await action.execute(content="你好")
+    success, _detail = await action._wrap_execute(content="你好").wait_done()
 
     assert success is True
     assert getattr(stream.context, "_default_chatter_next_tick_bonus", None) == 0.5
@@ -209,7 +209,7 @@ async def test_send_text_does_not_mark_bonus_when_controller_disabled(
 
     monkeypatch.setattr(action, "_send_to_stream", AsyncMock(return_value=True))
 
-    success, _detail = await action.execute(content="你好")
+    success, _detail = await action._wrap_execute(content="你好").wait_done()
 
     assert success is True
     assert getattr(stream.context, "_default_chatter_next_tick_bonus", None) in (None, 0.0)

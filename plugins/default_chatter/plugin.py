@@ -284,7 +284,7 @@ class SendTextAction(BaseAction):
         content: str,
         reply_to: str | None = None,
         at: str | None = None,
-    ) -> tuple[bool, str]:
+    ) -> AsyncGenerator[tuple[bool, str] | None, None]:
         """执行发送文本消息的逻辑
 
         Args:
@@ -310,10 +310,12 @@ class SendTextAction(BaseAction):
                 content = content[at_match.end():].lstrip()
 
         if not (content or at_prefix_hint):
-            return True, "内容为空，跳过发送"
+            yield True, "内容为空，跳过发送"
+            return
 
         if not content:
-            return True, "内容为空，跳过发送"
+            yield True, "内容为空，跳过发送"
+            return
 
         await self._sleep_for_typing_delay(content)
         
@@ -379,17 +381,21 @@ class SendTextAction(BaseAction):
             
             from src.core.transport.message_send import get_message_sender
             sender = get_message_sender()
+            yield None
             success = await sender.send_message(message)
             self._mark_sub_agent_bonus_on_success(success)
-            return success, f"已发送消息:{content}"
+            yield success, f"已发送消息:{content}"
+            return
         else:
             # 非引用回复时可使用显式 at 参数；reply_to 存在时已在上分支处理并忽略 at。
             at_hint = (at or at_prefix_hint or "").strip().lstrip("@").strip()
 
             if not at_hint:
+                yield None
                 success = await self._send_to_stream(content)
                 self._mark_sub_agent_bonus_on_success(success)
-                return success, f"已发送消息:{content}"
+                yield success, f"已发送消息:{content}"
+                return
 
             target_stream_id = self.chat_stream.stream_id
             platform = self.chat_stream.platform
@@ -398,9 +404,11 @@ class SendTextAction(BaseAction):
 
             if chat_type != "group":
                 # 私聊场景不需要显式 @，按普通发送处理。
+                yield None
                 success = await self._send_to_stream(content)
                 self._mark_sub_agent_bonus_on_success(success)
-                return success, f"已发送消息:{content}"
+                yield success, f"已发送消息:{content}"
+                return
 
             from src.core.managers.adapter_manager import get_adapter_manager
             from src.core.utils.user_query_helper import get_user_query_helper
@@ -422,8 +430,11 @@ class SendTextAction(BaseAction):
 
             if not at_user_id:
                 logger.info(f"无法定位 at 目标: {at_hint}，降级为普通回复")
-                await self._send_to_stream(content)
-                return True, f"已发送消息:{content}"
+                yield None
+                success = await self._send_to_stream(content)
+                self._mark_sub_agent_bonus_on_success(success)
+                yield success, f"已发送消息:{content}"
+                return
 
             target_group_id = None
             target_group_name = None
@@ -456,9 +467,11 @@ class SendTextAction(BaseAction):
             from src.core.transport.message_send import get_message_sender
 
             sender = get_message_sender()
+            yield None
             success = await sender.send_message(message)
             self._mark_sub_agent_bonus_on_success(success)
-            return success, f"已发送消息:{content}"
+            yield success, f"已发送消息:{content}"
+            return
 
 
 class PassAndWaitAction(BaseAction):

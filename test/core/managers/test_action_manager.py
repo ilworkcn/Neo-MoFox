@@ -341,6 +341,9 @@ class TestActionManagerExecuteAction:
             mock_action_class = MagicMock()
             mock_action_instance = MagicMock()
             mock_action_instance.execute = AsyncMock(return_value=(True, "Success"))
+            mock_execution = MagicMock()
+            mock_execution.wait_done = AsyncMock(return_value=(True, "Success"))
+            mock_action_instance._wrap_execute = MagicMock(return_value=mock_execution)
             mock_action_class.return_value = mock_action_instance
             mock_get_class.return_value = mock_action_class
             
@@ -356,7 +359,7 @@ class TestActionManagerExecuteAction:
             )
             
             assert result == (True, "Success")
-            mock_action_instance.execute.assert_called_once()
+            mock_action_instance._wrap_execute.assert_called_once_with(param1="value1")
     
     @pytest.mark.asyncio
     async def test_execute_action_not_found(self) -> None:
