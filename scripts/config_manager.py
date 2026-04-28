@@ -167,6 +167,7 @@ class ConfigManager:
         btn_frame = ttk.Frame(self.tasks_frame)
         btn_frame.pack(fill=tk.X, padx=5, pady=5)
         
+        ttk.Button(btn_frame, text="添加任务", command=self.add_task).pack(side=tk.LEFT, padx=2)
         ttk.Button(btn_frame, text="编辑任务", command=self.edit_task).pack(side=tk.LEFT, padx=2)
     
     def load_default_config(self):
@@ -870,36 +871,50 @@ context_reserve_tokens = 512  # 上下文固定预留token
             ]
             self.update_ui()
     
-    def edit_task(self):
-        selected = self.tasks_tree.selection()
-        if not selected:
-            messagebox.showwarning("警告", "请选择要编辑的任务")
-            return
-        
-        task_name = self.tasks_tree.item(selected[0], "values")[0]
-        
-        # Handle both nested and flat model_tasks structures
-        if "model_tasks" in self.config_data:
-            task_config = self.config_data["model_tasks"].get(task_name, {})
-        else:
-            task_key = f"model_tasks.{task_name}"
-            task_config = self.config_data.get(task_key, {})
+    def add_task(self):
+        self.edit_task(is_new=True)
+
+    def edit_task(self, is_new=False):
+        task_name = ""
+        task_config = {}
+
+        if not is_new:
+            selected = self.tasks_tree.selection()
+            if not selected:
+                messagebox.showwarning("警告", "请选择要编辑的任务")
+                return
+
+            task_name = self.tasks_tree.item(selected[0], "values")[0]
+
+            # Handle both nested and flat model_tasks structures
+            if "model_tasks" in self.config_data:
+                task_config = self.config_data["model_tasks"].get(task_name, {})
+            else:
+                task_key = f"model_tasks.{task_name}"
+                task_config = self.config_data.get(task_key, {})
+
+        task_config = dict(task_config)
         
         # Convert string model_list to array if needed
         if "model_list" in task_config and isinstance(task_config["model_list"], str):
             task_config["model_list"] = [m.strip() for m in task_config["model_list"].split(",")]
         
         dialog = tk.Toplevel(self.root)
-        dialog.title(f"编辑任务: {task_name}")
+        dialog.title("添加任务" if is_new else f"编辑任务: {task_name}")
         dialog.transient(self.root)
         dialog.grab_set()
         
         # Form fields
+        ttk.Label(dialog, text="任务名称:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.E)
+        task_name_entry = ttk.Entry(dialog)
+        task_name_entry.insert(0, task_name)
+        task_name_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+
         # Model list with scrollable listbox and add/remove buttons
-        ttk.Label(dialog, text="模型列表:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.NE)
+        ttk.Label(dialog, text="模型列表:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.NE)
         
         model_control_frame = ttk.Frame(dialog)
-        model_control_frame.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W+tk.E+tk.N+tk.S)
+        model_control_frame.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W+tk.E+tk.N+tk.S)
         
         # Available models list
         ttk.Label(model_control_frame, text="可用模型:").pack(anchor=tk.W)
@@ -978,30 +993,38 @@ context_reserve_tokens = 512  # 上下文固定预留token
             if isinstance(model_name, str):  # Handle both string and list formats
                 selected_listbox.insert(tk.END, model_name)
         
-        ttk.Label(dialog, text="温度(0-1):").grid(row=1, column=0, padx=5, pady=5, sticky=tk.E)
+        ttk.Label(dialog, text="温度(0-1):").grid(row=2, column=0, padx=5, pady=5, sticky=tk.E)
         temp_entry = ttk.Entry(dialog)
         temp_entry.insert(0, str(task_config.get("temperature", "")))
-        temp_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+        temp_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
         
-        ttk.Label(dialog, text="最大Token数(1-8000):").grid(row=2, column=0, padx=5, pady=5, sticky=tk.E)
+        ttk.Label(dialog, text="最大Token数(1-8000):").grid(row=3, column=0, padx=5, pady=5, sticky=tk.E)
         tokens_entry = ttk.Entry(dialog)
         tokens_entry.insert(0, str(task_config.get("max_tokens", "")))
-        tokens_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+        tokens_entry.grid(row=3, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
         
         # Handle extra params if they exist
         if "extra_params" in task_config:
             # Create text widget for extra params
-            ttk.Label(dialog, text="额外参数:").grid(row=3, column=0, padx=5, pady=5, sticky=tk.E)
+            ttk.Label(dialog, text="额外参数:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.E)
             extra_params_text = tk.Text(dialog, height=4, width=30)
             extra_params_text.insert(tk.END, str(task_config["extra_params"]))
-            extra_params_text.grid(row=3, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+            extra_params_text.grid(row=4, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
         
         # Buttons
         btn_frame = ttk.Frame(dialog)
-        btn_frame.grid(row=5, column=0, columnspan=2, pady=10)
+        btn_frame.grid(row=6, column=0, columnspan=2, pady=10)
         
         def save_task():
             try:
+                new_task_name = task_name_entry.get().strip()
+                if not new_task_name:
+                    raise ValueError("任务名称不能为空")
+
+                existing_tasks = self.config_data.get("model_tasks", {})
+                if new_task_name != task_name and new_task_name in existing_tasks:
+                    raise ValueError(f"任务 '{new_task_name}' 已存在")
+
                 # Get temperature value
                 temp = float(temp_entry.get()) if temp_entry.get() else None
                 
@@ -1037,7 +1060,9 @@ context_reserve_tokens = 512  # 上下文固定预留token
                     self.config_data["model_tasks"] = {}
                 
                 # Update task config
-                self.config_data["model_tasks"][task_name] = task_config
+                if task_name and new_task_name != task_name:
+                    self.config_data["model_tasks"].pop(task_name, None)
+                self.config_data["model_tasks"][new_task_name] = task_config
                 
                 self.update_ui()
                 dialog.destroy()

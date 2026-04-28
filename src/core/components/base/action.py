@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from src.core.components.types import ChatType
 from src.core.components.utils import parse_function_signature
-from src.kernel.llm import LLMUsable
+from src.kernel.llm import LLMUsable, LLMUsableExecution
 from src.core.models.message import Message, MessageType
 
 if TYPE_CHECKING:
@@ -116,6 +116,22 @@ class BaseAction(ABC, LLMUsable):
             action 管理器会自动识别类型提示和文档字符串并生成对应的 Tool Schema。
         """
         ...
+
+    def _wrap_execute(self, *args: Any, **kwargs: Any) -> LLMUsableExecution:
+        """包装 ``execute``，供统一 tool call 调度器使用。
+
+        ``execute`` 可以保持普通 coroutine 写法并返回 ``(success, result)``；
+        顺序敏感的 Action 也可以写成异步生成器，在真正执行最终动作前
+        ``yield None`` 暂停，最后一次非空 ``yield`` 作为返回结果。
+
+        Args:
+            *args: 传给 ``execute`` 的位置参数。
+            **kwargs: 传给 ``execute`` 的关键字参数。
+
+        Returns:
+            LLMUsableExecution: 已启动的执行包装对象。
+        """
+        return LLMUsableExecution(self.execute(*args, **kwargs))
 
     @classmethod
     def to_schema(cls) -> dict[str, Any]:
@@ -224,6 +240,33 @@ class BaseAction(ABC, LLMUsable):
             content_lines.append(f"{msg.sender_name}: {msg_text}")
 
         return "\n".join(content_lines)
+
+    def _find_context_message(self, message_id: str | None) -> Message | None:
+        if not message_id:
+            return None
+
+        context = self.chat_stream.context
+        candidates: list[Message | None] = []
+        candidates.extend(context.unread_messages)
+        candidates.extend(context.history_messages)
+        candidates.append(context.current_message)
+        candidates.extend(context.message_cache)
+
+        for message in candidates:
+            if message and message.message_id == message_id:
+                return message
+        return None
+
+    def _get_last_context_message(self) -> Message | None:
+        context = self.chat_stream.context
+        if context.unread_messages:
+            return context.unread_messages[-1]
+        if context.history_messages:
+            return context.history_messages[-1]
+        return context.current_message
+
+    def _get_context_message_for_target(self, reply_to: str | None = None) -> Message | None:
+        return self._find_context_message(reply_to) or self._get_last_context_message()
 
     async def _llm_judge_activation(
         self,
@@ -369,14 +412,7 @@ class BaseAction(ABC, LLMUsable):
                 target_group_id = None
                 target_group_name = None
 
-                def _get_last_context_message() -> Message | None:
-                    if context.unread_messages:
-                        return context.unread_messages[-1]
-                    if context.history_messages:
-                        return context.history_messages[-1]
-                    return context.current_message
-
-                last_msg = _get_last_context_message()
+                last_msg = self._get_context_message_for_target()
 
                 if chat_type == "group":
                     if last_msg:

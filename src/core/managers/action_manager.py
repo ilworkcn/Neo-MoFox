@@ -276,7 +276,7 @@ class ActionManager:
 
         # 执行 Action
         try:
-            result = await action_instance.execute(**kwargs)
+            result = await action_instance._wrap_execute(**kwargs).wait_done()
             return result
         except Exception as e:
             logger.error(

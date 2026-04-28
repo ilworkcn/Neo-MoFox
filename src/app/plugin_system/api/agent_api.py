@@ -229,7 +229,7 @@ async def execute_agent(
     
     # 执行 Agent
     try:
-        result = await agent_instance.execute(**kwargs)
+        result = await agent_instance._wrap_execute(**kwargs).wait_done()
         return result
     except Exception as e:
         logger.error(
