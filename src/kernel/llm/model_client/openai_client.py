@@ -7,7 +7,7 @@ OpenAI 模型客户端实现。
 
 from __future__ import annotations
 
-import base64
+import pybase64 as base64
 import inspect
 import json
 import threading

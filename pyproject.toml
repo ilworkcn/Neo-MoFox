@@ -1,6 +1,6 @@
 [project]
 name = "neo-mofox"
-version = "1.1.0-alpha.2"
+version = "1.1.0-alpha.3"
 description = "一个全新重构的 AI 聊天机器人框架，它的目标不仅仅是回答问题，而是创造一个真正的数字生命体。"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,6 +17,7 @@ dependencies = [
     "mofox-wire>=0.1.7",
     "openai>=2.16.0",
     "packaging>=26.0",
+    "pybase64>=1.4.3",
     "pydantic>=2.12.5",
     "pyfiglet>=1.0.4",
     "rich>=14.3.1",

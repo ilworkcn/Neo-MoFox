@@ -364,7 +364,7 @@ class MessageHandler:
                 # 本地文件处理
                 async with asyncio.timeout(self._get_video_io_timeout()):
                     video_data = await asyncio.to_thread(Path(file_path).read_bytes)
-                video_base64 = await get_task_manager().to_process(
+                video_base64 = await asyncio.to_thread(
                     base64_encode_bytes,
                     video_data,
                 )
@@ -391,7 +391,7 @@ class MessageHandler:
                     logger.warning(f"视频下载失败: {download_result.get('error', '未知错误')}")
                     return {"type": "text", "data": f"[视频消息] ({download_result.get('error', '下载失败')})"}
 
-                video_base64 = await get_task_manager().to_process(
+                video_base64 = await asyncio.to_thread(
                     base64_encode_bytes,
                     download_result["data"],
                 )
