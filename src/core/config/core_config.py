@@ -78,6 +78,13 @@ class CoreConfig(ConfigBase):
             default=300.0,
             description="流循环重启阈值（秒），距上次心跳超过此值时尝试重启",
         )
+        stream_step_timeout: float = Field(
+            default=90.0,
+            description=(
+                "单次聊天流步进超时时间（秒），用于保护 chatter 内部工具调用或外部 await 卡死；"
+                "设为 0 或负数可禁用该保护。"
+            ),
+        )
         message_buffer_window: float = Field(
             default=8.0,
             description=(

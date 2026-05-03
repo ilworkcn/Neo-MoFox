@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from types import SimpleNamespace
 from typing import Any
 from typing import cast
@@ -9,6 +10,7 @@ from unittest.mock import patch
 from unittest.mock import AsyncMock
 
 import pytest
+import pybase64 as base64
 
 from src.kernel.llm import LLMContextManager
 from src.kernel.llm import LLMPayload
@@ -22,11 +24,13 @@ from plugins.screen_understanding.action_parser import parse_control_response
 from plugins.screen_understanding.agent import ScreenControlAgent
 from plugins.screen_understanding.agent import ScreenClickTool
 from plugins.screen_understanding.agent.tools import ScreenCloseWindowTool
-from plugins.screen_understanding.agent.tools import ScreenCheckCompletionTool
 from plugins.screen_understanding.agent.tools import ScreenLaunchProgramTool
+from plugins.screen_understanding.agent.tools import ScreenWaitTool
 from plugins.screen_understanding.control_backends import build_control_backend_candidates
+from plugins.screen_understanding.control_backends.wdotool_backend import WdotoolControlBackend
 from plugins.screen_understanding.control_backends.xdotool_backend import XdotoolControlBackend
 from plugins.screen_understanding.control_backends.ydotool_backend import YdotoolControlBackend
+from plugins.screen_understanding.plugin import ScreenUnderstandingAdapter
 from plugins.screen_understanding.plugin import ScreenUnderstandingPlugin
 from plugins.screen_understanding.config import ScreenUnderstandingConfig
 
@@ -35,9 +39,11 @@ class _AdapterStub:
     """Minimal adapter stub for control-agent tests."""
 
     def __init__(self) -> None:
-        self._model_set = object()
-        self.force_describe_current_screen = AsyncMock(
-            return_value=(SimpleNamespace(png_base64="ZmFrZQ=="), "屏幕上有设置按钮")
+        self._analysis_model_set = object()
+        self._control_model_set = object()
+        self._model_set = self._analysis_model_set
+        self.capture_current_frame = AsyncMock(
+            return_value=SimpleNamespace(png_base64="ZmFrZQ==")
         )
 
 
@@ -141,14 +147,14 @@ async def test_control_agent_returns_stalled_when_repeating_same_action_without_
 
     plugin = cast(Any, ScreenUnderstandingPlugin(config=ScreenUnderstandingConfig()))
     adapter = _AdapterStub()
-    adapter.force_describe_current_screen = AsyncMock(
+    adapter.capture_current_frame = AsyncMock(
         side_effect=[
-            (SimpleNamespace(png_base64="ZmFrZQ=="), "相同界面"),
-            (SimpleNamespace(png_base64="ZmFrZQ=="), "相同界面"),
-            (SimpleNamespace(png_base64="ZmFrZQ=="), "相同界面"),
-            (SimpleNamespace(png_base64="ZmFrZQ=="), "相同界面"),
-            (SimpleNamespace(png_base64="ZmFrZQ=="), "相同界面"),
-            (SimpleNamespace(png_base64="ZmFrZQ=="), "相同界面"),
+            SimpleNamespace(png_base64="ZmFrZQ=="),
+            SimpleNamespace(png_base64="ZmFrZQ=="),
+            SimpleNamespace(png_base64="ZmFrZQ=="),
+            SimpleNamespace(png_base64="ZmFrZQ=="),
+            SimpleNamespace(png_base64="ZmFrZQ=="),
+            SimpleNamespace(png_base64="ZmFrZQ=="),
         ]
     )
     plugin.bind_adapter(adapter)
@@ -214,30 +220,24 @@ async def test_screen_click_tool_converts_coordinates_to_action(monkeypatch: pyt
 
 
 @pytest.mark.asyncio
-async def test_screen_check_completion_tool_uses_current_adapter_signature(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """completion tool 应使用当前 adapter 的 dispatch_outputs 参数签名。"""
+async def test_screen_wait_tool_passes_seconds_to_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    """wait tool 应把等待秒数透传给统一 action inputs。"""
 
     plugin = cast(Any, ScreenUnderstandingPlugin(config=ScreenUnderstandingConfig()))
-    adapter = _AdapterStub()
-    plugin.bind_adapter(adapter)
-    assess_mock = AsyncMock(return_value=("continue", "仍需继续操作。"))
-    monkeypatch.setattr(plugin, "_assess_control_completion", assess_mock)
+    execute_mock = AsyncMock(return_value=(False, "等待 2.5 秒后继续观察。"))
+    monkeypatch.setattr(plugin, "_execute_control_action", execute_mock)
 
-    tool = ScreenCheckCompletionTool(plugin=plugin)
-    success, result = await tool.execute(
-        goal="关闭窗口",
-        latest_progress="已移动到关闭按钮附近",
-        action_history="step=1 | action=hover",
-    )
+    tool = ScreenWaitTool(plugin=plugin)
+    success, result = await tool.execute(seconds=2.5)
 
     assert success is True
     assert isinstance(result, dict)
-    assert result["verdict"] == "continue"
-    assert adapter.force_describe_current_screen.await_args is not None
-    assert adapter.force_describe_current_screen.await_args.kwargs == {"dispatch_outputs": False}
-    assert assess_mock.await_count == 1
+    assert result["action_type"] == "wait"
+    assert result["action_inputs"] == {"seconds": 2.5}
+    assert execute_mock.await_args is not None
+    executed_action = execute_mock.await_args.args[0]
+    assert executed_action.action_type == "wait"
+    assert executed_action.action_inputs == {"seconds": 2.5}
 
 
 @pytest.mark.asyncio
@@ -316,9 +316,170 @@ async def test_control_agent_uses_suspend_bridge_and_active_window_context(
     chained_user_texts = [
         content.text for content in chained_user_payloads[0].content if isinstance(content, Text)
     ]
+    assert any("当前任务目标" in text and "打开设置" in text for text in chained_user_texts)
     assert any("当前活跃窗口信息" in text and "app_id=chrome" in text for text in chained_user_texts)
+    assert any("坐标参考网格和刻度" in text for text in chained_user_texts)
     assert any("不要重新开始任务" in text for text in chained_user_texts)
+    assert any("必须始终围绕上面的当前任务目标推进" in text for text in chained_user_texts)
     assert not any("你是一个负责桌面屏幕操控的 GUI Agent。" in text for text in chained_user_texts)
+
+
+@pytest.mark.asyncio
+async def test_control_agent_uses_dedicated_control_model_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control agent 应使用 control 专用模型，而不是常规监控模型。"""
+
+    plugin = cast(Any, ScreenUnderstandingPlugin(config=ScreenUnderstandingConfig()))
+    adapter = _AdapterStub()
+    plugin.bind_adapter(adapter)
+    monkeypatch.setattr(plugin, "describe_active_window", AsyncMock(return_value="app_id=code,title=VS Code"))
+
+    agent = ScreenControlAgent(stream_id="stream-1", plugin=plugin)
+    response = _FakeResponse(
+        [[SimpleNamespace(id="call-1", name="tool-screen_finish", args={"content": "完成"})]]
+    )
+    captured_kwargs: dict[str, Any] = {}
+
+    def _fake_create_llm_request(**kwargs: Any) -> _FakeRequest:
+        captured_kwargs.update(kwargs)
+        return _FakeRequest(response)
+
+    monkeypatch.setattr(agent, "create_llm_request", _fake_create_llm_request)
+
+    success, result = await agent.execute(goal="打开设置", max_steps=1)
+
+    assert success is True
+    assert isinstance(result, dict)
+    assert captured_kwargs["model_set"] is adapter._control_model_set
+    assert captured_kwargs["model_set"] is not adapter._analysis_model_set
+
+
+def test_control_agent_annotates_screenshot_with_coordinate_grid() -> None:
+    """Agent 发图前应为截图叠加坐标网格，帮助模型稳定定位。"""
+
+    from PIL import Image as PILImage
+
+    image = PILImage.new("RGB", (120, 120), color="white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    raw_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    annotated_base64 = ScreenControlAgent._annotate_image_with_coordinate_grid(raw_base64)
+
+    assert annotated_base64 != raw_base64
+    with PILImage.open(io.BytesIO(base64.b64decode(annotated_base64))) as annotated_image:
+        assert annotated_image.size == (120, 120)
+
+
+@pytest.mark.asyncio
+async def test_screen_analysis_falls_back_to_legacy_model_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """周期截图分析在旧路径只设置 _model_set 时仍应可用。"""
+
+    plugin = cast(Any, ScreenUnderstandingPlugin(config=ScreenUnderstandingConfig()))
+    adapter = cast(Any, ScreenUnderstandingAdapter.__new__(ScreenUnderstandingAdapter))
+    adapter.plugin = plugin
+    adapter._analysis_model_set = None
+    adapter._model_set = object()
+    adapter._keyframes = [SimpleNamespace(frame_id="history", png_base64="aGlzdG9yeQ==")]
+
+    frame = SimpleNamespace(frame_id="current", png_base64="Y3VycmVudA==")
+    response = _FakeResponse([])
+    response.message = "最新画面"
+    captured_kwargs: dict[str, Any] = {}
+
+    def _fake_create_llm_request(model_set: Any, request_name: str) -> _FakeRequest:
+        captured_kwargs["model_set"] = model_set
+        captured_kwargs["request_name"] = request_name
+        return _FakeRequest(response)
+
+    monkeypatch.setattr(
+        "plugins.screen_understanding.plugin.create_llm_request",
+        _fake_create_llm_request,
+    )
+
+    description = await adapter._describe_keyframe_buffer(frame)
+
+    assert description == "最新画面"
+    assert captured_kwargs["model_set"] is adapter._model_set
+    assert captured_kwargs["request_name"] == plugin.config.analysis.request_name
+
+
+@pytest.mark.asyncio
+async def test_control_agent_executes_multiple_tool_calls_in_one_round(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """当模型同轮返回多个 tool call 时，agent 应按顺序执行整批调用。"""
+
+    plugin = cast(Any, ScreenUnderstandingPlugin(config=ScreenUnderstandingConfig()))
+    plugin.bind_adapter(_AdapterStub())
+    monkeypatch.setattr(plugin, "describe_active_window", AsyncMock(return_value="app_id=code,title=VS Code"))
+
+    agent = ScreenControlAgent(stream_id="stream-1", plugin=plugin)
+    response = _FakeResponse(
+        [
+            [
+                SimpleNamespace(id="call-1", name="tool-screen_click", args={"x": 10, "y": 20}),
+                SimpleNamespace(id="call-2", name="tool-screen_hover", args={"x": 30, "y": 40}),
+            ],
+            [SimpleNamespace(id="call-3", name="tool-screen_finish", args={"content": "完成"})],
+        ]
+    )
+    request = _FakeRequest(response)
+    execute_mock = AsyncMock(
+        side_effect=[
+            (
+                True,
+                {
+                    "kind": "action",
+                    "action_type": "click",
+                    "action_inputs": {"start_box": [10.0, 20.0, 10.0, 20.0]},
+                    "execution_result": "已点击设置按钮",
+                    "terminal": False,
+                },
+            ),
+            (
+                True,
+                {
+                    "kind": "action",
+                    "action_type": "hover",
+                    "action_inputs": {"start_box": [30.0, 40.0, 30.0, 40.0]},
+                    "execution_result": "已移动到输入框",
+                    "terminal": False,
+                },
+            ),
+        ]
+    )
+    monkeypatch.setattr(agent, "create_llm_request", lambda **_kwargs: request)
+    monkeypatch.setattr(agent, "execute_local_usable", execute_mock)
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr(
+        "plugins.screen_understanding.agent.control_agent.asyncio.sleep",
+        sleep_mock,
+    )
+
+    success, result = await agent.execute(goal="打开设置", max_steps=3)
+
+    assert success is True
+    assert isinstance(result, dict)
+    assert result["mode"] == "completed"
+    assert execute_mock.await_count == 2
+    sleep_mock.assert_awaited_once_with(1.0)
+    assert len(result["steps"]) == 2
+    assert result["steps"][0]["action"] == "click"
+    assert result["steps"][1]["action"] == "hover"
+
+    tool_result_payloads = [
+        cast(LLMPayload, payload)
+        for payload in response.payloads
+        if isinstance(payload, LLMPayload) and payload.role == ROLE.TOOL_RESULT
+    ]
+    assert len(tool_result_payloads) == 2
+    second_result = cast(ToolResult, tool_result_payloads[1].content[0])
+    assert second_result.call_id == "call-2"
+    assert second_result.value["action"] == "hover"
 
 
 @pytest.mark.asyncio
@@ -429,6 +590,30 @@ async def test_execute_control_action_uses_backend_strategy(monkeypatch: pytest.
     assert result == "stub:click"
 
 
+@pytest.mark.asyncio
+async def test_execute_control_action_wait_uses_requested_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plugin wait 动作应按传入秒数暂停，而不是总是固定时长。"""
+
+    plugin = cast(Any, ScreenUnderstandingPlugin(config=ScreenUnderstandingConfig()))
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr("plugins.screen_understanding.plugin.asyncio.sleep", sleep_mock)
+
+    terminal, result = await plugin._execute_control_action(
+        ScreenControlAction(
+            thought="等待页面加载",
+            action_type="wait",
+            action_inputs={"seconds": 2.5},
+            raw_text="tool:wait",
+        )
+    )
+
+    assert terminal is False
+    assert result == "等待 2.5 秒后继续观察。"
+    sleep_mock.assert_awaited_once_with(2.5)
+
+
 def test_get_components_exposes_agent_instead_of_service_tool() -> None:
     """插件导出应包含 Adapter 和 Agent，而非旧 service/tool 组合。"""
 
@@ -451,7 +636,7 @@ def test_build_control_backend_candidates_respects_platform_aliases(
         command_timeout_seconds=1.0,
     )
 
-    assert [candidate.backend_name for candidate in candidates] == ["ydotool", "xdotool", "windows_uia"]
+    assert [candidate.backend_name for candidate in candidates] == ["wdotool", "ydotool", "xdotool", "windows_uia"]
 
 
 def test_parse_control_response_supports_ui_tars_box_tokens() -> None:
@@ -476,6 +661,157 @@ def test_xdotool_backend_extract_action_point_accepts_two_value_points() -> None
 
 
 @pytest.mark.asyncio
+async def test_wdotool_backend_keyboard_actions_do_not_require_start_box() -> None:
+    """wdotool backend 的键盘动作不应错误依赖 start_box。"""
+
+    backend = WdotoolControlBackend(command_timeout_seconds=1.0)
+
+    with patch.object(backend, "_run_command", new=AsyncMock()) as run_command:
+        result = await backend.execute_action(
+            ScreenControlAction(
+                thought="",
+                action_type="hotkey",
+                action_inputs={"key": "Ctrl+L"},
+                raw_text="tool:hotkey",
+            )
+        )
+
+    run_command.assert_awaited_once_with("wdotool", "key", "--clearmodifiers", "Ctrl+L")
+    assert result == "已执行快捷键 Ctrl+L。"
+
+
+@pytest.mark.asyncio
+async def test_wdotool_backend_normalizes_enter_hotkey_alias() -> None:
+    """wdotool backend 应将 Enter 这类常见别名转换成可识别的 keysym。"""
+
+    backend = WdotoolControlBackend(command_timeout_seconds=1.0)
+
+    with patch.object(backend, "_run_command", new=AsyncMock()) as run_command:
+        result = await backend.execute_action(
+            ScreenControlAction(
+                thought="",
+                action_type="hotkey",
+                action_inputs={"key": "Enter"},
+                raw_text="tool:hotkey",
+            )
+        )
+
+    run_command.assert_awaited_once_with("wdotool", "key", "--clearmodifiers", "Return")
+    assert result == "已执行快捷键 Enter。"
+
+
+@pytest.mark.asyncio
+async def test_wdotool_backend_type_uses_stdin_file_interface() -> None:
+    """wdotool backend 文本输入应走 stdin/file 接口以减少掉字。"""
+
+    backend = WdotoolControlBackend(command_timeout_seconds=1.0)
+
+    with patch.object(backend, "_run_command_with_input", new=AsyncMock()) as run_command:
+        result = await backend.execute_action(
+            ScreenControlAction(
+                thought="",
+                action_type="type",
+                action_inputs={"content": "github.com"},
+                raw_text="tool:type",
+            )
+        )
+
+    run_command.assert_awaited_once_with(
+        "wdotool",
+        "type",
+        "--clearmodifiers",
+        "--delay",
+        str(backend._type_delay_ms),
+        "--file",
+        "-",
+        input_text="github.com",
+    )
+    assert result == "已输入文本：github.com"
+
+
+@pytest.mark.asyncio
+async def test_xdotool_backend_keyboard_actions_do_not_require_start_box() -> None:
+    """xdotool backend 的键盘动作不应错误依赖 start_box。"""
+
+    backend = XdotoolControlBackend(command_timeout_seconds=1.0)
+
+    with patch.object(backend, "_run_command", new=AsyncMock()) as run_command:
+        result = await backend.execute_action(
+            ScreenControlAction(
+                thought="",
+                action_type="type",
+                action_inputs={"content": "github.com"},
+                raw_text="tool:type",
+            )
+        )
+
+    run_command.assert_awaited_once_with("xdotool", "type", "--delay", "1", "github.com")
+    assert result == "已输入文本：github.com"
+
+
+@pytest.mark.asyncio
+async def test_ydotool_backend_keyboard_actions_do_not_require_start_box() -> None:
+    """ydotool backend 的键盘动作不应错误依赖 start_box。"""
+
+    backend = YdotoolControlBackend(command_timeout_seconds=1.0)
+
+    with patch.object(backend, "_run_command", new=AsyncMock()) as run_command:
+        result = await backend.execute_action(
+            ScreenControlAction(
+                thought="",
+                action_type="hotkey",
+                action_inputs={"key": "Enter"},
+                raw_text="tool:hotkey",
+            )
+        )
+
+    run_command.assert_awaited_once_with("ydotool", "key", "28:1", "28:0")
+    assert result == "已执行快捷键 Enter。"
+
+
+@pytest.mark.asyncio
+async def test_ydotool_backend_click_waits_for_pointer_to_settle() -> None:
+    """ydotool backend 点击前应等待鼠标落点稳定，避免被窗口管理器误判为拖拽。"""
+
+    backend = YdotoolControlBackend(command_timeout_seconds=1.0)
+    call_order: list[str] = []
+
+    async def fake_move_absolute(x: int, y: int) -> None:
+        assert (x, y) == (200, 300)
+        call_order.append("move")
+
+    async def fake_sleep(seconds: float) -> None:
+        assert seconds == backend._pointer_settle_seconds
+        call_order.append("sleep")
+
+    async def fake_run_command(*command: str) -> None:
+        assert command == (
+            "ydotool",
+            "click",
+            "--next-delay",
+            str(backend._pointer_click_event_delay_ms),
+            "0xC0",
+        )
+        call_order.append("click")
+
+    with patch.object(backend, "_move_absolute", new=fake_move_absolute), patch(
+        "plugins.screen_understanding.control_backends.ydotool_backend.asyncio.sleep",
+        new=fake_sleep,
+    ), patch.object(backend, "_run_command", new=fake_run_command):
+        result = await backend.execute_action(
+            ScreenControlAction(
+                thought="",
+                action_type="click",
+                action_inputs={"start_box": [200.0, 300.0, 200.0, 300.0]},
+                raw_text="tool:click",
+            )
+        )
+
+    assert call_order == ["move", "sleep", "click"]
+    assert result == "已在 (200, 300) 执行左键单击。"
+
+
+@pytest.mark.asyncio
 async def test_xdotool_backend_is_available_requires_runtime_probe() -> None:
     """xdotool backend 应在真实探测失败时视为不可用。"""
 
@@ -496,6 +832,33 @@ async def test_xdotool_backend_is_available_requires_runtime_probe() -> None:
     failing_proc.communicate = AsyncMock(return_value=(b"", b"Error: Can't open display\n"))
 
     with patch("shutil.which", return_value="/usr/sbin/xdotool"), patch(
+        "asyncio.create_subprocess_exec",
+        return_value=failing_proc,
+    ):
+        assert await backend.is_available() is False
+
+
+@pytest.mark.asyncio
+async def test_wdotool_backend_is_available_requires_info_probe() -> None:
+    """wdotool backend 应在 info 探测成功时视为可用。"""
+
+    backend = WdotoolControlBackend(command_timeout_seconds=1.0)
+
+    success_proc = AsyncMock()
+    success_proc.returncode = 0
+    success_proc.communicate = AsyncMock(return_value=(b"backend: kde\n", b""))
+
+    with patch("shutil.which", return_value="/usr/sbin/wdotool"), patch(
+        "asyncio.create_subprocess_exec",
+        return_value=success_proc,
+    ):
+        assert await backend.is_available() is True
+
+    failing_proc = AsyncMock()
+    failing_proc.returncode = 1
+    failing_proc.communicate = AsyncMock(return_value=(b"", b"backend unavailable\n"))
+
+    with patch("shutil.which", return_value="/usr/sbin/wdotool"), patch(
         "asyncio.create_subprocess_exec",
         return_value=failing_proc,
     ):
