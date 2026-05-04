@@ -1,4 +1,4 @@
-"""perm_plugin 清空上下文命令。
+"""utility_commands 清空上下文命令。
 
 提供 /清空上下文 命令，仅主人（OWNER）可用，清空聊天流的对话上下文。
 清空后，机器人将不再加载该时间点之前的历史消息，效果在重启后依然生效。
@@ -22,7 +22,7 @@ from src.app.plugin_system.api.send_api import send_text
 from src.app.plugin_system.base import BaseCommand, cmd_route
 from src.app.plugin_system.types import ChatStream, PermissionLevel
 
-logger = get_logger("perm_plugin.clear_command")
+logger = get_logger("utility_commands.clear_command")
 
 
 class ClearContextCommand(BaseCommand):

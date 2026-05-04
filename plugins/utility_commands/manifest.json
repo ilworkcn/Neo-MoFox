@@ -1,7 +1,7 @@
 {
-    "name": "perm_plugin",
+    "name": "utility_commands",
     "version": "1.0.0",
-    "description": "系统权限管理插件，提供聊天内 /perm 命令，供机器人主人查询和修改用户权限",
+    "description": "实用命令集合插件，收纳一组常用的运维/管理类命令，目前提供 /清空上下文",
     "author": "MoFox Team",
     "license": "GPL-3.0",
     "dependencies": {
@@ -11,7 +11,7 @@
     "include": [
         {
             "component_type": "command",
-            "component_name": "perm",
+            "component_name": "清空上下文",
             "dependencies": []
         }
     ],
