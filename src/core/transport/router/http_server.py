@@ -123,6 +123,9 @@ class HTTPServer:
         if self._server_task:
             try:
                 await asyncio.wait_for(self._server_task, timeout=5.0)
+            except asyncio.CancelledError:
+                logger.warning("服务器停止等待被取消，已忽略")
+                self._server_task.cancel()
             except asyncio.TimeoutError:
                 logger.warning("服务器停止超时，强制取消")
                 self._server_task.cancel()

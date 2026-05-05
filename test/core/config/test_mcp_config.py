@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -19,6 +20,7 @@ class TestMCPSection:
         assert config.mcp.enabled is True
         assert config.mcp.stdio_servers == {}
         assert config.mcp.sse_servers == {}
+        assert config.mcp.streamable_http_servers == {}
 
     def test_mcp_section_disabled(self):
         """测试禁用 MCP。"""
@@ -51,13 +53,36 @@ class TestMCPSection:
         config = MCPConfig.MCPSection(
             sse_servers={
                 "lab": "https://api.example.com/sse/lab",
-                "image": "https://api.example.com/sse/image",
+                "image": {
+                    "url": "https://api.example.com/sse/image",
+                    "headers": {"Authorization": "Bearer test"},
+                    "timeout": 10,
+                },
             }
         )
 
         assert len(config.sse_servers) == 2
         assert config.sse_servers["lab"] == "https://api.example.com/sse/lab"
-        assert config.sse_servers["image"] == "https://api.example.com/sse/image"
+        image_server = cast(dict[str, object], config.sse_servers["image"])
+        assert image_server["url"] == "https://api.example.com/sse/image"
+
+    def test_mcp_section_with_streamable_http_servers(self):
+        """测试带 Streamable HTTP 服务器的配置。"""
+        config = MCPConfig.MCPSection(
+            streamable_http_servers={
+                "remote": "https://api.example.com/mcp",
+                "secure": {
+                    "url": "https://api.example.com/secure-mcp",
+                    "headers": {"Authorization": "Bearer test"},
+                    "timeout": 30,
+                },
+            }
+        )
+
+        assert len(config.streamable_http_servers) == 2
+        assert config.streamable_http_servers["remote"] == "https://api.example.com/mcp"
+        secure_server = cast(dict[str, object], config.streamable_http_servers["secure"])
+        assert secure_server["timeout"] == 30
 
     def test_mcp_section_with_both_server_types(self):
         """测试同时使用两种服务器类型。"""
@@ -241,6 +266,7 @@ class TestMCPConfigScenarios:
         # 当禁用时，服务器配置应该为空或被忽略
         assert config.mcp.stdio_servers == {}
         assert config.mcp.sse_servers == {}
+        assert config.mcp.streamable_http_servers == {}
 
     def test_filesystem_server_scenario(self):
         """测试文件系统服务器配置场景。"""

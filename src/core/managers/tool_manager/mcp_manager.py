@@ -3,16 +3,20 @@
 本模块提供 MCPManager 类，负责管理 MCP 服务器连接、工具发现和调用。
 """
 
+import asyncio
 import os
 from contextlib import AsyncExitStack
-from typing import Any
+from typing import Any, Coroutine
 
+import httpx
 from mcp import ClientSession, StdioServerParameters
+from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamable_http_client
 
-from src.kernel.logger import get_logger
 from src.core.config.mcp_config import MCPConfig
 from src.core.managers.tool_manager.mcp_adapter import MCPToolAdapter
+from src.kernel.logger import get_logger
 
 logger = get_logger("mcp_manager")
 
@@ -30,12 +34,14 @@ class MCPManager:
         _sessions: 活跃的客户端会话 {server_name: session}
         _exit_stack: 用于管理上下文管理器的栈 (AsyncExitStack)
         _adapters: 对应的工具适配器 {tool_name: adapter}
+        _tool_signatures: 动态注册的 MCP Tool 组件签名集合
     """
 
     def __init__(self) -> None:
         self._sessions: dict[str, ClientSession] = {}
         self._exit_stack = AsyncExitStack()
         self._adapters: dict[str, MCPToolAdapter] = {}
+        self._tool_signatures: set[str] = set()
         logger.info("MCP 管理器初始化")
 
     async def initialize(self) -> None:
@@ -43,6 +49,9 @@ class MCPManager:
         
         读取配置，建立连接，并自动发现工具。
         """
+        if self._sessions or self._adapters or self._tool_signatures:
+            await self.cleanup()
+
         try:
             from src.core.config import get_mcp_config
             config = get_mcp_config()
@@ -63,13 +72,62 @@ class MCPManager:
                 env = params.get("env")
                 
                 if command:
-                    await self.connect_stdio_server(name, command, args, env)
+                    await self._run_connection_task(
+                        name,
+                        self.connect_stdio_server(name, command, args, env),
+                    )
                 else:
                     logger.error(f"MCP 服务器 {name} 配置缺少 command")
 
-        # 连接 SSE 服务器 (暂未实现)
+        # 连接 SSE 服务器
         if config.mcp.sse_servers:
-            logger.warning("SSE MCP 服务器连接暂未实现")
+            logger.info(f"开始连接 SSE MCP 服务器: {list(config.mcp.sse_servers.keys())}")
+            for name, params in config.mcp.sse_servers.items():
+                await self._run_connection_task(
+                    name,
+                    self.connect_sse_server_from_config(name, params),
+                )
+
+        # 连接 Streamable HTTP 服务器
+        if config.mcp.streamable_http_servers:
+            logger.info(
+                "开始连接 Streamable HTTP MCP 服务器: "
+                f"{list(config.mcp.streamable_http_servers.keys())}"
+            )
+            for name, params in config.mcp.streamable_http_servers.items():
+                await self._run_connection_task(
+                    name,
+                    self.connect_streamable_http_server_from_config(name, params),
+                )
+
+    async def _run_connection_task(
+        self,
+        name: str,
+        coro: Coroutine[Any, Any, bool],
+    ) -> bool:
+        """在隔离任务中执行一次 MCP 连接。"""
+        from src.kernel.concurrency import get_task_manager
+
+        task_info = get_task_manager().create_task(
+            coro,
+            name=f"mcp_connect_{name}",
+            daemon=True,
+        )
+        if task_info.task is None:
+            logger.error(f"MCP 服务器连接任务创建失败: {name}")
+            return False
+
+        try:
+            return bool(await task_info.task)
+        except asyncio.CancelledError as e:
+            logger.error(f"MCP 服务器连接任务被取消 {name}: {e}")
+            return False
+        except BaseExceptionGroup as e:
+            logger.error(f"MCP 服务器连接任务失败 {name}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"MCP 服务器连接任务失败 {name}: {e}")
+            return False
 
     async def connect_stdio_server(self, name: str, command: str, args: list[str], env: dict[str, str] | None = None) -> bool:
         """连接 Stdio MCP 服务器。"""
@@ -80,38 +138,148 @@ class MCPManager:
                 env={**os.environ, **(env or {})}
             )
             
-            # 使用 exit_stack 管理上下文
             stdio_transport = await self._exit_stack.enter_async_context(stdio_client(server_params))
-            read, write = stdio_transport
-            
-            session = await self._exit_stack.enter_async_context(
-                ClientSession(read, write)
-            )
-            
-            await session.initialize()
-            self._sessions[name] = session
-            logger.info(f"已连接 MCP 服务器: {name}")
-            
-            # 自动发现工具
-            await self._discover_tools(name, session)
+            await self._connect_session(name, stdio_transport)
             return True
             
+        except asyncio.CancelledError as e:
+            logger.error(f"连接 MCP 服务器被取消 {name}: {e}")
+            return False
+        except BaseExceptionGroup as e:
+            logger.error(f"连接 MCP 服务器失败 {name}: {e}")
+            return False
         except Exception as e:
             logger.error(f"连接 MCP 服务器失败 {name}: {e}")
             return False
+
+    async def connect_sse_server_from_config(
+        self,
+        name: str,
+        params: str | dict[str, Any],
+    ) -> bool:
+        """根据配置连接 SSE MCP 服务器。"""
+        if isinstance(params, str):
+            return await self.connect_sse_server(name, params)
+
+        url = params.get("url")
+        if not isinstance(url, str) or not url:
+            logger.error(f"SSE MCP 服务器 {name} 配置缺少 url")
+            return False
+
+        return await self.connect_sse_server(
+            name=name,
+            url=url,
+            headers=params.get("headers"),
+            timeout=float(params.get("timeout", 5)),
+            sse_read_timeout=float(params.get("sse_read_timeout", 300)),
+        )
+
+    async def connect_sse_server(
+        self,
+        name: str,
+        url: str,
+        headers: dict[str, Any] | None = None,
+        timeout: float = 5,
+        sse_read_timeout: float = 300,
+    ) -> bool:
+        """连接 SSE MCP 服务器。"""
+        try:
+            sse_transport = await self._exit_stack.enter_async_context(
+                sse_client(
+                    url=url,
+                    headers=headers,
+                    timeout=timeout,
+                    sse_read_timeout=sse_read_timeout,
+                )
+            )
+            await self._connect_session(name, sse_transport)
+            return True
+        except asyncio.CancelledError as e:
+            logger.error(f"连接 SSE MCP 服务器被取消 {name}: {e}")
+            return False
+        except BaseExceptionGroup as e:
+            logger.error(f"连接 SSE MCP 服务器失败 {name}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"连接 SSE MCP 服务器失败 {name}: {e}")
+            return False
+
+    async def connect_streamable_http_server_from_config(
+        self,
+        name: str,
+        params: str | dict[str, Any],
+    ) -> bool:
+        """根据配置连接 Streamable HTTP MCP 服务器。"""
+        if isinstance(params, str):
+            return await self.connect_streamable_http_server(name, params)
+
+        url = params.get("url")
+        if not isinstance(url, str) or not url:
+            logger.error(f"Streamable HTTP MCP 服务器 {name} 配置缺少 url")
+            return False
+
+        return await self.connect_streamable_http_server(
+            name=name,
+            url=url,
+            headers=params.get("headers"),
+            timeout=float(params.get("timeout", 30)),
+        )
+
+    async def connect_streamable_http_server(
+        self,
+        name: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        timeout: float = 30,
+    ) -> bool:
+        """连接 Streamable HTTP MCP 服务器。"""
+        try:
+            http_client: httpx.AsyncClient | None = None
+            if headers or timeout:
+                http_client = await self._exit_stack.enter_async_context(
+                    httpx.AsyncClient(headers=headers, timeout=timeout)
+                )
+
+            http_transport = await self._exit_stack.enter_async_context(
+                streamable_http_client(url, http_client=http_client)
+            )
+            await self._connect_session(name, http_transport)
+            return True
+        except asyncio.CancelledError as e:
+            logger.error(f"连接 Streamable HTTP MCP 服务器被取消 {name}: {e}")
+            return False
+        except BaseExceptionGroup as e:
+            logger.error(f"连接 Streamable HTTP MCP 服务器失败 {name}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"连接 Streamable HTTP MCP 服务器失败 {name}: {e}")
+            return False
+
+    async def _connect_session(self, name: str, transport: tuple[Any, ...]) -> None:
+        """从 MCP 传输对象创建会话并发现工具。"""
+        read, write = transport[0], transport[1]
+        session = await self._exit_stack.enter_async_context(ClientSession(read, write))
+
+        await session.initialize()
+        self._sessions[name] = session
+        logger.info(f"已连接 MCP 服务器: {name}")
+
+        await self._discover_tools(name, session)
 
     async def _discover_tools(self, server_name: str, session: ClientSession) -> None:
         """发现并注册工具。"""
         try:
             from src.core.components.registry import get_global_registry
             from src.core.components.base.tool import BaseTool
-            from src.core.components.types import ComponentType
+            from src.core.components.state_manager import get_global_state_manager
+            from src.core.components.types import ComponentState, ComponentType
 
             result = await session.list_tools()
             registry = get_global_registry()
+            state_manager = get_global_state_manager()
             
             for tool in result.tools:
-                adapter = MCPToolAdapter(server_name, tool)
+                adapter = MCPToolAdapter(server_name, tool, self)
                 self._adapters[adapter.tool_name] = adapter
                 logger.debug(f"发现 MCP 工具: {adapter.tool_name}")
                 
@@ -144,11 +312,15 @@ class MCPManager:
                 DynamicMCPTool.__name__ = f"MCPTool_{adapter.tool_name}"
                 
                 # 注册到全局注册表
-                # 签名格式: mcp_provider:tool:mcp_{server}_{tool}
+                # 签名格式: mcp_provider:tool:mcp-{server}-{tool}
                 signature = f"mcp_provider:{ComponentType.TOOL.value}:{adapter.tool_name}"
+                DynamicMCPTool._plugin_ = "mcp_provider"
+                DynamicMCPTool._signature_ = signature
                 
                 try:
                     registry.register(DynamicMCPTool, signature)
+                    state_manager.set_state(signature, ComponentState.ACTIVE)
+                    self._tool_signatures.add(signature)
                     logger.info(f"已动态注册 MCP 工具: {signature}")
                 except ValueError as e:
                     logger.warning(f"注册 MCP 工具失败 ({signature}): {e}")
@@ -166,13 +338,33 @@ class MCPManager:
 
     async def cleanup(self) -> None:
         """清理资源。"""
-        await self._exit_stack.aclose()
-        self._sessions.clear()
-        self._adapters.clear()
+        from src.core.components.registry import get_global_registry
+        from src.core.components.state_manager import get_global_state_manager
+
+        registry = get_global_registry()
+        state_manager = get_global_state_manager()
+        for signature in list(self._tool_signatures):
+            registry.unregister(signature)
+            state_manager.remove_state(signature)
+
+        try:
+            await self._exit_stack.aclose()
+        except asyncio.CancelledError as e:
+            logger.warning(f"MCP 管理器关闭连接时被取消，已忽略: {e}")
+        except BaseExceptionGroup as e:
+            logger.warning(f"MCP 管理器关闭连接时出现异常，已忽略: {e}")
+        except Exception as e:
+            logger.warning(f"MCP 管理器关闭连接时出现异常，已忽略: {e}")
+        finally:
+            self._exit_stack = AsyncExitStack()
+            self._sessions.clear()
+            self._adapters.clear()
+            self._tool_signatures.clear()
         logger.info("MCP 管理器资源已清理")
 
 # 全局单例
 _mcp_manager = MCPManager()
 
 def get_mcp_manager() -> MCPManager:
+    """获取全局 MCP 管理器实例。"""
     return _mcp_manager
