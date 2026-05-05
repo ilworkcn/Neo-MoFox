@@ -31,9 +31,6 @@ class SkillManagerLoadHandler(BaseEventHandler):
             return EventDecision.PASS, params
 
         plugin = self.plugin
-        if not hasattr(plugin, "refresh_skill_catalog"):
-            logger.warning("skill_manager 插件实例不支持 refresh_skill_catalog")
-            return EventDecision.PASS, params
 
         try:
             await plugin.refresh_skill_catalog()
