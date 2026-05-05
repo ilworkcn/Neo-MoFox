@@ -20,6 +20,7 @@ from src.core.components.base import (
     BaseChatter,
     BasePlugin,
     Wait,
+    WaitResumeEvent,
     Success,
     Failure,
     Stop,
@@ -460,16 +461,23 @@ class SendTextAction(BaseAction):
 
 
 class PassAndWaitAction(BaseAction):
-    """跳过本次动作，等待新消息"""
+    """跳过本次动作，等待新消息或定时继续。"""
 
     action_name = "pass_and_wait"
-    action_description = "跳过本次动作，不进行任何操作，但保持对话继续，等待用户新消息。若当前不需要回复，但对话还在进行中，使用本工具等待用户的下一条消息。请不要和结束对话混淆，除非你非常确定你和用户的对话没有结束，或者你需要等待用户提供更多信息来决定下一步怎么做，否则你通常应该直接结束对话，等待下一轮新消息触发新的对话。"
+    action_description = "为当前对话登记一个等待点。你可以单独调用它，让本轮什么都不做直接等待；也可以在同一轮先调用其他 action（例如 send_text、发送表情等），再调用本工具，表示这些动作执行完成后进入等待。默认会等待用户新消息；如果传入 seconds 参数，则会在指定秒数到达后由框架主动恢复对话流程，即使期间没有收到新消息。适合需要回复后稍后主动继续、定时追问或延时确认的场景。请不要和结束对话混淆，除非你非常确定你和用户的对话没有结束，或者你需要等待用户提供更多信息来决定下一步怎么做，否则你通常应该直接结束对话，等待下一轮新消息触发新的对话。"
 
     chatter_allow: list[str] = ["default_chatter"]
 
-    async def execute(self) -> tuple[bool, str]:
-        """跳过本次动作，不执行任何操作"""
-        return True, "已跳过，等待新消息"
+    async def execute(self, seconds: float | None = None) -> tuple[bool, str]:
+        """跳过本次动作，不执行任何操作。
+
+        Args:
+            seconds: 等待秒数；为 None 时等待新消息，为数字时到时主动继续。
+                可与其他 action 同轮组合，表示本轮动作完成后再进入等待。
+        """
+        if seconds is None:
+            return True, "已登记等待，将在本轮动作完成后等待新消息"
+        return True, f"已登记等待，将在本轮动作完成后等待 {seconds} 秒再继续对话"
 
 
 class StopConversationAction(BaseAction):
@@ -762,7 +770,9 @@ class DefaultChatter(BaseChatter):
             fallback_prompt=sub_agent_system_prompt,
         )
 
-    async def execute(self) -> AsyncGenerator[Wait | Success | Failure | Stop, None]:
+    async def execute(
+        self,
+    ) -> AsyncGenerator[Wait | Success | Failure | Stop, WaitResumeEvent | None]:
         """执行聊天器的对话循环。
 
         一轮对话包含完整的上下文消息（系统提示 + 历史 + 未读 + LLM call history）。
@@ -784,17 +794,23 @@ class DefaultChatter(BaseChatter):
         mode = self._get_mode()
         logger.info(f"DefaultChatter 当前模式: {mode}")
 
-        if mode == "classical":
-            async for result in self._execute_classical(chat_stream):
-                yield result
-            return
+        runner = (
+            self._execute_classical(chat_stream)
+            if mode == "classical"
+            else self._execute_enhanced(chat_stream)
+        )
+        resume_event: WaitResumeEvent | None = None
 
-        async for result in self._execute_enhanced(chat_stream):
-            yield result
+        while True:
+            try:
+                result = await runner.asend(resume_event)
+            except StopAsyncIteration:
+                return
+            resume_event = yield result
 
     async def _execute_enhanced(
         self, chat_stream: ChatStream
-    ) -> AsyncGenerator[Wait | Success | Failure | Stop, None]:
+    ) -> AsyncGenerator[Wait | Success | Failure | Stop, WaitResumeEvent | None]:
         """enhanced 模式执行流程（保留原有行为）。"""
         plugin_config = getattr(self.plugin, "config", None)
         enable_cooldown = (
@@ -802,7 +818,7 @@ class DefaultChatter(BaseChatter):
             if isinstance(plugin_config, DefaultChatterConfig)
             else False
         )
-        async for result in run_enhanced(
+        runner = run_enhanced(
             chatter=self,
             chat_stream=chat_stream,
             logger=logger,
@@ -811,14 +827,21 @@ class DefaultChatter(BaseChatter):
             send_text_call_name=_SEND_TEXT,
             suspend_text=_SUSPEND_TEXT,
             enable_cooldown=enable_cooldown,
-        ):
+        )
+        resume_event: WaitResumeEvent | None = None
+
+        while True:
+            try:
+                result = await runner.asend(resume_event)
+            except StopAsyncIteration:
+                return
             if isinstance(result, Stop):
                 result = self._apply_stop_wake_config(result)
-            yield result
+            resume_event = yield result
 
     async def _execute_classical(
         self, chat_stream: ChatStream
-    ) -> AsyncGenerator[Wait | Success | Failure | Stop, None]:
+    ) -> AsyncGenerator[Wait | Success | Failure | Stop, WaitResumeEvent | None]:
         """classical 模式执行流程。"""
         plugin_config = getattr(self.plugin, "config", None)
         enable_cooldown = (
@@ -826,7 +849,7 @@ class DefaultChatter(BaseChatter):
             if isinstance(plugin_config, DefaultChatterConfig)
             else False
         )
-        async for result in run_classical(
+        runner = run_classical(
             chatter=self,
             chat_stream=chat_stream,
             logger=logger,
@@ -835,10 +858,17 @@ class DefaultChatter(BaseChatter):
             send_text_call_name=_SEND_TEXT,
             suspend_text=_SUSPEND_TEXT,
             enable_cooldown=enable_cooldown,
-        ):
+        )
+        resume_event: WaitResumeEvent | None = None
+
+        while True:
+            try:
+                result = await runner.asend(resume_event)
+            except StopAsyncIteration:
+                return
             if isinstance(result, Stop):
                 result = self._apply_stop_wake_config(result)
-            yield result
+            resume_event = yield result
 
     async def run_tool_call(
         self,

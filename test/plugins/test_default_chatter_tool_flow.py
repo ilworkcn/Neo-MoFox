@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
-from plugins.default_chatter.tool_flow import (
-    append_suspend_payload_if_action_only,
-    process_tool_calls,
-)
+from plugins.default_chatter import tool_flow as tool_flow_mod
 from src.kernel.llm import ROLE
+
+append_suspend_payload_if_action_only = cast(Any, tool_flow_mod.append_suspend_payload_if_action_only)
+process_tool_calls = cast(Any, tool_flow_mod.process_tool_calls)
 
 
 class _FakeResponse:
@@ -153,6 +153,68 @@ async def test_process_tool_calls_marks_wait_and_stop_and_pending() -> None:
     assert outcome.should_stop is True
     assert outcome.stop_minutes == 3.0
     assert outcome.has_pending_tool_results is True
+
+
+@pytest.mark.asyncio
+async def test_process_tool_calls_extracts_wait_seconds() -> None:
+    """pass_and_wait 的 seconds 参数应透传为主动等待秒数。"""
+    response = _FakeResponse()
+    calls = [
+        SimpleNamespace(name="action-pass_and_wait", args={"seconds": 12}, id="w"),
+    ]
+
+    async def _run_tool_call(calls: list[Any], _resp: Any, _usable: Any, _trigger: Any) -> list[tuple[bool, bool]]:
+        return [(True, True) for _call in calls]
+
+    outcome = await process_tool_calls(
+        stream_id="s1",
+        calls=calls,
+        response=response,
+        run_tool_call=_run_tool_call,
+        usable_map={},
+        trigger_msg=None,
+        pass_call_name="action-pass_and_wait",
+        stop_call_name="action-stop_conversation",
+        send_text_call_name=None,
+        break_on_send_text=False,
+    )
+
+    assert outcome.should_wait is True
+    assert outcome.wait_seconds == 12.0
+
+
+@pytest.mark.asyncio
+async def test_process_tool_calls_allows_send_text_with_wait_seconds() -> None:
+    """send_text 与 pass_and_wait(seconds) 同轮出现时，应同时执行发送并登记主动等待。"""
+    response = _FakeResponse()
+    calls = [
+        SimpleNamespace(name="action-send_text", args={"content": "稍后提醒你"}, id="s"),
+        SimpleNamespace(name="action-pass_and_wait", args={"seconds": 8}, id="w"),
+    ]
+
+    called_names: list[str] = []
+
+    async def _run_tool_call(calls: list[Any], _resp: Any, _usable: Any, _trigger: Any) -> list[tuple[bool, bool]]:
+        called_names.extend(call.name for call in calls)
+        return [(True, True) for _call in calls]
+
+    outcome = await process_tool_calls(
+        stream_id="s1",
+        calls=calls,
+        response=response,
+        run_tool_call=_run_tool_call,
+        usable_map={},
+        trigger_msg=SimpleNamespace(message_id="m1"),
+        pass_call_name="action-pass_and_wait",
+        stop_call_name="action-stop_conversation",
+        send_text_call_name="action-send_text",
+        break_on_send_text=False,
+    )
+
+    assert called_names == ["action-send_text"]
+    assert outcome.should_wait is True
+    assert outcome.wait_seconds == 8.0
+    assert outcome.has_pending_tool_results is False
 
 
 @pytest.mark.asyncio

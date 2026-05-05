@@ -13,12 +13,12 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from src.core.config import get_core_config
 from src.kernel.concurrency import get_watchdog
 from src.core.transport.distribution.tick import ConversationTick
-from src.core.components.base.chatter import Wait, Success, Failure, Stop
+from src.core.components.base.chatter import Wait, WaitResumeEvent, Success, Failure, Stop
 from src.kernel.logger import get_logger, COLOR
 
 if TYPE_CHECKING:
@@ -26,6 +26,14 @@ if TYPE_CHECKING:
     from src.core.transport.distribution import StreamLoopManager
 
 logger = get_logger("conversation_loop", display="会话循环", color=COLOR.MAGENTA)
+
+
+def _take_wait_resume_event(manager: "StreamLoopManager", stream_id: str) -> WaitResumeEvent | None:
+    """兼容真实管理器与测试替身，读取当前 tick 的等待恢复事件。"""
+    take_event = getattr(manager, "take_wait_resume_event", None)
+    if callable(take_event):
+        return cast(WaitResumeEvent | None, take_event(stream_id))
+    return None
 
 
 def _get_stream_step_timeout() -> float | None:
@@ -167,6 +175,7 @@ async def run_chat_stream(
                 # 但当连续跳过次数已达上限时强制继续，防止高压群聊导致 Bot 始终无法响应。
                 if not manager._message_buffer_check(stream_id, context):
                     continue
+                resume_event = _take_wait_resume_event(manager, stream_id)
 
                 # 3. 获取或创建 chatter_gene
                 chatter_gene = manager._chatter_genes.get(stream_id)
@@ -232,8 +241,13 @@ async def run_chat_stream(
                         continue
                     
                     # 执行一步迭代
+                    step_awaitable = (
+                        chatter_gene.asend(resume_event)
+                        if resume_event is not None
+                        else anext(chatter_gene)
+                    )
                     result = await _await_stream_step(
-                        anext(chatter_gene),
+                        step_awaitable,
                         stream_id=stream_id,
                         stage="执行 Chatter 单步",
                     )

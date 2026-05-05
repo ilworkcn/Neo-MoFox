@@ -3,7 +3,7 @@
 from .action import BaseAction
 from .agent import BaseAgent
 from .adapter import BaseAdapter
-from .chatter import BaseChatter, Failure, Success, Wait, Stop
+from .chatter import BaseChatter, Failure, Success, Wait, WaitResumeEvent, Stop
 from .command import BaseCommand, CommandNode
 from .config import BaseConfig
 from .event_handler import BaseEventHandler
@@ -28,5 +28,6 @@ __all__ = [
     "Failure",
     "Success",
     "Wait",
+    "WaitResumeEvent",
     "Stop",
 ]

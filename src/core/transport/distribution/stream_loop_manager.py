@@ -75,6 +75,7 @@ class StreamLoopManager:
         # - yielded_at: 产出该状态的时间戳
         # - unread_count_at_yield: 产出该状态时的未读消息数
         self._wait_states: dict[str, tuple[Any, float, int]] = {}
+        self._pending_wait_resume_events: dict[str, Any] = {}
 
         # 并发控制
         self._processing_semaphore = asyncio.Semaphore(max_concurrent_streams)
@@ -167,6 +168,7 @@ class StreamLoopManager:
                 # 若这里继续等待它结束，会把新任务恢复也一起拖死。
                 self._chatter_genes.pop(stream_id, None)
                 self._wait_states.pop(stream_id, None)
+                self._pending_wait_resume_events.pop(stream_id, None)
                 context.is_chatter_processing = False
 
             # 创建新的驱动器任务
@@ -261,6 +263,7 @@ class StreamLoopManager:
 
         context.stream_loop_task = None
         self._stats["active_streams"] = max(0, self._stats["active_streams"] - 1)
+        self._pending_wait_resume_events.pop(stream_id, None)
         logger.debug(f"停止流循环: {stream_id[:8]}")
         return True
 
@@ -476,7 +479,7 @@ class StreamLoopManager:
         Returns:
             bool: 是否可以继续执行 (True: 满足条件或无等待, False: 仍在等待)
         """
-        from src.core.components.base.chatter import Wait, Stop
+        from src.core.components.base.chatter import Wait, WaitResumeEvent, Stop
 
         wait_state = self._wait_states.get(stream_id)
         if not wait_state:
@@ -493,10 +496,20 @@ class StreamLoopManager:
                 # Wait(None): 仅有新未读消息时恢复
                 if unread_count_now <= unread_count_at_yield:
                     return False
+                self._pending_wait_resume_events[stream_id] = WaitResumeEvent(
+                    source="message",
+                    wait_time=wait_time,
+                    unread_count=max(0, unread_count_now - unread_count_at_yield),
+                )
             else:
                 # Wait(seconds): 到达时间阈值后恢复
                 if now < yielded_at + float(wait_time):
                     return False
+                self._pending_wait_resume_events[stream_id] = WaitResumeEvent(
+                    source="timer",
+                    wait_time=wait_time,
+                    unread_count=max(0, unread_count_now - unread_count_at_yield),
+                )
 
         elif isinstance(last_yield, Stop):
             # Stop(seconds): 冷却结束且出现新未读消息时恢复
@@ -507,6 +520,11 @@ class StreamLoopManager:
                 context,
                 unread_count_at_yield,
             ):
+                self._pending_wait_resume_events[stream_id] = WaitResumeEvent(
+                    source="message",
+                    wait_time=wait_time,
+                    unread_count=max(0, unread_count_now - unread_count_at_yield),
+                )
                 self._wait_states.pop(stream_id, None)
                 return True
 
@@ -514,13 +532,23 @@ class StreamLoopManager:
             message_ready = unread_count_now > unread_count_at_yield
             if not (cooldown_ready and message_ready):
                 return False
+            self._pending_wait_resume_events[stream_id] = WaitResumeEvent(
+                source="message",
+                wait_time=wait_time,
+                unread_count=max(0, unread_count_now - unread_count_at_yield),
+            )
         else:
             # 非预期类型，不阻塞后续流程
+            self._pending_wait_resume_events.pop(stream_id, None)
             self._wait_states.pop(stream_id, None)
             return True
 
         self._wait_states.pop(stream_id, None)
         return True
+
+    def take_wait_resume_event(self, stream_id: str) -> Any | None:
+        """取出等待态恢复时生成的事件。"""
+        return self._pending_wait_resume_events.pop(stream_id, None)
 
     # ========================================================================
     # 辅助方法

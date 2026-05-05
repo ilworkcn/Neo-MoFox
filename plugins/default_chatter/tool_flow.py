@@ -21,6 +21,7 @@ class ToolCallOutcome:
 
     Attributes:
         should_wait: 是否需要等待用户新消息。
+        wait_seconds: 等待秒数；为 None 表示仅等待新消息。
         should_stop: 是否需要停止当前对话一段时间。
         stop_minutes: 停止对话的分钟数。
         sent_once: 本轮是否已经成功执行过 send_text。
@@ -28,6 +29,7 @@ class ToolCallOutcome:
     """
 
     should_wait: bool = False
+    wait_seconds: float | None = None
     should_stop: bool = False
     stop_minutes: float = 0.0
     sent_once: bool = False
@@ -165,11 +167,18 @@ async def process_tool_calls(
 
         if call.name == pass_call_name:
             await flush_pending_calls()
+            wait_seconds = args.get("seconds")
+            outcome.wait_seconds = None if wait_seconds is None else float(wait_seconds)
+            wait_text = (
+                "已登记等待，本轮动作完成后等待用户新消息"
+                if outcome.wait_seconds is None
+                else f"已登记等待，本轮动作完成后等待 {outcome.wait_seconds} 秒后继续对话"
+            )
             response.add_payload(
                 LLMPayload(
                     ROLE.TOOL_RESULT,
                     ToolResult(  # type: ignore[arg-type]
-                        value="已跳过，等待用户新消息",
+                        value=wait_text,
                         call_id=call.id,
                         name=call.name,
                     ),

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, AsyncGenerator, TypeGuard
 
-from src.core.components.base import Wait, Success, Failure, Stop
+from src.core.components.base import Wait, WaitResumeEvent, Success, Failure, Stop
 from src.core.models.message import Message
 from src.core.models.stream import ChatStream
 from src.kernel.logger import Logger
@@ -90,6 +90,26 @@ def _is_suspend_message(message: str | None, suspend_text: str) -> bool:
     return isinstance(message, str) and message.strip() == suspend_text
 
 
+def _is_timer_resume_event(event: WaitResumeEvent | None) -> bool:
+    """判断本轮是否由定时 wait 主动恢复。"""
+    return event is not None and event.source == "timer"
+
+
+def _build_wait_timeout_prompt(event: WaitResumeEvent) -> str:
+    """构建 wait 定时到期后的主动恢复提示词。"""
+    waited_text = (
+        "你之前设置的等待时间已经结束。"
+        if event.wait_time is None
+        else f"你之前设置的等待 {event.wait_time} 秒已经结束。"
+    )
+    return (
+        f"系统事件：{waited_text} 当前没有新的用户消息。"
+        "请基于已有上下文主动决定下一步。"
+        "如果现在不应继续，请再次调用 pass_and_wait；"
+        "如果需要回复或执行动作，请直接使用相应工具。"
+    )
+
+
 def _build_actor_decision_panel(chat_stream: ChatStream, response: LLMResponseLike) -> str:
     """构建 actor 本次决策摘要面板内容。"""
     stream_name = (
@@ -160,7 +180,7 @@ async def run_enhanced(
     send_text_call_name: str,
     suspend_text: str,
     enable_cooldown: bool = False,
-) -> AsyncGenerator[Wait | Success | Failure | Stop, None]:
+) -> AsyncGenerator[Wait | Success | Failure | Stop, WaitResumeEvent | None]:
     """enhanced 模式执行流程。"""
     try:
         request = chatter.create_request("actor", with_reminder="actor")
@@ -184,7 +204,11 @@ async def run_enhanced(
         unread_msgs_to_flush=[],
     )
 
+    resume_event: WaitResumeEvent | None = None
+
     while True:
+        current_resume_event = resume_event
+        resume_event = None
         _, unread_msgs = await chatter.fetch_unreads()
 
         # 安全兜底：若上下文尾部为 TOOL_RESULT，必须进入 FOLLOW_UP
@@ -198,8 +222,26 @@ async def run_enhanced(
 
         # FSM 驱动：每次循环只推进一个相位（或 yield）
         if rt.phase == _ToolCallWorkflowPhase.WAIT_USER:
+            if _is_timer_resume_event(current_resume_event):
+                assert current_resume_event is not None
+                rt.cross_round_seen_signatures.clear()
+                rt.plain_text_retry_count = 0
+                rt.unreads = []
+                rt.unread_msgs_to_flush = []
+                chatter._upsert_pending_unread_payload(
+                    response=rt.response,
+                    formatted_text=_build_wait_timeout_prompt(current_resume_event),
+                )
+                _transition(
+                    rt=rt,
+                    to_phase=_ToolCallWorkflowPhase.MODEL_TURN,
+                    logger=logger,
+                    reason="wait timer elapsed",
+                )
+                continue
+
             if not unread_msgs:
-                yield Wait()
+                resume_event = yield Wait()
                 continue
 
             # 仅在采纳新未读消息时清空跨轮去重状态；FOLLOW_UP 阶段不应清空。
@@ -229,7 +271,7 @@ async def run_enhanced(
 
             if not decision["should_respond"]:
                 logger.info("Sub-agent 决定不响应，继续等待...")
-                yield Wait()
+                resume_event = yield Wait()
                 continue
 
             chatter._upsert_pending_unread_payload(
@@ -268,7 +310,7 @@ async def run_enhanced(
 
             if not llm_response.call_list:
                 if _is_suspend_message(llm_response.message, suspend_text):
-                    yield Wait()
+                    resume_event = yield Wait()
                     _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.WAIT_USER, logger=logger, reason="model returned suspend")
                     continue
                 if llm_response.message and llm_response.message.strip():
@@ -278,7 +320,7 @@ async def run_enhanced(
                     )
                     yield Stop(0)
                     return
-                yield Wait()
+                resume_event = yield Wait()
                 _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.WAIT_USER, logger=logger, reason="no call_list")
                 continue
 
@@ -312,6 +354,9 @@ async def run_enhanced(
                 _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.FOLLOW_UP, logger=logger, reason="pending tool results")
                 continue
 
+            action_only_round = bool(current_calls) and all(
+                call.name.startswith("action-") for call in current_calls
+            )
             append_suspend_payload_if_action_only(
                 calls=current_calls,
                 response=llm_response,
@@ -320,8 +365,15 @@ async def run_enhanced(
             )
 
             # 工具链已闭合，可以进入等待或接受新 user。
+            if action_only_round and not call_outcome.should_wait:
+                resume_event = yield Wait()
+                _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.WAIT_USER, logger=logger, reason="action-only round suspended")
+                continue
+
             if call_outcome.should_wait:
-                yield Wait()
+                resume_event = yield Wait(
+                    time=getattr(call_outcome, "wait_seconds", None)
+                )
             _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.WAIT_USER, logger=logger, reason="tool exec done")
             continue
 
@@ -335,7 +387,7 @@ async def run_classical(
     send_text_call_name: str,
     suspend_text: str,
     enable_cooldown: bool = False,
-) -> AsyncGenerator[Wait | Success | Failure | Stop, None]:
+) -> AsyncGenerator[Wait | Success | Failure | Stop, WaitResumeEvent | None]:
     """classical 模式执行流程。"""
     try:
         base_request = chatter.create_request("actor", with_reminder="actor")
@@ -346,33 +398,43 @@ async def run_classical(
 
     usable_map = await chatter.inject_usables(base_request)
 
+    resume_event: WaitResumeEvent | None = None
+
     while True:
+        current_resume_event = resume_event
+        resume_event = None
         _, unread_msgs = await chatter.fetch_unreads()
         unreads = unread_msgs
+        proactive_wake = _is_timer_resume_event(current_resume_event)
 
-        if not unread_msgs:
-            yield Wait()
+        if not unread_msgs and not proactive_wake:
+            resume_event = yield Wait()
             continue
 
-        classical_user_text = await chatter._build_classical_user_text(
-            chat_stream,
-            unread_msgs,
-        )
-        unread_lines = "\n".join(
-            chatter.format_message_line(msg) for msg in unread_msgs
-        )
-        decision = await chatter.sub_agent(
-            unread_lines,
-            unread_msgs,
-            chat_stream,
-        )
-        logger.info(
-            f"Sub-agent 决策: {decision['reason']} (响应: {decision['should_respond']})"
-        )
+        if proactive_wake and not unread_msgs:
+            assert current_resume_event is not None
+            classical_user_text = _build_wait_timeout_prompt(current_resume_event)
+            decision = {"reason": "wait 定时到期，主动继续", "should_respond": True}
+        else:
+            classical_user_text = await chatter._build_classical_user_text(
+                chat_stream,
+                unread_msgs,
+            )
+            unread_lines = "\n".join(
+                chatter.format_message_line(msg) for msg in unread_msgs
+            )
+            decision = await chatter.sub_agent(
+                unread_lines,
+                unread_msgs,
+                chat_stream,
+            )
+            logger.info(
+                f"Sub-agent 决策: {decision['reason']} (响应: {decision['should_respond']})"
+            )
 
         if not decision["should_respond"]:
             logger.info("Sub-agent 决定不响应，继续等待...")
-            yield Wait()
+            resume_event = yield Wait()
             continue
 
         request = chatter.create_request("actor", with_reminder="actor")
@@ -404,7 +466,7 @@ async def run_classical(
             if not response.call_list:
                 if _is_suspend_message(response.message, suspend_text):
                     await chatter.flush_unreads(unread_msgs)
-                    yield Wait()
+                    resume_event = yield Wait()
                     break
                 if response.message and response.message.strip():
                     logger.warning(
@@ -436,6 +498,9 @@ async def run_classical(
                 cross_round_seen_signatures=cross_round_seen_signatures,
             )
             has_pending_tool_results = call_outcome.has_pending_tool_results
+            action_only_round = bool(current_calls) and all(
+                call.name.startswith("action-") for call in current_calls
+            )
             if not call_outcome.has_pending_tool_results:
                 append_suspend_payload_if_action_only(
                     calls=current_calls,
@@ -457,10 +522,17 @@ async def run_classical(
                 yield Stop(cooldown_seconds)
                 return
 
+            if action_only_round and not call_outcome.should_wait:
+                await chatter.flush_unreads(unread_msgs)
+                resume_event = yield Wait()
+                break
+
             if call_outcome.should_wait:
                 # 同 enhanced：若同时存在 pending 工具结果，优先 follow-up。
                 if has_pending_tool_results:
                     continue
                 await chatter.flush_unreads(unread_msgs)
-                yield Wait()
+                resume_event = yield Wait(
+                    time=getattr(call_outcome, "wait_seconds", None)
+                )
                 break
