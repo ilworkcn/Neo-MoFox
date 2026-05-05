@@ -14,6 +14,11 @@
       "dependencies": []
     },
     {
+      "component_type": "command",
+      "component_name": "skill",
+      "dependencies": []
+    },
+    {
       "component_type": "tool",
       "component_name": "get_skill",
       "dependencies": []

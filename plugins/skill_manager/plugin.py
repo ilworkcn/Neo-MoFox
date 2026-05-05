@@ -8,6 +8,7 @@ from src.core.components import BasePlugin, register_plugin
 from src.core.prompt import SystemReminderInsertType
 from src.kernel.logger import get_logger
 
+from .commands import SkillManagerCommand
 from .config import SkillManagerConfig
 from .handlers import SkillManagerLoadHandler
 from .models import SkillEntry
@@ -93,6 +94,7 @@ class SkillManagerPlugin(BasePlugin):
             return []
         return [
             SkillManagerLoadHandler,
+            SkillManagerCommand,
             SkillGetTool,
             SkillGetReferenceTool,
             SkillGetScriptTool,
