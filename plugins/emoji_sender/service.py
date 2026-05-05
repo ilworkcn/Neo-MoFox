@@ -650,7 +650,7 @@ class EmojiSenderService(BaseService):
                 logger.warning(f"压缩图片失败: {source} - {e}")
                 return
 
-            image_base64 = await get_task_manager().to_process(base64_encode_bytes, vlm_bytes)
+            image_base64 = await asyncio.to_thread(base64_encode_bytes, vlm_bytes)
 
             labeled = await self._vlm_decide_and_label(
                 image_base64=image_base64, 
@@ -869,7 +869,7 @@ class EmojiSenderService(BaseService):
             logger.warning(f"读取表情包失败: {path} - {e}")
             return False, result, "读取表情包文件失败"
 
-        image_base64 = await get_task_manager().to_process(base64_encode_bytes, payload)
+        image_base64 = await asyncio.to_thread(base64_encode_bytes, payload)
         desc = str(result.get("description") or "").strip()
         tag = str(result.get("tag") or "").strip()
         processed_plain_text = f"[表情包:{tag}:{desc}]" if desc else f"[表情包:{tag}]"

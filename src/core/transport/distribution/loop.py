@@ -28,6 +28,31 @@ if TYPE_CHECKING:
 logger = get_logger("conversation_loop", display="会话循环", color=COLOR.MAGENTA)
 
 
+def _get_stream_step_timeout() -> float | None:
+    """返回聊天流单步执行超时配置。"""
+    timeout = float(get_core_config().bot.stream_step_timeout)
+    return timeout if timeout > 0 else None
+
+
+async def _await_stream_step(
+    awaitable: Awaitable[Any],
+    *,
+    stream_id: str,
+    stage: str,
+) -> Any:
+    """为聊天流关键 await 提供统一的超时保护。"""
+    timeout = _get_stream_step_timeout()
+    if timeout is None:
+        return await awaitable
+
+    try:
+        return await asyncio.wait_for(awaitable, timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(
+            f"[驱动器] stream={stream_id[:8]}, {stage} 超时 ({timeout:.2f}s)"
+        ) from exc
+
+
 # ============================================================================
 # 异步生成器 — 核心循环逻辑
 # ============================================================================
@@ -174,7 +199,11 @@ async def run_chat_stream(
                             
                         chatter_gene = chatter.execute()
                         if asyncio.iscoroutine(chatter_gene):
-                            chatter_gene = await chatter_gene
+                            chatter_gene = await _await_stream_step(
+                                chatter_gene,
+                                stream_id=stream_id,
+                                stage="创建 Chatter 生成器",
+                            )
                         manager._chatter_genes[stream_id] = chatter_gene
                 
                 if not chatter_gene:
@@ -203,7 +232,11 @@ async def run_chat_stream(
                         continue
                     
                     # 执行一步迭代
-                    result = await anext(chatter_gene)
+                    result = await _await_stream_step(
+                        anext(chatter_gene),
+                        stream_id=stream_id,
+                        stage="执行 Chatter 单步",
+                    )
 
                     refreshed_context = await manager._get_stream_context(stream_id)
                     if not refreshed_context:

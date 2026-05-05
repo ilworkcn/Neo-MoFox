@@ -1,3 +1,4 @@
+import asyncio
 import io
 import time
 import weakref
@@ -35,6 +36,7 @@ GROUP_DETAIL_TTL = 300
 MEMBER_INFO_TTL = 180
 STRANGER_INFO_TTL = 300
 SELF_INFO_TTL = 300
+CACHE_IO_TIMEOUT_SECONDS = 5.0
 
 _adapter_ref: weakref.ReferenceType["NapcatAdapter"] | None = None
 
@@ -57,7 +59,11 @@ async def _ensure_cache_loaded() -> None:
     from src.kernel.storage import json_store
 
     try:
-        data = await json_store.load("napcat_cache")
+        async with asyncio.timeout(CACHE_IO_TIMEOUT_SECONDS):
+            data = await json_store.load("napcat_cache")
+    except TimeoutError as e:
+        logger.debug(f"Load napcat cache timed out: {e}")
+        data = None
     except Exception as e:
         logger.debug(f"Failed to load napcat cache: {e}")
         data = None
@@ -79,7 +85,10 @@ async def _save_cache_to_disk() -> None:
     from src.kernel.storage import json_store
 
     try:
-        await json_store.save("napcat_cache", _CACHE)
+        async with asyncio.timeout(CACHE_IO_TIMEOUT_SECONDS):
+            await json_store.save("napcat_cache", _CACHE)
+    except TimeoutError as e:
+        logger.debug(f"Write napcat cache timed out: {e}")
     except Exception as e:
         logger.debug(f"Write napcat cache failed: {e}")
 
@@ -260,7 +269,7 @@ async def get_image_base64(url: str) -> str:
 
         if not image_bytes:
             raise ValueError("图片内容为空")
-        return await get_task_manager().to_process(base64_encode_bytes, image_bytes)
+        return await asyncio.to_thread(base64_encode_bytes, image_bytes)
     except httpx.TimeoutException as e:
         logger.error(f"图片下载超时: {e!s}")
         raise
@@ -280,7 +289,7 @@ async def convert_image_to_gif(image_base64: str) -> str:
     """
     logger.debug("转换图片为GIF格式")
     try:
-        image_bytes = await get_task_manager().to_process(
+        image_bytes = await asyncio.to_thread(
             base64_decode_to_bytes,
             image_base64,
         )
@@ -288,7 +297,7 @@ async def convert_image_to_gif(image_base64: str) -> str:
         output_buffer = io.BytesIO()
         image.save(output_buffer, format="GIF")
         output_buffer.seek(0)
-        return await get_task_manager().to_process(
+        return await asyncio.to_thread(
             base64_encode_bytes,
             output_buffer.read(),
         )
@@ -328,7 +337,7 @@ async def get_image_format(raw_data: str) -> str:
     Returns:
         format: str: 图片的格式类型，如 'jpeg', 'png', 'gif'等
     """
-    image_bytes = await get_task_manager().to_process(base64_decode_to_bytes, raw_data)
+    image_bytes = await asyncio.to_thread(base64_decode_to_bytes, raw_data)
     return Image.open(io.BytesIO(image_bytes)).format.lower()
 
 
