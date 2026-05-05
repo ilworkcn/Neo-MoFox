@@ -14,7 +14,7 @@ class SkillManagerConfig(BaseConfig):
     config_name: ClassVar[str] = "config"
     config_description: ClassVar[str] = "SkillManager 配置"
 
-    @config_section("manager", title="技能管理", tag="plugin", order=0)
+    @config_section("manager", title="技能管理", tag="plugin")
     class ManagerSection(SectionBase):
         """技能管理主配置。"""
 

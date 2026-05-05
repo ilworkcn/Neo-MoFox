@@ -20,16 +20,14 @@ class NapcatAdapterConfig(BaseConfig):
             default=True,
             description="是否启用 Napcat 适配器",
             label="启用适配器",
-            tag="plugin",
-            order=0
+            tag="plugin"
         )
         config_version: str = Field(
             default="2.0.0",
             description="配置文件版本",
             label="配置版本",
             disabled=True,
-            tag="general",
-            order=1
+            tag="general"
         )
 
     @config_section("bot", title="Bot 配置", tag="user")
@@ -40,15 +38,13 @@ class NapcatAdapterConfig(BaseConfig):
             description="Bot 的 QQ 账号 ID",
             label="QQ 账号",
             placeholder="输入 Bot 的 QQ 号",
-            tag="user",
-            order=0
+            tag="user"
         )
         qq_nickname: str = Field(
             description="Bot 的 QQ 昵称",
             label="QQ 昵称",
             placeholder="输入 Bot 的昵称",
-            tag="user",
-            order=1
+            tag="user"
         )
 
     @config_section("napcat_server", title="Napcat 服务器", tag="network")
@@ -62,16 +58,14 @@ class NapcatAdapterConfig(BaseConfig):
             input_type="select",
             choices=["reverse", "direct"],
             tag="network",
-            hint="reverse: 逆向WebSocket; direct: 正向WebSocket",
-            order=0
+            hint="reverse: 逆向WebSocket; direct: 正向WebSocket"
         )
         host: str = Field(
             default="localhost",
             description="Napcat WebSocket 服务地址",
             label="服务地址",
             placeholder="localhost",
-            tag="network",
-            order=1
+            tag="network"
         )
         port: int = Field(
             default=8095,
@@ -79,8 +73,7 @@ class NapcatAdapterConfig(BaseConfig):
             label="服务端口",
             ge=1,
             le=65535,
-            tag="network",
-            order=2
+            tag="network"
         )
         access_token: str = Field(
             default="",
@@ -88,8 +81,7 @@ class NapcatAdapterConfig(BaseConfig):
             label="访问令牌",
             input_type="password",
             placeholder="可选，留空表示不鉴权",
-            tag="security",
-            order=3
+            tag="security"
         )
 
     @config_section("features", title="功能特性", tag="general")
@@ -102,8 +94,7 @@ class NapcatAdapterConfig(BaseConfig):
             label="群聊名单模式",
             input_type="select",
             choices=["blacklist", "whitelist"],
-            tag="list",
-            order=0
+            tag="list"
         )
         group_list: list[str | int] = Field(
             default_factory=list,
@@ -112,8 +103,7 @@ class NapcatAdapterConfig(BaseConfig):
             input_type="list",
             item_type="str",
             tag="list",
-            hint="输入群号，根据上面的模式进行过滤",
-            order=1
+            hint="输入群号，根据上面的模式进行过滤"
         )
         private_list_type: str = Field(
             default="blacklist",
@@ -121,8 +111,7 @@ class NapcatAdapterConfig(BaseConfig):
             label="私聊名单模式",
             input_type="select",
             choices=["blacklist", "whitelist"],
-            tag="list",
-            order=2
+            tag="list"
         )
         private_list: list[str | int] = Field(
             default_factory=list,
@@ -131,8 +120,7 @@ class NapcatAdapterConfig(BaseConfig):
             input_type="list",
             item_type="str",
             tag="list",
-            hint="输入 QQ 号，根据上面的模式进行过滤",
-            order=3
+            hint="输入 QQ 号，根据上面的模式进行过滤"
         )
         ban_user_id: list[str | int] = Field(
             default_factory=list,
@@ -141,15 +129,13 @@ class NapcatAdapterConfig(BaseConfig):
             input_type="list",
             item_type="str",
             tag="list",
-            hint="这些用户的消息将被完全忽略",
-            order=4
+            hint="这些用户的消息将被完全忽略"
         )
         enable_poke: bool = Field(
             default=True,
             description="是否启用戳一戳消息处理",
             label="启用戳一戳",
-            tag="general",
-            order=5
+            tag="general"
         )
         ignore_non_self_poke: bool = Field(
             default=False,
@@ -157,8 +143,7 @@ class NapcatAdapterConfig(BaseConfig):
             label="忽略非自己戳一戳",
             tag="general",
             depends_on="enable_poke",
-            depends_value=True,
-            order=6
+            depends_value=True
         )
         poke_debounce_seconds: float = Field(
             default=2.0,
@@ -170,22 +155,19 @@ class NapcatAdapterConfig(BaseConfig):
             input_type="slider",
             tag="timer",
             depends_on="enable_poke",
-            depends_value=True,
-            order=7
+            depends_value=True
         )
         enable_emoji_like: bool = Field(
             default=True,
             description="是否启用群聊表情回复处理",
             label="启用表情回复",
-            tag="general",
-            order=8
+            tag="general"
         )
         enable_reply_at: bool = Field(
             default=True,
             description="是否在回复时自动@原消息发送者",
             label="回复时@用户",
-            tag="general",
-            order=9
+            tag="general"
         )
         reply_at_rate: float = Field(
             default=0.5,
@@ -197,15 +179,13 @@ class NapcatAdapterConfig(BaseConfig):
             input_type="slider",
             tag="performance",
             depends_on="enable_reply_at",
-            depends_value=True,
-            order=10
+            depends_value=True
         )
         enable_video_processing: bool = Field(
             default=True,
             description="是否启用视频消息处理（下载和解析）",
             label="启用视频处理",
-            tag="general",
-            order=11
+            tag="general"
         )
         video_max_size_mb: int = Field(
             default=100,
@@ -216,8 +196,7 @@ class NapcatAdapterConfig(BaseConfig):
             input_type="slider",
             tag="file",
             depends_on="enable_video_processing",
-            depends_value=True,
-            order=12
+            depends_value=True
         )
         video_download_timeout: int = Field(
             default=60,
@@ -228,8 +207,7 @@ class NapcatAdapterConfig(BaseConfig):
             input_type="slider",
             tag="network",
             depends_on="enable_video_processing",
-            depends_value=True,
-            order=13
+            depends_value=True
         )
 
     plugin: PluginSection = Field(default_factory=PluginSection)
