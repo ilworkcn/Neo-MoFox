@@ -93,7 +93,7 @@ data/*
 .claude/
 config/*
 plugins/*
-
+skill/*
 
 !plugins/default_chatter/
 !plugins/napcat_adapter/
