@@ -95,6 +95,21 @@ def _is_timer_resume_event(event: WaitResumeEvent | None) -> bool:
     return event is not None and event.source == "timer"
 
 
+def _append_suspend_payload_if_tool_result_tail(
+    *,
+    response: LLMResponseLike,
+    suspend_text: str,
+    logger: Logger,
+) -> None:
+    """在进入等待前用占位 assistant 闭合尾部 TOOL_RESULT。"""
+    payloads = getattr(response, "payloads", None)
+    if not payloads or payloads[-1].role != ROLE.TOOL_RESULT:
+        return
+
+    response.add_payload(LLMPayload(ROLE.ASSISTANT, Text(suspend_text)))
+    logger.debug("已注入 SUSPEND 占位符（等待前闭合工具结果）")
+
+
 def _build_wait_timeout_prompt(event: WaitResumeEvent) -> str:
     """构建 wait 定时到期后的主动恢复提示词。"""
     waited_text = (
@@ -376,6 +391,11 @@ async def run_enhanced(
                 continue
 
             if call_outcome.should_wait:
+                _append_suspend_payload_if_tool_result_tail(
+                    response=llm_response,
+                    suspend_text=suspend_text,
+                    logger=logger,
+                )
                 resume_event = yield Wait(
                     time=getattr(call_outcome, "wait_seconds", None)
                 )
@@ -540,6 +560,11 @@ async def run_classical(
                 # 同 enhanced：若同时存在 pending 工具结果，优先 follow-up。
                 if has_pending_tool_results:
                     continue
+                _append_suspend_payload_if_tool_result_tail(
+                    response=response,
+                    suspend_text=suspend_text,
+                    logger=logger,
+                )
                 await chatter.flush_unreads(unread_msgs)
                 resume_event = yield Wait(
                     time=getattr(call_outcome, "wait_seconds", None)

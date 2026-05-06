@@ -536,6 +536,7 @@ async def test_run_enhanced_pass_and_wait_still_waits_when_suspend_disabled() ->
     first = await anext(gen)
     assert first.__class__.__name__ == "Wait"
     assert getattr(first, "time", None) == 5.0
+    assert resp.send_count == 1
 
 
 @pytest.mark.asyncio
@@ -565,6 +566,72 @@ async def test_run_classical_pass_and_wait_still_waits_when_suspend_disabled() -
     first = await anext(gen)
     assert first.__class__.__name__ == "Wait"
     assert getattr(first, "time", None) == 4.0
+    assert resp.send_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_enhanced_pass_and_wait_does_not_follow_up_immediately() -> None:
+    """enhanced 模式下纯 pass_and_wait 不应在同轮额外 follow-up。"""
+
+    resp = _FakeResponse(payload_roles=[ROLE.USER], message="")
+    resp.call_list = [
+        SimpleNamespace(name="action-pass_and_wait", args={"seconds": 5}, id="1")
+    ]
+
+    chatter = _FakeChatterWithUnreadSequence(
+        resp,
+        unread_batches=[[SimpleNamespace(message_id="m1")], []],
+    )
+    chat_stream = cast(Any, SimpleNamespace(stream_id="s1", stream_name="测试流"))
+    fake_logger = cast(Any, _FakeLogger())
+
+    gen = run_enhanced(
+        chatter=cast(Any, chatter),
+        chat_stream=chat_stream,
+        logger=fake_logger,
+        pass_call_name="action-pass_and_wait",
+        stop_call_name="action-stop_conversation",
+        send_text_call_name="action-send_text",
+        suspend_text="__SUSPEND__",
+    )
+
+    first = await anext(gen)
+    assert first.__class__.__name__ == "Wait"
+    assert getattr(first, "time", None) == 5.0
+    assert resp.send_count == 1
+
+    second = await gen.asend(None)
+    assert second.__class__.__name__ == "Wait"
+    assert resp.send_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_classical_pass_and_wait_does_not_follow_up_immediately() -> None:
+    """classical 模式下纯 pass_and_wait 不应在同轮额外 follow-up。"""
+
+    resp = _FakeResponse(payload_roles=[ROLE.USER], message="")
+    resp.call_list = [
+        SimpleNamespace(name="action-pass_and_wait", args={"seconds": 4}, id="1")
+    ]
+
+    chatter = _FakeChatterAllowUser(resp)
+    chat_stream = cast(Any, SimpleNamespace(stream_id="s1", stream_name="测试流"))
+    fake_logger = cast(Any, _FakeLogger())
+
+    gen = run_classical(
+        chatter=cast(Any, chatter),
+        chat_stream=chat_stream,
+        logger=fake_logger,
+        pass_call_name="action-pass_and_wait",
+        stop_call_name="action-stop_conversation",
+        send_text_call_name="action-send_text",
+        suspend_text="__SUSPEND__",
+    )
+
+    first = await anext(gen)
+    assert first.__class__.__name__ == "Wait"
+    assert getattr(first, "time", None) == 4.0
+    assert resp.send_count == 1
 
 
 @pytest.mark.asyncio
