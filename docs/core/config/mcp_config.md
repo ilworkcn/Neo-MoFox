@@ -15,7 +15,10 @@ MCPConfig 定义 MCP 功能开关及服务端点配置，供 tool_manager/mcp_ma
 字典结构，key 为服务名，value 通常包含 command、args、env。
 
 - mcp.sse_servers
-字典结构，key 为服务名，value 为 URL。
+字典结构，key 为服务名，value 可为 URL 字符串，或包含 url、headers、timeout、sse_read_timeout 的对象。
+
+- mcp.streamable_http_servers
+字典结构，key 为服务名，value 可为 URL 字符串，或包含 url、headers、timeout 的对象。
 
 ## 全局实例管理
 
@@ -35,4 +38,5 @@ MCPManager.initialize 会读取 get_mcp_config：
 
 - enabled=False 时直接跳过。
 - stdio_servers 逐项连接。
-- sse_servers 当前实现仅告警未实现。
+- sse_servers 逐项连接并发现工具。
+- streamable_http_servers 逐项连接并发现工具。

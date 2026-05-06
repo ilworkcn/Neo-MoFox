@@ -8,6 +8,7 @@ from src.core.components import BasePlugin, register_plugin
 from src.core.prompt import SystemReminderInsertType
 from src.kernel.logger import get_logger
 
+from .commands import SkillManagerCommand
 from .config import SkillManagerConfig
 from .handlers import SkillManagerLoadHandler
 from .models import SkillEntry
@@ -93,6 +94,7 @@ class SkillManagerPlugin(BasePlugin):
             return []
         return [
             SkillManagerLoadHandler,
+            SkillManagerCommand,
             SkillGetTool,
             SkillGetReferenceTool,
             SkillGetScriptTool,
@@ -203,7 +205,7 @@ class SkillManagerPlugin(BasePlugin):
         *,
         skill_entry: SkillEntry,
         relative_path: str,
-        required_suffix: str,
+        required_suffix: str | tuple[str, ...],
     ) -> tuple[Path | None, str | None]:
         """将 skill 内相对路径解析为受限的绝对路径。"""
 
@@ -216,8 +218,14 @@ class SkillManagerPlugin(BasePlugin):
             return None, f"location 越界: {relative_path}"
         if not resolved_target.is_file():
             return None, f"文件不存在: {relative_path}"
-        if resolved_target.suffix.lower() != required_suffix:
-            return None, f"仅支持 {required_suffix} 文件: {relative_path}"
+        allowed_suffixes = (
+            (required_suffix,)
+            if isinstance(required_suffix, str)
+            else tuple(required_suffix)
+        )
+        if resolved_target.suffix.lower() not in allowed_suffixes:
+            suffix_display = ", ".join(allowed_suffixes)
+            return None, f"仅支持 {suffix_display} 文件: {relative_path}"
         return resolved_target, None
 
     def _sync_system_reminder(self) -> None:

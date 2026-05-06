@@ -87,7 +87,7 @@ class TaskManager:
         self,
         func: Callable[P, R],
         *args: P.args,
-        timeout: float | None = 15.0,
+        timeout: float | None = 15.0, # type: ignore
         **kwargs: P.kwargs,
     ) -> R:
         """在独立进程中执行同步函数，适合 CPU 密集任务。

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Literal
+from typing import ClassVar
 
 from src.core.components.base.config import BaseConfig, Field, SectionBase, config_section
 
@@ -44,15 +44,6 @@ class DefaultChatterConfig(BaseConfig):
             label="启用插件",
             tag="plugin"
         )
-        mode: Literal["enhanced", "classical"] = Field(
-            default="enhanced",
-            description="执行模式: enhanced/classical",
-            label="执行模式",
-            input_type="select",
-            choices=["enhanced", "classical"],
-            tag="performance",
-            hint="enhanced 模式更智能但消耗更多资源"
-        )
         reinforce_negative_behaviors: bool = Field(
             default=True,
             description="是否在每轮 user 提示词的 extra 板块中再次强调负面行为约束",
@@ -73,6 +64,13 @@ class DefaultChatterConfig(BaseConfig):
             label="启用程序化控制器",
             tag="ai",
             hint="关闭后群聊消息将始终经过 LLM sub-agent 过滤，不再使用本地概率直通逻辑"
+        )
+        enable_action_suspend: bool = Field(
+            default=True,
+            description="是否启用纯 Action 回合的 SUSPEND 挂起机制。关闭后，纯 Action 结果会像常规工具结果一样继续 follow-up，而不是立即挂起等待。",
+            label="启用 Action 后暂停",
+            tag="ai",
+            hint="关闭后，纯 Action 回合不会注入 __SUSPEND__，模型会继续基于 Action 回执决定下一步调用"
         )
         enable_stop_direct_message_wake: bool = Field(
             default=False,

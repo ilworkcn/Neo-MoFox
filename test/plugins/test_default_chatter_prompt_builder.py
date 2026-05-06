@@ -12,17 +12,6 @@ from plugins.default_chatter.prompt_builder import DefaultChatterPromptBuilder
 from src.core.models.stream import ChatStream
 
 
-def test_get_mode_returns_configured_value() -> None:
-    """应返回配置中的 mode。"""
-    config = DefaultChatterConfig.from_dict({"plugin": {"mode": "classical"}})
-    assert DefaultChatterPromptBuilder.get_mode(config) == "classical"
-
-
-def test_get_mode_fallbacks_to_enhanced() -> None:
-    """配置不可用时应回退为 enhanced。"""
-    assert DefaultChatterPromptBuilder.get_mode(None) == "enhanced"
-
-
 def test_build_negative_behaviors_extra_disabled_returns_empty() -> None:
     """未启用强化时应返回空字符串。"""
     config = DefaultChatterConfig.from_dict(
@@ -50,6 +39,26 @@ def test_build_negative_behaviors_extra_enabled_returns_text(
     assert "行为提醒" in result
     assert "不要骂人" in result
     assert "不要编造" in result
+
+
+def test_build_action_suspend_guidance_defaults_enabled() -> None:
+    """默认应启用 action suspend 提示。"""
+
+    config = DefaultChatterConfig.from_dict({"plugin": {"enable_action_suspend": True}})
+    result = DefaultChatterPromptBuilder.build_action_suspend_guidance(config)
+    assert "__SUSPEND__" in result
+    assert "继续决定下一步" not in result
+
+
+def test_build_action_suspend_guidance_supports_follow_up_mode() -> None:
+    """关闭 action suspend 时应改为 follow-up 提示。"""
+
+    config = DefaultChatterConfig.from_dict({"plugin": {"enable_action_suspend": False}})
+    result = DefaultChatterPromptBuilder.build_action_suspend_guidance(config)
+    assert "__SUSPEND__" in result
+    assert "不要输出" in result
+    assert "继续决定下一步" in result
+    assert "pass_and_wait" in result
 
 
 def test_build_system_prompt_uses_private_theme(

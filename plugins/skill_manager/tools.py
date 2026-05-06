@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import runpy
 import shlex
+import shutil
 import sys
-from contextlib import redirect_stderr, redirect_stdout
-from typing import Annotated
+from contextlib import suppress, redirect_stderr, redirect_stdout
+from pathlib import Path
+from typing import Annotated, Any, cast
 
 from src.core.components import BaseTool
 from src.kernel.logger import get_logger
 
 
 logger = get_logger("skill_manager.tool")
+SUPPORTED_SCRIPT_SUFFIXES: tuple[str, ...] = (".py", ".ps1", ".bat", ".cmd", ".sh")
+EXTERNAL_SCRIPT_TIMEOUT_SECONDS = 15.0
+EXTERNAL_SCRIPT_KILL_GRACE_SECONDS = 3.0
 
 
 class SkillGetTool(BaseTool):
@@ -32,7 +38,7 @@ class SkillGetTool(BaseTool):
         if not resolved_name:
             return False, "name 不能为空"
 
-        plugin = self.plugin
+        plugin = cast(Any, self.plugin)
         entry = plugin.skills.get(resolved_name)
         if entry is None:
             return False, f"未找到 skill: {resolved_name}"
@@ -66,7 +72,7 @@ class SkillGetReferenceTool(BaseTool):
         if not resolved_name:
             return False, "name 不能为空"
 
-        plugin = self.plugin
+        plugin = cast(Any, self.plugin)
         if resolved_name not in plugin.injected_skills:
             return False, f"skill '{resolved_name}' 尚未注入，请先调用 get_skill"
 
@@ -86,19 +92,22 @@ class SkillGetReferenceTool(BaseTool):
 
 
 class SkillGetScriptTool(BaseTool):
-    """直接执行 skill 下 python 脚本。"""
+    """直接执行 skill 下的脚本文件。"""
 
     tool_name: str = "get_script"
     tool_description: str = (
         "在已通过 get_skill(name) 注入对应 skill 后，"
-        "按相对路径直接执行该 skill 目录下 python 脚本（等价 python xxx.py）。"
+        "按相对路径直接执行该 skill 目录下脚本文件（支持 .py/.ps1/.bat/.cmd/.sh）。"
         "可选通过 script_args 传入命令行参数。"
     )
 
     async def execute(
         self,
         name: Annotated[str, "已注入的 skill 名称"],
-        location: Annotated[str, "该 skill 目录内 python 文件相对路径，例如 scripts/toolbox.py"],
+        location: Annotated[
+            str,
+            "该 skill 目录内脚本相对路径，例如 scripts/toolbox.py 或 scripts/search_arxiv.ps1",
+        ],
         script_args: Annotated[
             list[str] | str,
             "可选脚本参数；支持字符串（如 '--check 60 --bonus 1'）或字符串列表（如 ['--check', '60']）",
@@ -110,7 +119,7 @@ class SkillGetScriptTool(BaseTool):
         if not resolved_name:
             return False, "name 不能为空"
 
-        plugin = self.plugin
+        plugin = cast(Any, self.plugin)
         if resolved_name not in plugin.injected_skills:
             return False, f"skill '{resolved_name}' 尚未注入，请先调用 get_skill"
 
@@ -121,7 +130,7 @@ class SkillGetScriptTool(BaseTool):
         script_path, error = plugin._resolve_skill_relative_path(
             skill_entry=entry,
             relative_path=location,
-            required_suffix=".py",
+            required_suffix=SUPPORTED_SCRIPT_SUFFIXES,
         )
         if script_path is None:
             return False, error or "脚本路径无效"
@@ -136,36 +145,155 @@ class SkillGetScriptTool(BaseTool):
         elif script_args is not None:
             return False, "script_args 必须是字符串或字符串列表"
 
-        old_argv = sys.argv[:]
-        stdout_buffer = io.StringIO()
-        stderr_buffer = io.StringIO()
-        try:
-            sys.argv = [str(script_path), *normalized_args]
-            with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-                runpy.run_path(str(script_path), run_name="__main__")
+        if script_path.suffix.lower() == ".py":
+            return _execute_python_script(script_path, normalized_args)
+        return await _execute_external_script(script_path, normalized_args)
 
-            captured_output = _compose_captured_output(stdout_buffer, stderr_buffer)
+
+def _execute_python_script(
+    script_path: Path,
+    normalized_args: list[str],
+) -> tuple[bool, str | dict]:
+    """以内嵌方式执行 Python 脚本。"""
+
+    old_argv = sys.argv[:]
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
+    try:
+        sys.argv = [str(script_path), *normalized_args]
+        with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
+            runpy.run_path(str(script_path), run_name="__main__")
+
+        captured_output = _compose_captured_output(stdout_buffer, stderr_buffer)
+        if captured_output:
+            return True, f"脚本已执行: {script_path.name}\n\n{captured_output}"
+        return True, f"脚本已执行: {script_path.name}"
+    except SystemExit as error:
+        captured_output = _compose_captured_output(stdout_buffer, stderr_buffer)
+        exit_code = error.code
+        if exit_code in (None, 0):
             if captured_output:
                 return True, f"脚本已执行: {script_path.name}\n\n{captured_output}"
             return True, f"脚本已执行: {script_path.name}"
-        except SystemExit as error:
-            captured_output = _compose_captured_output(stdout_buffer, stderr_buffer)
-            exit_code = error.code
-            if exit_code in (None, 0):
-                if captured_output:
-                    return True, f"脚本已执行: {script_path.name}\n\n{captured_output}"
-                return True, f"脚本已执行: {script_path.name}"
-            if captured_output:
-                return False, f"脚本执行退出码: {exit_code}\n\n{captured_output}"
-            return False, f"脚本执行退出码: {exit_code}"
-        except Exception as error:
-            logger.exception("执行 skill 脚本失败")
-            captured_output = _compose_captured_output(stdout_buffer, stderr_buffer)
-            if captured_output:
-                return False, f"执行脚本失败: {error}\n\n{captured_output}"
-            return False, f"执行脚本失败: {error}"
-        finally:
-            sys.argv = old_argv
+        if captured_output:
+            return False, f"脚本执行退出码: {exit_code}\n\n{captured_output}"
+        return False, f"脚本执行退出码: {exit_code}"
+    except Exception as error:
+        logger.error(f"执行 skill 脚本失败: {error}")
+        captured_output = _compose_captured_output(stdout_buffer, stderr_buffer)
+        if captured_output:
+            return False, f"执行脚本失败: {error}\n\n{captured_output}"
+        return False, f"执行脚本失败: {error}"
+    finally:
+        sys.argv = old_argv
+
+
+async def _execute_external_script(
+    script_path: Path,
+    normalized_args: list[str],
+) -> tuple[bool, str | dict]:
+    """通过子进程执行非 Python 脚本。"""
+
+    command, error = _build_external_script_command(script_path, normalized_args)
+    if command is None:
+        return False, error or f"不支持的脚本类型: {script_path.suffix}"
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=str(script_path.parent),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        communicate_task = asyncio.create_task(process.communicate())
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            asyncio.shield(communicate_task),
+            timeout=EXTERNAL_SCRIPT_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        process.kill()
+        stdout_bytes, stderr_bytes = await _finalize_timed_out_process(
+            process,
+            communicate_task,
+        )
+        captured_output = _compose_output_text(
+            stdout_bytes.decode("utf-8", errors="replace").strip(),
+            stderr_bytes.decode("utf-8", errors="replace").strip(),
+        )
+        if captured_output:
+            return False, (
+                f"脚本执行超时（{EXTERNAL_SCRIPT_TIMEOUT_SECONDS}秒）\n\n{captured_output}"
+            )
+        return False, f"脚本执行超时（{EXTERNAL_SCRIPT_TIMEOUT_SECONDS}秒）"
+    except Exception as error:
+        logger.error(f"执行外部 skill 脚本失败: {error}")
+        return False, f"执行脚本失败: {error}"
+
+    captured_output = _compose_output_text(
+        stdout_bytes.decode("utf-8", errors="replace").strip(),
+        stderr_bytes.decode("utf-8", errors="replace").strip(),
+    )
+    if process.returncode == 0:
+        if captured_output:
+            return True, f"脚本已执行: {script_path.name}\n\n{captured_output}"
+        return True, f"脚本已执行: {script_path.name}"
+    if captured_output:
+        return False, f"脚本执行退出码: {process.returncode}\n\n{captured_output}"
+    return False, f"脚本执行退出码: {process.returncode}"
+
+
+async def _finalize_timed_out_process(
+    process: asyncio.subprocess.Process,
+    communicate_task: asyncio.Task[tuple[bytes, bytes]],
+) -> tuple[bytes, bytes]:
+    """在外部脚本超时后收尾子进程并尽量回收输出。"""
+
+    try:
+        await asyncio.wait_for(
+            process.wait(),
+            timeout=EXTERNAL_SCRIPT_KILL_GRACE_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("外部脚本超时后进程未在宽限期内退出，放弃等待退出码")
+    except Exception as error:
+        logger.warning(f"等待超时脚本进程退出时出错: {error}")
+
+    try:
+        return await asyncio.wait_for(
+            communicate_task,
+            timeout=EXTERNAL_SCRIPT_KILL_GRACE_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("外部脚本超时后 communicate 未在宽限期内结束，放弃收集残余输出")
+    except Exception as error:
+        logger.warning(f"收集超时脚本输出时出错: {error}")
+
+    communicate_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await communicate_task
+    return b"", b""
+
+
+def _build_external_script_command(
+    script_path: Path,
+    normalized_args: list[str],
+) -> tuple[list[str] | None, str | None]:
+    """构建外部脚本执行命令。"""
+
+    suffix = script_path.suffix.lower()
+    if suffix == ".ps1":
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        if powershell is None:
+            return None, "未找到可用的 PowerShell 解释器"
+        return [powershell, "-ExecutionPolicy", "Bypass", "-File", str(script_path), *normalized_args], None
+    if suffix in {".bat", ".cmd"}:
+        return ["cmd.exe", "/c", str(script_path), *normalized_args], None
+    if suffix == ".sh":
+        shell_runner = shutil.which("bash") or shutil.which("sh")
+        if shell_runner is None:
+            return None, "未找到可用的 shell 解释器"
+        return [shell_runner, str(script_path), *normalized_args], None
+    return None, f"不支持的脚本类型: {suffix}"
 
 
 def _compose_captured_output(stdout_buffer: io.StringIO, stderr_buffer: io.StringIO) -> str:
@@ -173,6 +301,12 @@ def _compose_captured_output(stdout_buffer: io.StringIO, stderr_buffer: io.Strin
 
     stdout_text = stdout_buffer.getvalue().strip()
     stderr_text = stderr_buffer.getvalue().strip()
+    return _compose_output_text(stdout_text, stderr_text)
+
+
+def _compose_output_text(stdout_text: str, stderr_text: str) -> str:
+    """拼接标准输出与标准错误文本。"""
+
     output_sections: list[str] = []
     if stdout_text:
         output_sections.append(f"[stdout]\n{stdout_text}")

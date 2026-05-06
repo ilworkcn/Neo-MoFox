@@ -33,10 +33,18 @@ class MCPConfig(ConfigBase):
 
         # SSE servers: 字典结构
         # key: server name
-        # value: url string
-        sse_servers: dict[str, str] = Field(
+        # value: url string 或 { "url": "...", "headers": {...}, "timeout": 5 }
+        sse_servers: dict[str, str | dict[str, Any]] = Field(
             default_factory=dict,
-            description="基于 SSE 的 MCP 服务器配置。Key为服务名，Value为URL。"
+            description="基于 SSE 的 MCP 服务器配置。Key为服务名，Value为URL或连接参数。"
+        )
+
+        # Streamable HTTP servers: 字典结构
+        # key: server name
+        # value: url string 或 { "url": "...", "headers": {...}, "timeout": 30 }
+        streamable_http_servers: dict[str, str | dict[str, Any]] = Field(
+            default_factory=dict,
+            description="基于 Streamable HTTP 的 MCP 服务器配置。Key为服务名，Value为URL或连接参数。"
         )
 
     mcp: MCPSection = Field(default_factory=MCPSection)

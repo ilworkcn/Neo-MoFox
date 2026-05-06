@@ -14,11 +14,12 @@ import asyncio
 import random
 import time
 import concurrent.futures
-from typing import TYPE_CHECKING, Any, AsyncGenerator, cast
+from typing import TYPE_CHECKING, AsyncGenerator
 
 from src.kernel.logger import get_logger, COLOR
 
 if TYPE_CHECKING:
+    from src.core.components.base.chatter import ChatterResult, Stop, Wait, WaitResumeEvent
     from src.core.models.stream import ChatStream, StreamContext
     from src.core.models.message import Message
 
@@ -68,19 +69,23 @@ class StreamLoopManager:
         self._restart_next_allowed_at: dict[str, float] = {}
 
         # 对话执行生成器：stream_id -> generator
-        self._chatter_genes: dict[str, AsyncGenerator[Any, None]] = {}
+        self._chatter_genes: dict[
+            str,
+            AsyncGenerator["ChatterResult", "WaitResumeEvent | None"],
+        ] = {}
 
         # 等待状态：stream_id -> (last_yield, yielded_at, unread_count_at_yield)
         # - last_yield: Chatter 产出的 Wait/Stop 对象
         # - yielded_at: 产出该状态的时间戳
         # - unread_count_at_yield: 产出该状态时的未读消息数
-        self._wait_states: dict[str, tuple[Any, float, int]] = {}
+        self._wait_states: dict[str, tuple["Wait | Stop", float, int]] = {}
+        self._pending_wait_resume_events: dict[str, "WaitResumeEvent"] = {}
 
         # 并发控制
         self._processing_semaphore = asyncio.Semaphore(max_concurrent_streams)
 
         # 统计信息
-        self._stats: dict[str, Any] = {
+        self._stats: dict[str, int | float] = {
             "active_streams": 0,
             "total_loops": 0,
             "total_process_cycles": 0,
@@ -167,6 +172,7 @@ class StreamLoopManager:
                 # 若这里继续等待它结束，会把新任务恢复也一起拖死。
                 self._chatter_genes.pop(stream_id, None)
                 self._wait_states.pop(stream_id, None)
+                self._pending_wait_resume_events.pop(stream_id, None)
                 context.is_chatter_processing = False
 
             # 创建新的驱动器任务
@@ -254,13 +260,16 @@ class StreamLoopManager:
         task.cancel()
         try:
             await asyncio.wait_for(task, timeout=5.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
+        except asyncio.CancelledError:
             pass
+        except asyncio.TimeoutError:
+            logger.warning(f"停止流循环超时: {stream_id[:8]}")
         except Exception as e:
             logger.error(f"停止任务时出错: {e}")
 
         context.stream_loop_task = None
         self._stats["active_streams"] = max(0, self._stats["active_streams"] - 1)
+        self._pending_wait_resume_events.pop(stream_id, None)
         logger.debug(f"停止流循环: {stream_id[:8]}")
         return True
 
@@ -332,14 +341,14 @@ class StreamLoopManager:
             return chat_stream.context
         return None
 
-    async def _flush_cached_messages_to_unread(self, stream_id: str) -> list[Any]:
+    async def _flush_cached_messages_to_unread(self, stream_id: str) -> list["Message"]:
         """将缓存消息刷新到未读消息列表。
 
         Args:
             stream_id: 流 ID
 
         Returns:
-            list: 已刷新的消息列表
+            list[Message]: 已刷新的消息列表
         """
         context = await self._get_stream_context(stream_id)
         if not context:
@@ -348,7 +357,7 @@ class StreamLoopManager:
         if not context.is_cache_enabled or not context.message_cache:
             return []
 
-        flushed: list[Any] = []
+        flushed: list["Message"] = []
         while context.message_cache:
             msg = context.message_cache.popleft()
             context.add_unread_message(msg)
@@ -425,10 +434,10 @@ class StreamLoopManager:
     @staticmethod
     def _message_mentions_bot(message: Message) -> bool:
         """判断消息是否显式 @ 了当前 Bot。"""
-        raw_data = getattr(message, "raw_data", None)
+        raw_data = message.raw_data
         self_id = raw_data.get("self_id") if isinstance(raw_data, dict) else None
 
-        at_users = getattr(message, "extra", {}).get("at_users", [])
+        at_users = message.extra.get("at_users", [])
         if self_id is not None and isinstance(at_users, list):
             for at_user in at_users:
                 if isinstance(at_user, dict) and str(at_user.get("user_id")) == str(self_id):
@@ -454,19 +463,19 @@ class StreamLoopManager:
 
     def _should_wake_stop_early(
         self,
-        last_yield: Any,
+        last_yield: "Stop",
         context: "StreamContext",
         unread_count_at_yield: int,
     ) -> bool:
         """按 Stop 配置判断是否提前解除冷却。"""
-        if not bool(getattr(last_yield, "direct_message_wake_enabled", False)):
+        if not last_yield.direct_message_wake_enabled:
             return False
         if not self._has_direct_stop_wake_message(context, unread_count_at_yield):
             return False
 
         probability = max(
             0.0,
-            min(1.0, float(getattr(last_yield, "direct_message_wake_probability", 0.0))),
+            min(1.0, float(last_yield.direct_message_wake_probability)),
         )
         return random.random() < probability
 
@@ -476,7 +485,7 @@ class StreamLoopManager:
         Returns:
             bool: 是否可以继续执行 (True: 满足条件或无等待, False: 仍在等待)
         """
-        from src.core.components.base.chatter import Wait, Stop
+        from src.core.components.base.chatter import Wait, WaitResumeEvent, Stop
 
         wait_state = self._wait_states.get(stream_id)
         if not wait_state:
@@ -486,27 +495,41 @@ class StreamLoopManager:
         unread_count_now = len(context.unread_messages)
         now = time.time()
 
-        wait_time = cast(float | None, getattr(last_yield, "time", None))
-
         if isinstance(last_yield, Wait):
+            wait_time = last_yield.time
             if wait_time is None:
                 # Wait(None): 仅有新未读消息时恢复
                 if unread_count_now <= unread_count_at_yield:
                     return False
+                self._pending_wait_resume_events[stream_id] = WaitResumeEvent(
+                    source="message",
+                    wait_time=wait_time,
+                    unread_count=max(0, unread_count_now - unread_count_at_yield),
+                )
             else:
                 # Wait(seconds): 到达时间阈值后恢复
                 if now < yielded_at + float(wait_time):
                     return False
+                self._pending_wait_resume_events[stream_id] = WaitResumeEvent(
+                    source="timer",
+                    wait_time=wait_time,
+                    unread_count=max(0, unread_count_now - unread_count_at_yield),
+                )
 
         elif isinstance(last_yield, Stop):
             # Stop(seconds): 冷却结束且出现新未读消息时恢复
-            assert wait_time is not None
+            wait_time = last_yield.time
             
             if self._should_wake_stop_early(
                 last_yield,
                 context,
                 unread_count_at_yield,
             ):
+                self._pending_wait_resume_events[stream_id] = WaitResumeEvent(
+                    source="message",
+                    wait_time=wait_time,
+                    unread_count=max(0, unread_count_now - unread_count_at_yield),
+                )
                 self._wait_states.pop(stream_id, None)
                 return True
 
@@ -514,13 +537,23 @@ class StreamLoopManager:
             message_ready = unread_count_now > unread_count_at_yield
             if not (cooldown_ready and message_ready):
                 return False
+            self._pending_wait_resume_events[stream_id] = WaitResumeEvent(
+                source="message",
+                wait_time=wait_time,
+                unread_count=max(0, unread_count_now - unread_count_at_yield),
+            )
         else:
             # 非预期类型，不阻塞后续流程
+            self._pending_wait_resume_events.pop(stream_id, None)
             self._wait_states.pop(stream_id, None)
             return True
 
         self._wait_states.pop(stream_id, None)
         return True
+
+    def take_wait_resume_event(self, stream_id: str) -> "WaitResumeEvent | None":
+        """取出等待态恢复时生成的事件。"""
+        return self._pending_wait_resume_events.pop(stream_id, None)
 
     # ========================================================================
     # 辅助方法
@@ -535,16 +568,18 @@ class StreamLoopManager:
         """
         try:
             await asyncio.wait_for(task, timeout=5.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
+        except asyncio.CancelledError:
             pass
+        except asyncio.TimeoutError:
+            logger.warning(f"等待任务取消超时 ({stream_id[:8]})")
         except Exception as e:
             logger.error(f"等待任务取消出错 ({stream_id[:8]}): {e}")
 
-    def get_stats(self) -> dict[str, Any]:
+    def get_stats(self) -> dict[str, bool | int | float]:
         """获取统计信息。
 
         Returns:
-            dict[str, Any]: 统计信息字典
+            dict[str, bool | int | float]: 统计信息字典
         """
         return {
             "is_running": self.is_running,

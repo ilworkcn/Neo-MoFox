@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from src.core.components.base.tool import BaseTool
+from src.core.models.message import Message
 from src.core.utils.llm_tool_call import run_llm_usable_executions, run_tool_call
 from src.kernel.llm import LLMUsableExecution, ToolCall, ToolRegistry
 
@@ -123,7 +123,7 @@ async def test_run_tool_call_runs_concurrently_and_appends_in_call_order() -> No
         ],
         response=response,
         usable_map=registry,
-        trigger_msg=SimpleNamespace(message_id="m1"),
+        trigger_msg=Message(message_id="m1", stream_id="s1"),
         plugin=MagicMock(),
         stream_id="s1",
     )

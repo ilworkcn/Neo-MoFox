@@ -22,7 +22,7 @@ from src.core.models.stream import ChatStream
 
 def _build_chatter() -> DefaultChatter:
     """构造默认聊天器实例。"""
-    config = DefaultChatterConfig.from_dict({"plugin": {"enabled": True, "mode": "enhanced"}})
+    config = DefaultChatterConfig.from_dict({"plugin": {"enabled": True}})
     plugin = DefaultChatterPlugin(config=config)
     return DefaultChatter(stream_id="test_stream", plugin=plugin)
 
@@ -30,7 +30,7 @@ def _build_chatter() -> DefaultChatter:
 def _build_chatter_with_config(plugin_overrides: dict[str, object]) -> DefaultChatter:
     """使用指定插件配置覆盖项构造默认聊天器实例。"""
     config = DefaultChatterConfig.from_dict(
-        {"plugin": {"enabled": True, "mode": "enhanced", **plugin_overrides}}
+        {"plugin": {"enabled": True, **plugin_overrides}}
     )
     plugin = DefaultChatterPlugin(config=config)
     return DefaultChatter(stream_id="test_stream", plugin=plugin)
@@ -143,6 +143,36 @@ async def test_send_text_marks_next_tick_bonus_after_success(
 
     assert success is True
     assert getattr(stream.context, "_default_chatter_next_tick_bonus", None) == 0.5
+
+
+@pytest.mark.asyncio
+async def test_send_text_yields_before_typing_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """send_text 应先进入 READY，再执行 typing delay。"""
+
+    stream = ChatStream(stream_id="s_group", platform="qq", chat_type="group")
+    action = SendTextAction(
+        chat_stream=stream,
+        plugin=DefaultChatterPlugin(config=DefaultChatterConfig()),
+    )
+
+    sleep_mock = AsyncMock()
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(action, "_sleep_for_typing_delay", sleep_mock)
+    monkeypatch.setattr(action, "_send_to_stream", send_mock)
+
+    execution = action.execute(content="你好")
+
+    first = await anext(execution)
+    assert first is None
+    sleep_mock.assert_not_awaited()
+    send_mock.assert_not_awaited()
+
+    second = await anext(execution)
+    assert second == (True, "已发送消息:你好")
+    sleep_mock.assert_awaited_once_with("你好")
+    send_mock.assert_awaited_once_with("你好")
 
 
 def test_send_text_typing_delay_uses_length_and_max_cap() -> None:

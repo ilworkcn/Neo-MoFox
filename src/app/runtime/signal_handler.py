@@ -9,10 +9,14 @@ import asyncio
 import signal
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from types import FrameType
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from .bot import Bot
+
+SignalHandlerCallback = Callable[..., Any]
+OriginalSignalHandler = signal.Handlers | int | SignalHandlerCallback | None
 
 
 class SignalHandler:
@@ -42,7 +46,7 @@ class SignalHandler:
         self.last_signal_time = 0.0
         self.signal_count = 0
         self._lock = threading.Lock()
-        self._original_handlers: dict[int, Any] = {}
+        self._original_handlers: dict[int, OriginalSignalHandler] = {}
 
     def register_signals(self) -> None:
         """注册信号处理器
@@ -63,7 +67,7 @@ class SignalHandler:
             # SIGTERM 在某些平台可能不可用
             pass
 
-    def _handle_signal(self, signum: int, frame: Any) -> None:
+    def _handle_signal(self, signum: int, frame: FrameType | None) -> None:
         """处理信号
 
         Args:

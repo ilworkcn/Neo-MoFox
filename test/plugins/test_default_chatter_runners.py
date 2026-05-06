@@ -10,11 +10,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
-from plugins.default_chatter.runners import run_classical, run_enhanced
-from src.core.components.base import Stop
+from plugins.default_chatter.plugin import DefaultChatter
+from plugins.default_chatter.runners import run_enhanced
+from src.core.components.base import Stop, Wait, WaitResumeEvent, Success
 from src.kernel.llm import ROLE
 
 
@@ -92,6 +94,10 @@ class _FakeLogger:
     def error(*_args: Any, **_kwargs: Any) -> None:
         return None
 
+    @staticmethod
+    def debug(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
     def print_panel(
         self,
         message: str,
@@ -147,18 +153,11 @@ class _FakeChatter:
     def _build_negative_behaviors_extra(self) -> str:
         return ""
 
-    async def _build_classical_user_text(
-        self,
-        _chat_stream: Any,
-        _unread_msgs: list[Any],
-    ) -> str:
-        return "user"
-
     async def sub_agent(self, *_args: Any, **_kwargs: Any) -> dict:
         return {"reason": "", "should_respond": True}
 
-    async def run_tool_call(self, *_args: Any, **_kwargs: Any) -> tuple[bool, bool]:
-        return True, True
+    async def run_tool_call(self, calls: list[Any], *_args: Any, **_kwargs: Any) -> list[tuple[bool, bool]]:
+        return [(True, True) for _call in calls]
 
     @staticmethod
     def _upsert_pending_unread_payload(*_args: Any, **_kwargs: Any) -> None:
@@ -180,6 +179,22 @@ class _FakeChatterAllowUser(_FakeChatter):
 
     async def flush_unreads(self, _unread_messages: list[Any]) -> int:
         return 0
+
+
+class _FakeChatterWithUnreadSequence(_FakeChatterAllowUser):
+    """按预设顺序返回未读消息的 chatter 替身。"""
+
+    def __init__(self, response: _FakeResponse, unread_batches: list[list[Any]]) -> None:
+        super().__init__(response)
+        self._unread_batches = unread_batches
+        self._fetch_index = 0
+
+    async def fetch_unreads(self) -> tuple[str, list[Any]]:
+        if self._fetch_index >= len(self._unread_batches):
+            return "", []
+        batch = self._unread_batches[self._fetch_index]
+        self._fetch_index += 1
+        return "", batch
 
 
 @pytest.mark.asyncio
@@ -211,7 +226,6 @@ async def test_run_enhanced_prioritizes_tool_followup_when_tool_result_tail() ->
         logger=fake_logger,
         pass_call_name="action-pass_and_wait",
         stop_call_name="action-stop_conversation",
-        send_text_call_name="action-send_text",
         suspend_text="__SUSPEND__",
     )
 
@@ -248,12 +262,19 @@ async def test_run_enhanced_does_not_yield_wait_when_pending_tool_results(monkey
     # 2) monkeypatch process_tool_calls：返回 should_wait=True 且 has_pending_tool_results=True
     from plugins.default_chatter import runners as runners_mod
 
-    async def _fake_process_tool_calls(**_kwargs: Any) -> Any:
+    expected_panels: list[str] = []
+
+    async def _fake_process_tool_calls(**kwargs: Any) -> Any:
+        expected_panels.append(
+            runners_mod._build_actor_decision_panel(
+                chat_stream,
+                cast(Any, kwargs["response"]),
+            )
+        )
         return SimpleNamespace(
             should_wait=True,
             should_stop=False,
             stop_minutes=0.0,
-            sent_once=False,
             has_pending_tool_results=True,
         )
 
@@ -270,7 +291,6 @@ async def test_run_enhanced_does_not_yield_wait_when_pending_tool_results(monkey
         logger=fake_logger,
         pass_call_name="action-pass_and_wait",
         stop_call_name="action-stop_conversation",
-        send_text_call_name="action-send_text",
         suspend_text="__SUSPEND__",
     )
 
@@ -280,11 +300,7 @@ async def test_run_enhanced_does_not_yield_wait_when_pending_tool_results(monkey
     assert chatter.create_request_calls == [("actor", "actor")]
     assert fake_logger.panels == [
         (
-            "聊天流名称：s1\n\n"
-            "思考：（无）\n"
-            "独白：（无）\n"
-            "调用工具：\n"
-            "    tool-x",
+            expected_panels[0],
             "Actor 决策",
             "cyan",
         )
@@ -314,7 +330,6 @@ async def test_run_enhanced_prints_actor_decision_panel_before_processing_tool_c
             should_wait=True,
             should_stop=False,
             stop_minutes=0.0,
-            sent_once=False,
             has_pending_tool_results=False,
         )
 
@@ -330,7 +345,6 @@ async def test_run_enhanced_prints_actor_decision_panel_before_processing_tool_c
         logger=fake_logger,
         pass_call_name="action-pass_and_wait",
         stop_call_name="action-stop_conversation",
-        send_text_call_name="action-send_text",
         suspend_text="__SUSPEND__",
     )
 
@@ -338,12 +352,7 @@ async def test_run_enhanced_prints_actor_decision_panel_before_processing_tool_c
     assert first.__class__.__name__ == "Wait"
     assert fake_logger.panels == [
         (
-            "聊天流名称：测试流\n\n"
-            "思考：先判断语境，再安排动作。\n"
-            "独白：先回一句，再调工具\n"
-            "调用工具：\n"
-            "    tool-x (foo: bar)\n"
-            "    tool-y (count: 2)",
+            runners_mod._build_actor_decision_panel(chat_stream, cast(Any, resp)),
             "Actor 决策",
             "cyan",
         )
@@ -371,7 +380,6 @@ async def test_run_enhanced_waits_after_anthropic_action_only_suspend() -> None:
         logger=fake_logger,
         pass_call_name="action-pass_and_wait",
         stop_call_name="action-stop_conversation",
-        send_text_call_name="action-send_text",
         suspend_text="__SUSPEND__",
     )
 
@@ -381,30 +389,222 @@ async def test_run_enhanced_waits_after_anthropic_action_only_suspend() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_classical_waits_after_anthropic_action_only_suspend() -> None:
-    """classical 下 Anthropic action-only 回合注入 SUSPEND 后应直接等待。"""
-    resp = _FakeResponse(
-        payload_roles=[ROLE.USER],
-        message="",
-        model_set=[{"client_type": "anthropic"}],
-    )
-    resp.call_list = [SimpleNamespace(name="action-send_text", args={}, id="1")]
-    resp.reasoning_content = "think"
+async def test_run_enhanced_action_only_follows_up_when_suspend_disabled() -> None:
+    """enhanced 模式关闭 action suspend 后，纯 action 回合应直接继续 follow-up。"""
+
+    resp = _FakeResponse(payload_roles=[ROLE.USER], message="")
+
+    async def _send(*, stream: bool = False) -> _FakeResponse:
+        _ = stream
+        resp.send_count += 1
+        if resp.send_count == 1:
+            resp.call_list = [SimpleNamespace(name="action-send_text", args={}, id="1")]
+            resp.message = ""
+        else:
+            resp.call_list = []
+            resp.message = "finish"
+        return resp
+
+    resp.send = _send  # type: ignore[method-assign]
 
     chatter = _FakeChatterAllowUser(resp)
     chat_stream = cast(Any, SimpleNamespace(stream_id="s1", stream_name="测试流"))
     fake_logger = cast(Any, _FakeLogger())
 
-    gen = run_classical(
+    gen = run_enhanced(
         chatter=cast(Any, chatter),
         chat_stream=chat_stream,
         logger=fake_logger,
         pass_call_name="action-pass_and_wait",
         stop_call_name="action-stop_conversation",
-        send_text_call_name="action-send_text",
+        suspend_text="__SUSPEND__",
+        enable_action_suspend=False,
+    )
+
+    first = await anext(gen)
+    assert isinstance(first, Stop)
+    assert resp.send_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_enhanced_pass_and_wait_still_waits_when_suspend_disabled() -> None:
+    """关闭 action suspend 后，pass_and_wait 仍应保持等待语义。"""
+
+    resp = _FakeResponse(payload_roles=[ROLE.USER], message="")
+    resp.call_list = [
+        SimpleNamespace(name="action-pass_and_wait", args={"seconds": 5}, id="1")
+    ]
+
+    chatter = _FakeChatterAllowUser(resp)
+    chat_stream = cast(Any, SimpleNamespace(stream_id="s1", stream_name="测试流"))
+    fake_logger = cast(Any, _FakeLogger())
+
+    gen = run_enhanced(
+        chatter=cast(Any, chatter),
+        chat_stream=chat_stream,
+        logger=fake_logger,
+        pass_call_name="action-pass_and_wait",
+        stop_call_name="action-stop_conversation",
+        suspend_text="__SUSPEND__",
+        enable_action_suspend=False,
+    )
+
+    first = await anext(gen)
+    assert first.__class__.__name__ == "Wait"
+    assert getattr(first, "time", None) == 5.0
+    assert resp.send_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_enhanced_pass_and_wait_does_not_follow_up_immediately() -> None:
+    """enhanced 模式下纯 pass_and_wait 不应在同轮额外 follow-up。"""
+
+    resp = _FakeResponse(payload_roles=[ROLE.USER], message="")
+    resp.call_list = [
+        SimpleNamespace(name="action-pass_and_wait", args={"seconds": 5}, id="1")
+    ]
+
+    chatter = _FakeChatterWithUnreadSequence(
+        resp,
+        unread_batches=[[SimpleNamespace(message_id="m1")], []],
+    )
+    chat_stream = cast(Any, SimpleNamespace(stream_id="s1", stream_name="测试流"))
+    fake_logger = cast(Any, _FakeLogger())
+
+    gen = run_enhanced(
+        chatter=cast(Any, chatter),
+        chat_stream=chat_stream,
+        logger=fake_logger,
+        pass_call_name="action-pass_and_wait",
+        stop_call_name="action-stop_conversation",
         suspend_text="__SUSPEND__",
     )
 
     first = await anext(gen)
     assert first.__class__.__name__ == "Wait"
+    assert getattr(first, "time", None) == 5.0
     assert resp.send_count == 1
+
+    second = await gen.asend(None)
+    assert second.__class__.__name__ == "Wait"
+    assert resp.send_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_enhanced_proactively_resumes_after_timed_wait() -> None:
+    """enhanced 模式下 Wait(seconds) 到期后应主动继续，不依赖新消息。"""
+    resp = _FakeResponse(payload_roles=[ROLE.USER], message="")
+
+    async def _send(*, stream: bool = False) -> _FakeResponse:
+        _ = stream
+        resp.send_count += 1
+        if resp.send_count == 1:
+            resp.call_list = [
+                SimpleNamespace(
+                    name="action-pass_and_wait",
+                    args={"seconds": 5},
+                    id="1",
+                )
+            ]
+            resp.message = ""
+        else:
+            resp.call_list = []
+            resp.message = "finish"
+        return resp
+
+    resp.send = _send  # type: ignore[method-assign]
+
+    chatter = _FakeChatterWithUnreadSequence(
+        resp,
+        unread_batches=[[SimpleNamespace(message_id="m1")], []],
+    )
+    chat_stream = cast(Any, SimpleNamespace(stream_id="s1", stream_name="测试流"))
+    fake_logger = cast(Any, _FakeLogger())
+
+    gen = run_enhanced(
+        chatter=cast(Any, chatter),
+        chat_stream=chat_stream,
+        logger=fake_logger,
+        pass_call_name="action-pass_and_wait",
+        stop_call_name="action-stop_conversation",
+        suspend_text="__SUSPEND__",
+    )
+
+    first = await anext(gen)
+    assert first.__class__.__name__ == "Wait"
+    assert getattr(first, "time", None) == 5.0
+
+    second = await gen.asend(WaitResumeEvent(source="timer", wait_time=5.0))
+    assert isinstance(second, Stop)
+    assert resp.send_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_enhanced_supports_action_then_timed_wait() -> None:
+    """enhanced 模式应允许其他 action 与 pass_and_wait(seconds) 同轮组合。"""
+    resp = _FakeResponse(payload_roles=[ROLE.USER], message="")
+    resp.call_list = [
+        SimpleNamespace(name="action-send_text", args={"content": "马上回来"}, id="1"),
+        SimpleNamespace(name="action-pass_and_wait", args={"seconds": 6}, id="2"),
+    ]
+
+    chatter = _FakeChatterAllowUser(resp)
+    chat_stream = cast(Any, SimpleNamespace(stream_id="s1", stream_name="测试流"))
+    fake_logger = cast(Any, _FakeLogger())
+
+    gen = run_enhanced(
+        chatter=cast(Any, chatter),
+        chat_stream=chat_stream,
+        logger=fake_logger,
+        pass_call_name="action-pass_and_wait",
+        stop_call_name="action-stop_conversation",
+        suspend_text="__SUSPEND__",
+    )
+
+    first = await anext(gen)
+    assert first.__class__.__name__ == "Wait"
+    assert getattr(first, "time", None) == 6.0
+    assert resp.send_count == 1
+
+
+@pytest.mark.asyncio
+async def test_default_chatter_execute_forwards_timer_resume_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DefaultChatter 包装层应把驱动器 asend 的 timer 事件传给 runner。"""
+    from plugins.default_chatter import plugin as plugin_mod
+
+    received_events: list[WaitResumeEvent | None] = []
+
+    async def _fake_runner(**_kwargs: Any) -> Any:
+        resume_event = yield Wait(time=0.0)
+        received_events.append(resume_event)
+        yield Success(message="ok")
+
+    chat_stream = SimpleNamespace(
+        stream_id="s1",
+        chat_type="private",
+        platform="test",
+    )
+    stream_manager = SimpleNamespace(
+        activate_stream=AsyncMock(return_value=chat_stream),
+    )
+    monkeypatch.setattr(
+        "src.core.managers.stream_manager.get_stream_manager",
+        lambda: stream_manager,
+    )
+    monkeypatch.setattr(plugin_mod, "run_enhanced", _fake_runner)
+
+    chatter = DefaultChatter(
+        stream_id="s1",
+        plugin=cast(Any, SimpleNamespace(config=None)),
+    )
+    gen = chatter.execute()
+    first = await anext(gen)
+    assert isinstance(first, Wait)
+
+    event = WaitResumeEvent(source="timer", wait_time=0.0)
+    second = await gen.asend(event)
+
+    assert isinstance(second, Success)
+    assert received_events == [event]

@@ -157,3 +157,19 @@ async def test_search_best_without_tags_still_requires_threshold_match() -> None
 
     assert result is None
     select_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ingest_once_skips_alignment_when_storage_is_full(tmp_path: Any) -> None:
+    """达到表情包上限时应直接跳过，避免周期任务执行重型对齐。"""
+    service = _make_service()
+    memes_dir = tmp_path / "memes"
+    memes_dir.mkdir()
+    (memes_dir / "exists.png").write_bytes(b"payload")
+    service._cfg().storage.data_dir = str(memes_dir)
+    service._cfg().storage.max_memes = 1
+
+    with patch.object(service, "_align_data_dir_with_db", new=AsyncMock()) as align_mock:
+        await service.ingest_once()
+
+    align_mock.assert_not_awaited()

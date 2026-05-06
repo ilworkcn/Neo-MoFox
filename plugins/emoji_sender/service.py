@@ -32,7 +32,6 @@ from src.app.plugin_system.api.llm_api import (
 from src.app.plugin_system.api.send_api import send_emoji
 from src.core.components.base.service import BaseService
 from src.core.config import get_core_config
-from src.kernel.concurrency import get_task_manager
 from src.core.utils.base64_helper import base64_encode_bytes
 from src.kernel.logger import get_logger
 from src.kernel.vector_db import get_vector_db_service
@@ -140,44 +139,68 @@ class EmojiSenderService(BaseService):
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    @staticmethod
+    def _list_meme_files(directory: Path, *, ordered: bool = False) -> list[Path]:
+        """列出目录中的表情包文件。"""
+        if not directory.exists():
+            return []
+
+        candidates = [
+            path
+            for path in directory.iterdir()
+            if path.is_file() and path.suffix.lower() in _ALLOWED_SUFFIXES
+        ]
+        return sorted(candidates) if ordered else candidates
+
+    @staticmethod
+    def _read_file_bytes(path: Path) -> bytes:
+        """读取文件字节内容。"""
+        return path.read_bytes()
+
+    @staticmethod
+    def _copy_file(source: Path, target: Path) -> None:
+        """复制文件并保留元数据。"""
+        shutil.copy2(source, target)
+
+    @classmethod
+    def _read_file_with_hash(cls, path: Path) -> tuple[bytes, str]:
+        """读取文件并计算 sha256。"""
+        payload = cls._read_file_bytes(path)
+        return payload, cls._sha256_bytes(payload)
+
+    @classmethod
+    def _count_meme_files(cls, directory: Path) -> int:
+        """统计目录中的表情包文件数量。"""
+        return len(cls._list_meme_files(directory))
+
+    @classmethod
+    def _scan_store_paths(cls, directory: Path) -> set[str]:
+        """扫描表情包存储目录中的文件路径。"""
+        return {cls._path_to_store_value(path) for path in cls._list_meme_files(directory)}
+
+    @staticmethod
+    def _delete_file(path_value: str) -> None:
+        """删除指定路径的文件。"""
+        Path(path_value).unlink(missing_ok=True)
+
     async def _pick_next_manual_meme_file(self) -> Path | None:
         """从手动目录获取下一个未入库的表情包文件。"""
-        manual_dir = self._manual_memes_dir()
-        
-        candidates: list[Path] = [
-            p
-            for p in sorted(manual_dir.iterdir())
-            if p.is_file() and p.suffix.lower() in _ALLOWED_SUFFIXES
-        ]
+        manual_dir = await asyncio.to_thread(self._manual_memes_dir)
+        candidates = await asyncio.to_thread(self._list_meme_files, manual_dir, ordered=True)
         if not candidates:
             return None
 
         # 逐个检查，找到第一个未入库的
         for candidate in candidates:
             try:
-                payload = candidate.read_bytes()
+                _, meme_id = await asyncio.to_thread(self._read_file_with_hash, candidate)
             except Exception:
                 continue
-            
-            meme_id = self._sha256_bytes(payload)
+
             if not await self._already_ingested(meme_id):
                 return candidate
-        
-        return None
 
-    async def _already_ingested(self, source_hash: str) -> bool:
-        """检查某个表情包（按 hash）是否已入库。"""
-        vdb = self._vector_db()
-        collection = self._collection_name()
-        await vdb.get_or_create_collection(collection)
-        data = await vdb.get(
-            collection_name=collection,
-            where={"source_hash": source_hash},
-            limit=1,
-            include=["metadatas"],
-        )
-        ids: list[str] = list(data.get("ids") or [])
-        return bool(ids)
+        return None
 
     def _data_dir(self) -> Path:
         """插件表情包复制目录。"""
@@ -419,13 +442,7 @@ class EmojiSenderService(BaseService):
         await vdb.get_or_create_collection(collection)
 
         # 1) 扫描磁盘文件
-        files_on_disk: set[str] = set()
-        for p in data_dir.iterdir():
-            if not p.is_file():
-                continue
-            if p.suffix.lower() not in _ALLOWED_SUFFIXES:
-                continue
-            files_on_disk.add(self._path_to_store_value(p))
+        files_on_disk = await asyncio.to_thread(self._scan_store_paths, data_dir)
 
         # 2) 扫描向量库记录（全量 get）
         paths_in_db: set[str] = set()
@@ -465,21 +482,14 @@ class EmojiSenderService(BaseService):
         orphan_files = sorted(files_on_disk - paths_in_db)
         for orphan_path in orphan_files:
             try:
-                Path(orphan_path).unlink(missing_ok=True)
+                await asyncio.to_thread(self._delete_file, orphan_path)
             except Exception as e:
                 logger.warning(f"删除孤儿文件失败: {orphan_path} - {e}")
 
-    def _pick_random_media_cache_file(self) -> Path | None:
+    async def _pick_random_media_cache_file(self) -> Path | None:
         """从 media cache 的 emojis 目录随机挑选一个文件。"""
         root = self._media_cache_dir()
-        if not root.exists():
-            return None
-
-        candidates: list[Path] = [
-            p
-            for p in root.iterdir()
-            if p.is_file() and p.suffix.lower() in _ALLOWED_SUFFIXES
-        ]
+        candidates = await asyncio.to_thread(self._list_meme_files, root)
         if not candidates:
             return None
         return random.choice(candidates)
@@ -602,19 +612,10 @@ class EmojiSenderService(BaseService):
             return
 
         async with _INGEST_LOCK:
-            await self._align_data_dir_with_db()
-
             max_memes = int(self._cfg().storage.max_memes)
             if max_memes > 0:
                 data_dir = self._data_dir()
-                try:
-                    current_count = sum(
-                        1
-                        for p in data_dir.iterdir()
-                        if p.is_file() and p.suffix.lower() in _ALLOWED_SUFFIXES
-                    )
-                except FileNotFoundError:
-                    current_count = 0
+                current_count = await asyncio.to_thread(self._count_meme_files, data_dir)
 
                 if current_count >= max_memes:
                     logger.info(
@@ -622,30 +623,35 @@ class EmojiSenderService(BaseService):
                     )
                     return
 
+            await self._align_data_dir_with_db()
+
             # 优先从手动目录获取表情包，否则才从随机缓存
             source = await self._pick_next_manual_meme_file()
             if source is None:
                 if not self._cfg().ingest.sample_from_media_cache:
                     return
-                source = self._pick_random_media_cache_file()
-            
+                source = await self._pick_random_media_cache_file()
+
             if source is None:
                 return
 
             try:
-                payload = source.read_bytes()
+                payload, meme_id = await asyncio.to_thread(self._read_file_with_hash, source)
             except Exception as e:
                 logger.warning(f"读取候选表情包失败: {source} - {e}")
                 return
 
-            meme_id = self._sha256_bytes(payload)
             if await self._already_ingested(meme_id):
                 return
 
             # 压缩图片用于 VLM
             try:
                 mime = self._guess_mime(source.suffix)
-                vlm_bytes, vlm_mime, is_gif_collage = self._compress_image_for_vlm(payload, mime)
+                vlm_bytes, vlm_mime, is_gif_collage = await asyncio.to_thread(
+                    self._compress_image_for_vlm,
+                    payload,
+                    mime,
+                )
             except Exception as e:
                 logger.warning(f"压缩图片失败: {source} - {e}")
                 return
@@ -672,7 +678,7 @@ class EmojiSenderService(BaseService):
             suffix = source.suffix.lower() if source.suffix.lower() in _ALLOWED_SUFFIXES else ".png"
             target_path = data_dir / f"{meme_id}{suffix}"
             try:
-                shutil.copy2(source, target_path)
+                await asyncio.to_thread(self._copy_file, source, target_path)
             except Exception as e:
                 logger.warning(f"复制表情包失败: {source} -> {target_path} - {e}")
                 return
@@ -864,7 +870,7 @@ class EmojiSenderService(BaseService):
             return False, result, "表情包文件已被删除"
 
         try:
-            payload = path.read_bytes()
+            payload = await asyncio.to_thread(self._read_file_bytes, path)
         except Exception as e:
             logger.warning(f"读取表情包失败: {path} - {e}")
             return False, result, "读取表情包文件失败"

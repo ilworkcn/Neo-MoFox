@@ -6,7 +6,7 @@ SkillManager 是 Neo-MoFox 的技能索引与按需加载插件。
 
 - get_skill：读取并注入 SKILL.md
 - get_reference：读取 skill 内 markdown 引用文件
-- get_script：执行 skill 内 python 脚本（支持参数，返回脚本输出）
+- get_script：执行 skill 内脚本（支持 .py/.ps1/.bat/.cmd/.sh，支持参数，返回脚本输出）
 
 ## 目录结构
 
@@ -77,20 +77,23 @@ plugins/skill_manager/
 
 ### 3) get_script
 
-直接执行 skill 根目录内 python 脚本（等价命令行执行脚本），支持可选参数透传。
+直接执行 skill 根目录内脚本，支持可选参数透传。
 
 参数：
 
 - `name: str` 已注入 skill 名称
-- `location: str` skill 内相对路径（必须是 `.py`）
+- `location: str` skill 内相对路径（必须是 `.py`、`.ps1`、`.bat`、`.cmd`、`.sh` 之一）
 - `script_args: list[str] | str | None` 可选
   - 字符串示例：`"--check 60 --bonus 1"`
   - 列表示例：`["--check", "60", "--bonus", "1"]`
 
 执行行为：
 
-- 通过 `runpy.run_path(..., run_name="__main__")` 执行脚本。
-- 执行时会临时设置 `sys.argv = [script_path, *script_args]`。
+- `.py` 通过 `runpy.run_path(..., run_name="__main__")` 内嵌执行。
+- `.ps1` 通过 `pwsh` 或 `powershell` 执行。
+- `.bat/.cmd` 通过 `cmd.exe /c` 执行。
+- `.sh` 通过 `bash` 或 `sh` 执行。
+- 执行时会透传 `script_args`，并自动将工作目录设置为脚本所在目录。
 - 自动捕获脚本的 `stdout/stderr`（包含 print 与标准流日志输出）并拼接到返回内容。
 - `SystemExit(0)` / `SystemExit(None)` 视为成功（例如 argparse `--help`）。
 

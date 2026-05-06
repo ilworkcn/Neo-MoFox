@@ -1,6 +1,9 @@
+import asyncio
+
 import pytest
 
 from src.kernel.llm.model_client import ModelClientRegistry
+from src.kernel.llm.policy import RoundRobinPolicy
 from src.kernel.llm.request import LLMRequest
 
 
@@ -24,6 +27,24 @@ class DummyClient:
             self._fail_once_for.remove(model_name)
             raise RuntimeError("boom")
         return "ok", [], None
+
+
+class CancelClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def create(
+        self,
+        *,
+        model_name: str,
+        payloads,
+        tools,
+        request_name: str,
+        model_set,
+        stream: bool,
+    ):
+        self.calls += 1
+        raise asyncio.CancelledError
 
 
 def _model(identifier: str, *, max_retry: int):
@@ -50,8 +71,26 @@ async def test_retry_is_driven_by_policy_switch_or_retry():
     model_set = [_model("a", max_retry=0), _model("b", max_retry=0)]
 
     dummy = DummyClient()
-    req = LLMRequest(model_set, request_name="req", clients=ModelClientRegistry(openai=dummy))
+    req = LLMRequest(
+        model_set,
+        request_name="req",
+        policy=RoundRobinPolicy(),
+        clients=ModelClientRegistry(openai=dummy),
+    )
 
     resp = await req.send(stream=False)
     assert resp.message == "ok"
     assert dummy.calls == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_error_propagates_without_retry():
+    model_set = [_model("a", max_retry=1), _model("b", max_retry=0)]
+
+    dummy = CancelClient()
+    req = LLMRequest(model_set, request_name="req", clients=ModelClientRegistry(openai=dummy))
+
+    with pytest.raises(asyncio.CancelledError):
+        await req.send(stream=False)
+
+    assert dummy.calls == 1

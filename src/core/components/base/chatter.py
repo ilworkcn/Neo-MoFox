@@ -9,7 +9,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, AsyncGenerator, cast
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Literal, cast
 
 from src.core.components.types import ChatType
 from src.core.components.base.action import BaseAction
@@ -36,10 +36,20 @@ class Wait:
     表示 Chatter 需要等待一段时间。
 
     Attributes:
-        time: 等待时间（秒），如果为 None 则表示无限等待直到有新消息
+        time: 等待时间（秒），如果为 None 则表示无限等待直到有新消息；
+            如果为数字，则表示到期后由框架主动恢复生成器，不依赖新消息
     """
 
     time: float | int | None = None
+
+
+@dataclass(frozen=True)
+class WaitResumeEvent:
+    """Wait/Stop 结束后由框架送回生成器的恢复事件。"""
+
+    source: Literal["message", "timer"]
+    wait_time: float | int | None = None
+    unread_count: int = 0
 
 
 @dataclass
@@ -160,7 +170,7 @@ class BaseChatter(ABC):
     @abstractmethod
     async def execute(
         self
-    ) -> AsyncGenerator[ChatterResult, None]:
+    ) -> AsyncGenerator[ChatterResult, WaitResumeEvent | None]:
         """执行聊天器的主要逻辑。
 
         使用生成器模式，通过 yield 返回执行结果。
@@ -171,7 +181,7 @@ class BaseChatter(ABC):
         Examples:
             >>> async for result in my_chatter.execute():
             ...     if isinstance(result, Wait):
-            ...         print(f"等待: {result.reason}")
+            ...         print(f"等待: {result.time}")
             ...     elif isinstance(result, Success):
             ...         print(f"成功: {result.message}")
             ...     elif isinstance(result, Failure):
@@ -588,7 +598,7 @@ class BaseChatter(ABC):
             str: 格式化后的消息行
         """
         # 时间
-        raw_time = getattr(msg, "time", None)
+        raw_time = msg.time
         if isinstance(raw_time, (int, float)):
             time_str = datetime.fromtimestamp(raw_time).strftime(time_format)
         elif isinstance(raw_time, datetime):
@@ -597,28 +607,28 @@ class BaseChatter(ABC):
             time_str = str(raw_time or "")
 
         # 角色
-        role_raw = getattr(msg, "sender_role", None)
+        role_raw = msg.sender_role
         role_str = BaseChatter._format_role(role_raw)
         role_part = f"<{role_str}> " if role_str else ""
 
         # 平台 ID（优先使用 sender_id，这是平台原始 ID）
-        platform_id = getattr(msg, "sender_id", "") or ""
+        platform_id = msg.sender_id or ""
         id_part = f"[{platform_id}] " if platform_id else ""
 
         # 名称部分：nickname$cardname（无 cardname 时省略 $cardname）
-        nickname = getattr(msg, "sender_name", "") or ""
-        cardname = getattr(msg, "sender_cardname", None)
+        nickname = msg.sender_name or ""
+        cardname = msg.sender_cardname
         if cardname and cardname != nickname:
             name_part = f"{nickname}${cardname}"
         else:
             name_part = nickname or "未知发送者"
 
         # 消息 ID 部分（用于LLM引用回复）
-        message_id = getattr(msg, "message_id", "") or ""
+        message_id = msg.message_id or ""
         msg_id_part = f"[{message_id}]" if message_id else ""
 
         # 消息内容
-        content = getattr(msg, "processed_plain_text", None) or str(getattr(msg, "content", ""))
+        content = msg.processed_plain_text or str(msg.content)
 
         return f"【{time_str}】{role_part}{id_part}{name_part} {msg_id_part}： {content}"
 

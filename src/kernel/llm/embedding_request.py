@@ -105,16 +105,18 @@ class EmbeddingRequest:
                     request_name=self.request_name,
                 )
             except BaseException as e:
-                classified_error = classify_exception(e, model=model_identifier)
-                last_error = classified_error
-
-                _err_type = type(classified_error).__name__
-                if isinstance(classified_error, asyncio.CancelledError):
+                if isinstance(e, asyncio.CancelledError):
                     logger.debug(
                         f"Embedding 请求被取消: model={model_identifier}, request={self.request_name or '__default__'}",
                         exc_info=True,
                     )
-                elif (
+                    raise
+
+                classified_error = classify_exception(e, model=model_identifier)
+                last_error = classified_error
+
+                _err_type = type(classified_error).__name__
+                if (
                     isinstance(classified_error, (LLMTimeoutError, LLMRateLimitError, TimeoutError))
                     or (isinstance(classified_error, LLMAPIError) and classified_error.status_code is None)
                 ):

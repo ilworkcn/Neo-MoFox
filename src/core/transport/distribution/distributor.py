@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from typing import cast
-
 from src.core.components.types import EventType
 from src.kernel.event import EventDecision, get_event_bus
 from src.kernel.logger import get_logger, COLOR
@@ -24,7 +22,10 @@ from src.core.models.message import Message
 logger = get_logger("distributor", display="消息分发", color=COLOR.MAGENTA)
 
 
-async def _on_message_received(_: str, params: dict) -> tuple[EventDecision, dict]:
+async def _on_message_received(
+    _: str,
+    params: dict[str, object],
+) -> tuple[EventDecision, dict[str, object]]:
     """处理 ON_MESSAGE_RECEIVED 事件的回调。
 
     从事件参数中提取 Message，获取或创建 ChatStream，
@@ -35,13 +36,13 @@ async def _on_message_received(_: str, params: dict) -> tuple[EventDecision, dic
         params: 事件参数，包含 ``message``、``envelope``、``adapter_signature``
 
     Returns:
-        tuple[EventDecision, dict]: (事件决策, 事件参数)
+        tuple[EventDecision, dict[str, object]]: (事件决策, 事件参数)
     """
     from src.core.managers.stream_manager import get_stream_manager
     from src.core.transport.distribution.stream_loop_manager import get_stream_loop_manager
 
-    message: Message = cast(Message, params.get("message"))
-    if message is None:
+    message = params.get("message")
+    if not isinstance(message, Message):
         logger.warning("ON_MESSAGE_RECEIVED 事件缺少 message 参数")
         return EventDecision.PASS, params
 
@@ -68,8 +69,8 @@ async def _on_message_received(_: str, params: dict) -> tuple[EventDecision, dic
         # 1. 获取或创建 ChatStream
         # message.stream_id 已经是标准哈希格式（由 extract_stream_id 生成）
         sm = get_stream_manager()
-        group_id = message.extra.get("group_id") if hasattr(message, "extra") else ""
-        group_name = message.extra.get("group_name", "") if hasattr(message, "extra") else ""
+        group_id = message.extra.get("group_id", "")
+        group_name = message.extra.get("group_name", "")
         user_id = message.sender_id if message.chat_type != "group" else ""
 
         # 群聊用群名，私聊用"xxx的私聊"（优先 cardname，fallback sender_name/sender_id）
@@ -84,8 +85,8 @@ async def _on_message_received(_: str, params: dict) -> tuple[EventDecision, dic
             stream_id=message.stream_id,
             chat_type=message.chat_type,
             user_id=user_id,
-            group_id=group_id or "",
-            group_name=stream_name,
+            group_id=str(group_id) if group_id else "",
+            group_name=str(stream_name),
         )
 
         stream_id = chat_stream.stream_id
@@ -117,7 +118,10 @@ async def _on_message_received(_: str, params: dict) -> tuple[EventDecision, dic
     return EventDecision.SUCCESS, params
 
 
-async def _on_all_plugins_loaded(_: str, params: dict) -> tuple[EventDecision, dict]:
+async def _on_all_plugins_loaded(
+    _: str,
+    params: dict[str, object],
+) -> tuple[EventDecision, dict[str, object]]:
     """所有插件加载完毕后，启动 StreamLoopManager。
 
     Args:
@@ -125,7 +129,7 @@ async def _on_all_plugins_loaded(_: str, params: dict) -> tuple[EventDecision, d
         params: 事件参数
 
     Returns:
-        tuple[EventDecision, dict]: (事件决策, 事件参数)
+        tuple[EventDecision, dict[str, object]]: (事件决策, 事件参数)
     """
     from src.core.transport.distribution.stream_loop_manager import get_stream_loop_manager
 
