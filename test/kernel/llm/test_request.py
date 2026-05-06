@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Generator
 from typing import Any
 
 import pytest
@@ -15,6 +15,7 @@ from src.kernel.llm.exceptions import (
 )
 from src.kernel.llm.model_client.base import StreamEvent
 from src.kernel.llm.payload import LLMPayload, Text, ToolResult
+from src.kernel.llm.payload.tooling import LLMUsable
 from src.kernel.llm.policy import (
     LoadBalancedPolicy,
     RoundRobinPolicy,
@@ -24,6 +25,14 @@ from src.kernel.llm.policy import (
 )
 from src.kernel.llm.request import LLMRequest
 from src.kernel.llm.roles import ROLE
+
+
+@pytest.fixture(autouse=True)
+def reset_default_policy_factory() -> Generator[None, None, None]:
+    """隔离默认 policy 的全局缓存，避免测试间状态污染。"""
+    set_default_policy_factory(None)
+    yield
+    set_default_policy_factory(None)
 
 
 # ============================================================================
@@ -44,7 +53,7 @@ class MockChatClient:
         *,
         model_name: str,
         payloads: list[LLMPayload],
-        tools: list[Tool],
+        tools: list[LLMUsable],
         request_name: str,
         model_set: Any,
         stream: bool,
@@ -163,12 +172,23 @@ class TestLLMRequest:
         policy = create_default_policy()
         assert isinstance(policy, LoadBalancedPolicy)
 
+    def test_create_default_policy_reuses_default_instance(self) -> None:
+        """默认 policy 应跨请求复用，以保留轮询和负载均衡状态。"""
+        set_default_policy_factory(None)
+        try:
+            first = create_default_policy()
+            second = create_default_policy()
+            assert first is second
+        finally:
+            set_default_policy_factory(None)
+
     def test_create_default_policy_uses_injected_factory(self) -> None:
         """Test default policy respects injected factory from upper layer."""
         try:
             set_default_policy_factory(lambda: create_policy("round_robin"))
             policy = create_default_policy()
             assert isinstance(policy, RoundRobinPolicy)
+            assert create_default_policy() is policy
         finally:
             set_default_policy_factory(None)
 

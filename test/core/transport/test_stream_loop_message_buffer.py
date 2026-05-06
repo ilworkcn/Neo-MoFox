@@ -14,6 +14,7 @@ import pytest
 
 from src.core.transport.distribution.distributor import _on_message_received
 from src.core.transport.distribution.stream_loop_manager import StreamLoopManager
+from src.core.models.message import Message
 from src.core.models.stream import StreamContext
 
 
@@ -94,14 +95,15 @@ async def test_distributor_does_not_reset_message_buffer_skip_count(monkeypatch:
     )
 
     # 构造最小 Message
-    message = SimpleNamespace(
+    message = Message(
         platform="test",
         stream_id="stream-001",
         chat_type="group",
         sender_id="u1",
         sender_name="U",
         sender_cardname="",
-        extra={"group_id": "g1", "group_name": "G"},
+        group_id="g1",
+        group_name="G",
     )
 
     # 执行分发

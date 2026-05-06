@@ -9,18 +9,21 @@
 from __future__ import annotations
 
 import threading
-from collections import namedtuple
-from typing import Any
+from typing import Any, NamedTuple
 
 from .base import ModelStep, Policy, PolicySession
 
-# 定义用于跟踪模型使用情况的具名元组
-ModelUsageStats = namedtuple(
-    "ModelUsageStats", ["total_tokens", "penalty", "usage_penalty", "avg_latency", "request_count"]
-)
+class ModelUsageStats(NamedTuple):
+    """模型使用统计，用于负载均衡评分。"""
+
+    total_tokens: int
+    penalty: float
+    usage_penalty: int
+    avg_latency: float
+    request_count: int
 
 
-def _normalize_max_retry(value: Any) -> int:
+def _normalize_max_retry(value: object) -> int:
     try:
         max_retry = int(value) if value is not None else 2
     except Exception:
@@ -28,7 +31,7 @@ def _normalize_max_retry(value: Any) -> int:
     return max(0, max_retry)
 
 
-def _normalize_retry_interval(value: Any) -> float:
+def _normalize_retry_interval(value: object) -> float:
     try:
         delay = float(value) if value is not None else 3.0
     except Exception:
@@ -169,9 +172,6 @@ class _LoadBalancedSession(PolicySession):
 
     def next_after_error(self, error: BaseException) -> ModelStep:
         """在错误后选择下一步行动：重试或切换模型。"""
-        if self._attempts_used >= self._max_total_attempts:
-            return ModelStep(model=None, meta={"reason": "exhausted"})
-        
         if self._current_model_name is None:
             return ModelStep(model=None, meta={"reason": "no_current_model"})
         
@@ -186,6 +186,7 @@ class _LoadBalancedSession(PolicySession):
                 break
         
         if current_model is None:
+            self._release_current_model()
             return ModelStep(model=None, meta={"reason": "model_not_found"})
         
         # 获取重试配置
@@ -193,7 +194,7 @@ class _LoadBalancedSession(PolicySession):
         delay = _normalize_retry_interval(current_model.get("retry_interval"))
         
         # 判断是否应该重试当前模型
-        if self._model_retry_used < max_retry_int:
+        if self._model_retry_used < max_retry_int and self._attempts_used < self._max_total_attempts:
             self._model_retry_used += 1
             self._attempts_used += 1
             return ModelStep(
@@ -208,7 +209,10 @@ class _LoadBalancedSession(PolicySession):
         
         # 当前模型重试次数已用完，标记为失败并切换
         self._failed_models.add(self._current_model_name)
-        self._update_usage_penalty(self._current_model_name, increase=False)
+        self._release_current_model()
+
+        if self._attempts_used >= self._max_total_attempts:
+            return ModelStep(model=None, meta={"reason": "exhausted"})
         
         # 选择下一个最佳模型
         next_model = self._select_best_model()
@@ -314,6 +318,11 @@ class _LoadBalancedSession(PolicySession):
             adjustment = 1 if increase else -1
             new_usage_penalty = max(0, stats.usage_penalty + adjustment)
             self._model_usage[model_name] = stats._replace(usage_penalty=new_usage_penalty)
+
+    def _release_current_model(self) -> None:
+        """释放当前会话占用的临时使用惩罚。"""
+        if self._current_model_name is not None:
+            self._update_usage_penalty(self._current_model_name, increase=False)
 
     def _update_failure_penalty(self, model_name: str, error: BaseException) -> None:
         """

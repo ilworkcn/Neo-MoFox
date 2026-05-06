@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from src.core.config import get_core_config
 from src.kernel.concurrency import get_watchdog
@@ -22,10 +22,12 @@ from src.core.components.base.chatter import Wait, WaitResumeEvent, Success, Fai
 from src.kernel.logger import get_logger, COLOR
 
 if TYPE_CHECKING:
+    from src.core.models.message import Message
     from src.core.models.stream import StreamContext
     from src.core.transport.distribution import StreamLoopManager
 
 logger = get_logger("conversation_loop", display="会话循环", color=COLOR.MAGENTA)
+T = TypeVar("T")
 
 
 def _take_wait_resume_event(manager: "StreamLoopManager", stream_id: str) -> WaitResumeEvent | None:
@@ -43,11 +45,11 @@ def _get_stream_step_timeout() -> float | None:
 
 
 async def _await_stream_step(
-    awaitable: Awaitable[Any],
+    awaitable: Awaitable[T],
     *,
     stream_id: str,
     stage: str,
-) -> Any:
+) -> T:
     """为聊天流关键 await 提供统一的超时保护。"""
     timeout = _get_stream_step_timeout()
     if timeout is None:
@@ -69,7 +71,7 @@ async def _await_stream_step(
 async def conversation_loop(
     stream_id: str,
     get_context_func: Callable[[str], Awaitable["StreamContext | None"]],
-    flush_cache_func: Callable[[str], Awaitable[list[Any]]],
+    flush_cache_func: Callable[[str], Awaitable[list["Message"]]],
     is_running_func: Callable[[], bool],
 ) -> AsyncIterator[ConversationTick]:
     """会话循环生成器 — 固定频率产出 Tick 事件。

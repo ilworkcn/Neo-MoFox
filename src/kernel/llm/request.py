@@ -374,6 +374,13 @@ class LLMRequest:
                 return resp
 
             except BaseException as e:
+                if isinstance(e, asyncio.CancelledError):
+                    logger.debug(
+                        f"LLM 请求被取消: model={model_identifier}, request={self.request_name or '__default__'}",
+                        exc_info=True,
+                    )
+                    raise
+
                 # 将原始异常转换为标准化 LLM 异常
                 classified_error = classify_exception(e, model=model_identifier)
                 last_error = classified_error
@@ -386,12 +393,7 @@ class LLMRequest:
                     and classified_error.status_code >= 500
                     else None
                 )
-                if isinstance(classified_error, asyncio.CancelledError):
-                    logger.debug(
-                        f"LLM 请求被取消: model={model_identifier}, request={self.request_name or '__default__'}",
-                        exc_info=True,
-                    )
-                elif (
+                if (
                     isinstance(classified_error, (LLMTimeoutError, LLMRateLimitError, TimeoutError))
                     or _5xx_status_code is not None
                     or (isinstance(classified_error, LLMAPIError) and classified_error.status_code is None)

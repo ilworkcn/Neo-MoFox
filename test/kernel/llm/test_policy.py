@@ -883,6 +883,40 @@ class TestLoadBalancedSession:
         assert step.model is None
         assert step.meta["reason"] in ["exhausted", "all_models_failed"]
 
+    def test_exhausted_failure_releases_usage_penalty_and_records_penalty(
+        self, policy: LoadBalancedPolicy
+    ) -> None:
+        """最后一次失败耗尽时也应释放临时占用并记录失败惩罚。"""
+        model_set = [
+            {
+                "model_identifier": "gpt-4",
+                "api_key": "key1",
+                "max_retry": 0,
+                "retry_interval": 0.0,
+                "client_type": "openai",
+                "base_url": "https://api.openai.com/v1",
+                "api_provider": "openai",
+                "timeout": 30,
+                "price_in": 0.00003,
+                "price_out": 0.00006,
+                "temperature": 0.7,
+                "max_tokens": 4096,
+                "extra_params": {},
+            },
+        ]
+
+        session = policy.new_session(model_set=model_set, request_name="test")
+        first = session.first()
+        model_name = first.meta["model_name"]
+        assert policy._model_usage[model_name].usage_penalty == 1
+
+        step = session.next_after_error(LLMTimeoutError("Timeout"))
+
+        assert step.model is None
+        stats = policy._model_usage[model_name]
+        assert stats.usage_penalty == 0
+        assert stats.penalty > 0
+
     def test_critical_error_higher_penalty(self, policy: LoadBalancedPolicy, mock_model_set: list[dict]) -> None:
         """Test that critical errors result in higher penalties."""
         session = policy.new_session(model_set=mock_model_set, request_name="test")

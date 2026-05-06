@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from src.core.components.utils import should_strip_auto_reason_argument
 from src.kernel.llm import LLMUsable, LLMUsableExecution, LLMPayload, ROLE, ToolRegistry, ToolResult
@@ -14,7 +14,25 @@ from src.kernel.logger import get_logger
 if TYPE_CHECKING:
     from src.core.components.base.plugin import BasePlugin
     from src.core.models.message import Message
+    from src.core.models.stream import ChatStream
     from src.kernel.llm import ToolCall
+
+
+class _PluginBackedLLMUsable(LLMUsable, Protocol):
+    """带插件签名的 LLMUsable 组件类协议。"""
+
+    @classmethod
+    def get_signature(cls) -> str | None:
+        """返回组件签名；尚未注入插件信息时返回 None。"""
+        ...
+
+
+class _ToolResultReceiver(Protocol):
+    """可接收工具调用结果 payload 的响应对象协议。"""
+
+    def add_payload(self, payload: LLMPayload, position: object = None) -> object:
+        """追加一个 LLM payload。"""
+        ...
 
 
 @dataclass(slots=True)
@@ -27,14 +45,14 @@ class _PreparedCall:
     result_text: str = ""
 
 
-def _normalize_execute_result(value: Any) -> tuple[bool, Any]:
+def _normalize_execute_result(value: object) -> tuple[bool, object]:
     """将 execute 的原始结果规范化为 ``(success, result)``。
 
     Args:
         value: coroutine 返回值，或异步生成器最后一次非空 ``yield`` 的值。
 
     Returns:
-        tuple[bool, Any]: 标准化后的执行成功标记和结果内容。
+        tuple[bool, object]: 标准化后的执行成功标记和结果内容。
     """
     if isinstance(value, tuple) and len(value) >= 2 and isinstance(value[0], bool):
         return value[0], value[1]
@@ -47,7 +65,7 @@ async def _get_action_chat_stream(
     *,
     stream_id: str | None,
     message: "Message | None",
-) -> Any:
+) -> "ChatStream":
     """为 Action 创建或恢复可发送消息的 ChatStream。
 
     Args:
@@ -55,7 +73,7 @@ async def _get_action_chat_stream(
         message: 触发本轮 tool call 的消息；优先从消息携带的上下文恢复流。
 
     Returns:
-        Any: 已激活或创建的 ChatStream 实例。
+        ChatStream: 已激活或创建的 ChatStream 实例。
 
     Raises:
         ValueError: 无法从 ``message`` 或 ``stream_id`` 确定 ChatStream 时抛出。
@@ -66,18 +84,17 @@ async def _get_action_chat_stream(
     chat_stream = None
 
     if message is not None:
-        message_stream_id = getattr(message, "stream_id", None)
-        if message_stream_id:
-            chat_stream = await stream_manager.activate_stream(message_stream_id)
+        if message.stream_id:
+            chat_stream = await stream_manager.activate_stream(message.stream_id)
 
         if chat_stream is None:
-            extra = getattr(message, "extra", {}) or {}
+            extra = message.extra or {}
             group_id = extra.get("group_id") or extra.get("target_group_id")
             chat_stream = await stream_manager.get_or_create_stream(
-                platform=getattr(message, "platform", ""),
-                user_id=getattr(message, "sender_id", ""),
+                platform=message.platform,
+                user_id=message.sender_id,
                 group_id=str(group_id) if group_id else "",
-                chat_type=getattr(message, "chat_type", None),
+                chat_type=message.chat_type,
             )
 
     if chat_stream is None and stream_id:
@@ -129,11 +146,11 @@ async def create_llm_usable_execution(
         chat_stream = await _get_action_chat_stream(stream_id=stream_id, message=message)
         instance = usable_cls(chat_stream=chat_stream, plugin=plugin)
         if message is not None:
-            last_message = getattr(message, "processed_plain_text", None)
-            instance._last_message = last_message or str(getattr(message, "content", "") or "")
+            last_message = message.processed_plain_text
+            instance._last_message = last_message or str(message.content or "")
     elif issubclass(usable_cls, BaseAgent):
         if not stream_id:
-            stream_id = getattr(message, "stream_id", "")
+            stream_id = message.stream_id if message is not None else ""
         instance = usable_cls(stream_id=stream_id or "", plugin=plugin)
     else:
         raise ValueError("未知的 LLMUsable 组件类型，无法执行")
@@ -150,7 +167,7 @@ async def exec_llm_usable(
     stream_id: str | None = None,
     message: "Message | None" = None,
     kwargs: dict[str, Any] | None = None,
-) -> tuple[bool, Any]:
+) -> tuple[bool, object]:
     """执行单个 LLMUsable，并规范化返回结果。
 
     Args:
@@ -161,7 +178,7 @@ async def exec_llm_usable(
         kwargs: 传给 ``execute`` 的参数字典。
 
     Returns:
-        tuple[bool, Any]: ``(是否执行成功, 结果内容)``。
+        tuple[bool, object]: ``(是否执行成功, 结果内容)``。
     """
     execution = await create_llm_usable_execution(
         usable_cls,
@@ -231,7 +248,7 @@ async def run_llm_usable_executions(
 async def run_tool_call(
     *,
     calls: Sequence["ToolCall"],
-    response: Any,
+    response: _ToolResultReceiver,
     usable_map: ToolRegistry,
     trigger_msg: "Message | None",
     plugin: "BasePlugin",
@@ -278,7 +295,7 @@ async def run_tool_call(
             logger.debug(f"{prefix}无触发消息，跳过工具调用: {call.name}")
         else:
             try:
-                signature = getattr(usable_cls, "get_signature", lambda: None)()
+                signature = cast(_PluginBackedLLMUsable, usable_cls).get_signature()
                 owner_plugin = (
                     resolve_component_plugin(signature)
                     if resolve_component_plugin is not None

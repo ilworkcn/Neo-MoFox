@@ -11,7 +11,7 @@ from typing import Any
 from .base import ModelStep, Policy, PolicySession
 
 
-def _normalize_max_retry(value: Any) -> int:
+def _normalize_max_retry(value: object) -> int:
     try:
         max_retry = int(value) if value is not None else 2
     except Exception:
@@ -19,7 +19,7 @@ def _normalize_max_retry(value: Any) -> int:
     return max(0, max_retry)
 
 
-def _normalize_retry_interval(value: Any) -> float:
+def _normalize_retry_interval(value: object) -> float:
     try:
         delay = float(value) if value is not None else 3.0
     except Exception:

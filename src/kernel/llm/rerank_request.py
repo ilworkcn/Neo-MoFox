@@ -120,6 +120,9 @@ class RerankRequest:
                     request_name=self.request_name,
                 )
             except BaseException as e:
+                if isinstance(e, asyncio.CancelledError):
+                    raise
+
                 classified_error = classify_exception(e, model=model_identifier)
                 last_error = classified_error
 

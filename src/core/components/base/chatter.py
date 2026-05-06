@@ -598,7 +598,7 @@ class BaseChatter(ABC):
             str: 格式化后的消息行
         """
         # 时间
-        raw_time = getattr(msg, "time", None)
+        raw_time = msg.time
         if isinstance(raw_time, (int, float)):
             time_str = datetime.fromtimestamp(raw_time).strftime(time_format)
         elif isinstance(raw_time, datetime):
@@ -607,28 +607,28 @@ class BaseChatter(ABC):
             time_str = str(raw_time or "")
 
         # 角色
-        role_raw = getattr(msg, "sender_role", None)
+        role_raw = msg.sender_role
         role_str = BaseChatter._format_role(role_raw)
         role_part = f"<{role_str}> " if role_str else ""
 
         # 平台 ID（优先使用 sender_id，这是平台原始 ID）
-        platform_id = getattr(msg, "sender_id", "") or ""
+        platform_id = msg.sender_id or ""
         id_part = f"[{platform_id}] " if platform_id else ""
 
         # 名称部分：nickname$cardname（无 cardname 时省略 $cardname）
-        nickname = getattr(msg, "sender_name", "") or ""
-        cardname = getattr(msg, "sender_cardname", None)
+        nickname = msg.sender_name or ""
+        cardname = msg.sender_cardname
         if cardname and cardname != nickname:
             name_part = f"{nickname}${cardname}"
         else:
             name_part = nickname or "未知发送者"
 
         # 消息 ID 部分（用于LLM引用回复）
-        message_id = getattr(msg, "message_id", "") or ""
+        message_id = msg.message_id or ""
         msg_id_part = f"[{message_id}]" if message_id else ""
 
         # 消息内容
-        content = getattr(msg, "processed_plain_text", None) or str(getattr(msg, "content", ""))
+        content = msg.processed_plain_text or str(msg.content)
 
         return f"【{time_str}】{role_part}{id_part}{name_part} {msg_id_part}： {content}"
 

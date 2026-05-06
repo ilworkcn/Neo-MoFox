@@ -241,12 +241,12 @@ class UserQueryHelper:
         normalized_lower = normalized.lower()
 
         for person in persons:
-            user_id_val = str(getattr(person, "user_id", "") or "").strip()
+            user_id_val = str(person.user_id or "").strip()
             if not user_id_val:
                 continue
 
-            nickname = str(getattr(person, "nickname", "") or "").strip()
-            cardname = str(getattr(person, "cardname", "") or "").strip()
+            nickname = str(person.nickname or "").strip()
+            cardname = str(person.cardname or "").strip()
 
             if (nickname and nickname.lower() == normalized_lower) or (
                 cardname and cardname.lower() == normalized_lower

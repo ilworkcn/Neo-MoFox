@@ -222,11 +222,15 @@ class DependencyInstaller:
                 results[spec.plugin_name] = True
             else:
                 results[spec.plugin_name] = False
-                level = "error" if spec.required else "warning"
-                getattr(logger, level)(
-                    f"插件 '{spec.plugin_name}' 的依赖安装失败"
-                    + ("（依赖为必需，将跳过该插件）" if spec.required else "（依赖非必需，仍尝试加载）")
+                message = f"插件 '{spec.plugin_name}' 的依赖安装失败" + (
+                    "（依赖为必需，将跳过该插件）"
+                    if spec.required
+                    else "（依赖非必需，仍尝试加载）"
                 )
+                if spec.required:
+                    logger.error(message)
+                else:
+                    logger.warning(message)
 
         return results
 

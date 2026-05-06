@@ -789,9 +789,7 @@ class OpenAIChatClient:
         if openai_tools and not tool_call_compat:
             params["tools"] = openai_tools
             if "tool_choice" not in params:
-                # 默认策略：统一使用 required。
-                # 如果无法支持请在 model_set.extra_params 显式传入 tool_choice="auto"。
-                params["tool_choice"] = "required"
+                params["tool_choice"] = "auto"
         else:
             params.pop("tool_choice", None)
 
@@ -943,7 +941,7 @@ class OpenAIChatClient:
         """
         stream_params = dict(params)
         stream_params["stream"] = True
-        stream_resp = await client.chat.completions.create(**params, stream=True)
+        stream_resp = await client.chat.completions.create(**stream_params)
 
         async def iter_events() -> AsyncIterator[StreamEvent]:
             """逐块迭代流式响应，产出 StreamEvent。
