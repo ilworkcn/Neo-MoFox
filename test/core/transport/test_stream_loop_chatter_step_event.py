@@ -382,3 +382,89 @@ async def test_run_chat_stream_keeps_timer_resume_event_across_message_buffer_sk
     assert received_events[0] is not None
     assert received_events[0].source == "timer"
     assert manager._stats["total_process_cycles"] == 1
+
+
+@pytest.mark.asyncio
+async def test_run_chat_stream_primes_new_generator_before_resume_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """新建生成器遇到 pending resume_event 时应先预激，再发送恢复事件。"""
+    stream_id = "stream-new-generator-resume"
+    received_events: list[WaitResumeEvent | None] = []
+
+    async def _one_tick(*_args, **_kwargs):
+        yield SimpleNamespace(stream_id=stream_id, tick_count=1)
+
+    async def chatter_generator():
+        resume_event = yield Wait(time=0.0)
+        received_events.append(resume_event)
+        yield Success(message="ok")
+
+    chatter = SimpleNamespace(
+        execute=lambda: chatter_generator(),
+    )
+
+    context = SimpleNamespace(
+        unread_messages=[SimpleNamespace(sender_id="user-1")],
+        is_chatter_processing=False,
+        triggering_user_id=None,
+        stream_loop_task=None,
+    )
+
+    event_manager = SimpleNamespace(
+        publish_event=AsyncMock(
+            return_value={
+                "decision": "SUCCESS",
+                "params": {
+                    "stream_id": stream_id,
+                    "context": context,
+                    "tick": SimpleNamespace(stream_id=stream_id, tick_count=1),
+                    "chatter_gene": None,
+                    "continue": True,
+                },
+            }
+        )
+    )
+
+    monkeypatch.setattr("src.core.transport.distribution.loop.conversation_loop", _one_tick)
+    monkeypatch.setattr(
+        "src.core.transport.distribution.loop.get_core_config",
+        lambda: SimpleNamespace(bot=SimpleNamespace(stream_step_timeout=60.0)),
+    )
+    monkeypatch.setattr(
+        "src.core.managers.get_chatter_manager",
+        lambda: SimpleNamespace(
+            get_chatter_by_stream=lambda _stream_id: chatter,
+            get_or_create_chatter_for_stream=lambda *_args, **_kwargs: chatter,
+        ),
+    )
+    monkeypatch.setattr(
+        "src.core.managers.get_event_manager",
+        lambda: event_manager,
+    )
+    monkeypatch.setattr(
+        "src.core.transport.distribution.loop.get_watchdog",
+        lambda: SimpleNamespace(
+            feed_dog=lambda stream_id=None, **_kwargs: None,
+            unregister_stream=lambda stream_id=None, **_kwargs: None,
+        ),
+    )
+
+    manager = StreamLoopManager()
+    manager.is_running = True
+    manager._pending_wait_resume_events[stream_id] = WaitResumeEvent(source="timer", wait_time=0.0)
+
+    async def _get_context(_stream_id: str):
+        if context.stream_loop_task is None:
+            context.stream_loop_task = asyncio.current_task()
+        return context
+
+    manager._get_stream_context = _get_context  # type: ignore[method-assign]
+    manager._flush_cached_messages_to_unread = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    manager._message_buffer_check = lambda _stream_id, _context: True  # type: ignore[method-assign]
+
+    await run_chat_stream(stream_id=stream_id, manager=manager)
+
+    assert received_events == [WaitResumeEvent(source="timer", wait_time=0.0)]
+    assert manager._stats["total_failures"] == 0
+    assert manager._stats["total_process_cycles"] == 1

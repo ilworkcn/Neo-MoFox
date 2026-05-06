@@ -68,7 +68,7 @@ class StreamLoopManager:
         self._restart_next_allowed_at: dict[str, float] = {}
 
         # 对话执行生成器：stream_id -> generator
-        self._chatter_genes: dict[str, AsyncGenerator[Any, None]] = {}
+        self._chatter_genes: dict[str, AsyncGenerator[Any, Any]] = {}
 
         # 等待状态：stream_id -> (last_yield, yielded_at, unread_count_at_yield)
         # - last_yield: Chatter 产出的 Wait/Stop 对象

@@ -179,6 +179,7 @@ async def run_chat_stream(
 
                 # 3. 获取或创建 chatter_gene
                 chatter_gene = manager._chatter_genes.get(stream_id)
+                chatter_gene_just_created = False
                 
                 if not chatter_gene:
                     # 如果没有生成器，只有在有未处理消息时才尝试创建
@@ -214,6 +215,7 @@ async def run_chat_stream(
                                 stage="创建 Chatter 生成器",
                             )
                         manager._chatter_genes[stream_id] = chatter_gene
+                        chatter_gene_just_created = True
                 
                 if not chatter_gene:
                     continue
@@ -240,17 +242,33 @@ async def run_chat_stream(
                         )
                         continue
                     
-                    # 执行一步迭代
-                    step_awaitable = (
-                        chatter_gene.asend(resume_event)
-                        if resume_event is not None
-                        else anext(chatter_gene)
-                    )
-                    result = await _await_stream_step(
-                        step_awaitable,
-                        stream_id=stream_id,
-                        stage="执行 Chatter 单步",
-                    )
+                    # 新建的异步生成器首次只能 anext()/asend(None)，
+                    # 避免 Wait 恢复事件在首次步进时触发协议错误。
+                    if chatter_gene_just_created and resume_event is not None:
+                        primed_result = await _await_stream_step(
+                            anext(chatter_gene),
+                            stream_id=stream_id,
+                            stage="预激 Chatter 生成器",
+                        )
+                        if not isinstance(primed_result, Wait):
+                            result = primed_result
+                        else:
+                            result = await _await_stream_step(
+                                chatter_gene.asend(resume_event),
+                                stream_id=stream_id,
+                                stage="执行 Chatter 单步",
+                            )
+                    else:
+                        step_awaitable = (
+                            chatter_gene.asend(resume_event)
+                            if resume_event is not None
+                            else anext(chatter_gene)
+                        )
+                        result = await _await_stream_step(
+                            step_awaitable,
+                            stream_id=stream_id,
+                            stage="执行 Chatter 单步",
+                        )
 
                     refreshed_context = await manager._get_stream_context(stream_id)
                     if not refreshed_context:
