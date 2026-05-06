@@ -18,7 +18,7 @@
 关键方法：
 
 - add_unread_message: 追加未读消息。
-- add_history_message: 追加历史消息并按 max_context_size 截断。
+- add_history_message: 追加历史消息并按 max_history_messages 截断。
 - check_types: 基于 current_message.extra.format_info.accept_format 判断类型兼容性。
 - flush_unreads_to_history: 批量转移未读消息到历史消息。
 
@@ -45,6 +45,6 @@
 
 ## 维护注意
 
-- 调整 max_context_size 需同步评估上下文截断影响。
+- 调整 max_history_messages 需同步评估历史消息截断影响。
 - check_types 依赖 extra.format_info 约定，改动需同步平台适配器。
 - 若引入持久化字段，需明确与 ORM 模型的职责边界。

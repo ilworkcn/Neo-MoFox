@@ -17,12 +17,12 @@ class TestStreamContext:
         context = StreamContext(
             stream_id="test_stream_123",
             chat_type="private",
-            max_context_size=100,
+            max_history_messages=100,
         )
 
         assert context.stream_id == "test_stream_123"
         assert context.chat_type == "private"
-        assert context.max_context_size == 100
+        assert context.max_history_messages == 100
         assert context.unread_messages == []
         assert context.history_messages == []
         assert context.is_active is True
@@ -57,7 +57,7 @@ class TestStreamContext:
         """测试添加历史消息。"""
         context = StreamContext(
             stream_id="test",
-            max_context_size=100,
+            max_history_messages=100,
         )
         mock_message = MagicMock()
         mock_message.message_id = "msg_1"
@@ -71,7 +71,7 @@ class TestStreamContext:
         """测试历史消息大小限制。"""
         context = StreamContext(
             stream_id="test",
-            max_context_size=5,
+            max_history_messages=5,
         )
 
         # 添加 10 条消息
@@ -365,7 +365,7 @@ class TestChatStreamIntegration:
             stream_id="test",
             platform="qq",
         )
-        stream.context.max_context_size = 3
+        stream.context.max_history_messages = 3
 
         # 添加 5 条消息
         for i in range(5):

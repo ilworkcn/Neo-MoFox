@@ -115,7 +115,7 @@ class TestBaseChatter:
             "src.core.config.get_core_config"
         ) as mock_core_config:
             mock_model_config.return_value.get_task.return_value = []
-            mock_core_config.return_value.chat.max_context_size = 10
+            mock_core_config.return_value.chat.max_llm_messages = 10
 
             request = chatter.create_request("actor", with_reminder="actor")
 
@@ -135,7 +135,7 @@ class TestBaseChatter:
             "src.core.config.get_core_config"
         ) as mock_core_config:
             mock_model_config.return_value.get_task.return_value = []
-            mock_core_config.return_value.chat.max_context_size = 10
+            mock_core_config.return_value.chat.max_llm_messages = 10
 
             request = chatter.create_request("actor", with_reminder="actor")
 

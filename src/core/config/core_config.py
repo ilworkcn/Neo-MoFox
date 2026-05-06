@@ -3,6 +3,7 @@
 定义 core 层所需的配置项，使用 kernel/config 的配置系统。
 """
 
+from pathlib import Path
 from typing import Literal
 
 from src.kernel.config import ConfigBase, SectionBase, config_section, Field
@@ -195,13 +196,22 @@ class CoreConfig(ConfigBase):
             choices=["focus", "normal", "proactive", "priority"],
             hint="决定 Bot 的响应策略",
         )
-        max_context_size: int = Field(
+        max_history_messages: int = Field(
             default=20,
-            description="每个聊天流的最大上下文消息数",
-            label="最大上下文数",
+            description="每个聊天流在内存中保留的最大历史消息数",
+            label="最大历史消息数",
             tag="performance",
             input_type="slider",
-            hint="保留在记忆中的消息数量",
+            hint="保留在运行态历史中的消息数量",
+        )
+        max_llm_messages: int = Field(
+            default=20,
+            ge=0,
+            description="单次 LLM 请求允许携带的最大消息数，设为 0 表示不限制",
+            label="最大 LLM 消息数",
+            tag="ai",
+            input_type="slider",
+            hint="设为 0 表示不限制 LLM 请求消息数",
         )
         image_recognition_prompt: str = Field(
             default="",
@@ -213,6 +223,17 @@ class CoreConfig(ConfigBase):
             placeholder="请描述这张图片的内容...",
             hint="留空使用默认提示词",
         )
+
+        @property
+        def max_context_size(self) -> int:
+            """兼容旧代码读取，返回历史消息保留上限。"""
+            return self.max_history_messages
+
+        @max_context_size.setter
+        def max_context_size(self, value: int) -> None:
+            """兼容旧代码写入，更新历史消息保留上限。"""
+            self.max_history_messages = value
+
     chat: ChatSection = Field(default_factory=ChatSection)
 
     @config_section("llm")
@@ -746,6 +767,28 @@ def _inject_kernel_llm_policy(config: CoreConfig) -> None:
     set_default_policy_factory(lambda: create_policy(config.llm.default_policy))
 
 
+def _migrate_legacy_chat_context_config(config_path: Path) -> None:
+    """迁移旧的 chat.max_context_size 到拆分后的配置字段。"""
+    import tomllib
+
+    with config_path.open("rb") as file:
+        raw_config = tomllib.load(file)
+
+    chat_config = raw_config.get("chat")
+    if not isinstance(chat_config, dict) or "max_context_size" not in chat_config:
+        return
+
+    legacy_value = chat_config.pop("max_context_size")
+    chat_config.setdefault("max_history_messages", legacy_value)
+    chat_config.setdefault("max_llm_messages", legacy_value)
+
+    from src.kernel.config.core import _merge_with_model_defaults, _render_toml_with_signature
+
+    migrated_config = _merge_with_model_defaults(CoreConfig, raw_config)
+    toml_content = _render_toml_with_signature(CoreConfig, migrated_config)
+    config_path.write_text(toml_content, encoding="utf-8")
+
+
 def get_core_config() -> CoreConfig:
     """获取全局 Core 配置实例
 
@@ -786,8 +829,6 @@ def init_core_config(config_path: str) -> CoreConfig:
     """
     global _global_config
 
-    from pathlib import Path
-
     path = Path(config_path)
 
     # 确保配置文件存在
@@ -804,6 +845,7 @@ def init_core_config(config_path: str) -> CoreConfig:
         toml_content = _render_toml_with_signature(CoreConfig, default_config)
         path.write_text(toml_content, encoding="utf-8")
 
+    _migrate_legacy_chat_context_config(path)
     _global_config = CoreConfig.load(config_path, auto_update=True)
     _inject_kernel_llm_policy(_global_config)
 

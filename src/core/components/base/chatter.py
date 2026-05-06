@@ -460,7 +460,7 @@ class BaseChatter(ABC):
         Args:
             task: 模型任务名称（对应 config/model.toml 中的 task key），默认 "actor"
             request_name: LLM 请求名称，默认使用 chatter_name
-            max_context: 上下文最大 payload 数，None 时从 core config 读取
+            max_context: 上下文最大 payload 数，None 时从 core config 读取；0 表示不限制
             with_reminder: 可选的 system reminder bucket；传入后会自动登记到上下文管理器
 
         Returns:
@@ -473,7 +473,7 @@ class BaseChatter(ABC):
         from src.kernel.llm import LLMRequest, LLMContextManager
 
         model_set = get_model_config().get_task(task)
-        max_payloads = max_context if max_context is not None else get_core_config().chat.max_context_size
+        max_payloads = max_context if max_context is not None else get_core_config().chat.max_llm_messages
         context_manager = LLMContextManager(
             max_payloads=max_payloads,
         )
