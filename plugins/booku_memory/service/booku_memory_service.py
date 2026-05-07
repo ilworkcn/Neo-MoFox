@@ -960,17 +960,17 @@ class BookuMemoryService(BaseService):
         """清洗写入向量库的 metadata，仅保留标量类型字段。
 
         ChromaDB 不支持列表、字典等复杂类型作为元数据字段，
-        本函数过滤掉非法字段。
+        且 ``None`` 也不是合法的 MetadataValue，本函数会一并过滤掉。
 
         Args:
             metadata: 原始元数据字典，可能包含任意类型的值。
 
         Returns:
-            仅包含 str、int、float、bool 及 None 类型字段的新字典。
+            仅包含 str、int、float、bool 类型字段的新字典。
         """
         cleaned: dict[str, Any] = {}
         for key, value in metadata.items():
-            if isinstance(value, str | int | float | bool) or value is None:
+            if isinstance(value, str | int | float | bool):
                 cleaned[key] = value
         return cleaned
 
