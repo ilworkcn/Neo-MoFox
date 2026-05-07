@@ -710,13 +710,12 @@ class DefaultChatter(BaseChatter):
         formatted_text: str,
         unread_msgs: list[Message] | None = None,
         native_multimodal: bool = False,
-        max_images: int = 0,
         logger_override: Logger | None = None,
     ) -> None:
         """在未发送前合并未读消息到最后一个 USER payload。"""
         content_list: list[Content | LLMUsable]
-        if native_multimodal and unread_msgs and max_images > 0:
-            images = extract_images_from_messages(unread_msgs, max_images)
+        if native_multimodal and unread_msgs:
+            images = extract_images_from_messages(unread_msgs)
             content_list = build_multimodal_content(formatted_text, images)
             if images:
                 (logger_override or logger).debug(f"已提取 {len(images)} 张图片")
@@ -822,11 +821,9 @@ class DefaultChatter(BaseChatter):
         if isinstance(plugin_config, DefaultChatterConfig):
             enable_cooldown = plugin_config.plugin.enable_cooldown
             native_multimodal = plugin_config.plugin.native_multimodal
-            max_images_per_payload = plugin_config.plugin.max_images_per_payload
         else:
             enable_cooldown = False
             native_multimodal = False
-            max_images_per_payload = 4
 
         runner = run_enhanced(
             chatter=self,
@@ -838,7 +835,6 @@ class DefaultChatter(BaseChatter):
             enable_action_suspend=self._is_action_suspend_enabled(),
             enable_cooldown=enable_cooldown,
             native_multimodal=native_multimodal,
-            max_images_per_payload=max_images_per_payload,
         )
         resume_event: WaitResumeEvent | None = None
 

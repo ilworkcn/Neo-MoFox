@@ -196,7 +196,6 @@ async def run_enhanced(
     enable_action_suspend: bool = True,
     enable_cooldown: bool = False,
     native_multimodal: bool = False,
-    max_images_per_payload: int = 4,
 ) -> AsyncGenerator[Wait | Success | Failure | Stop, WaitResumeEvent | None]:
     """enhanced 模式执行流程。
 
@@ -205,7 +204,6 @@ async def run_enhanced(
             同时为当前 stream 注册 "image" 类型的 VLM 跳过（表情包 emoji 仍由框架
             VLM 生成描述，受益于哈希缓存）。执行结束后会自动取消注册，避免残留副作用。
             历史消息不传图片，仅未读消息携带图片。
-        max_images_per_payload: 单次未读消息 payload 允许携带的最大图片数量。
     """
     if native_multimodal:
         from src.core.managers.media_manager import get_media_manager
@@ -309,7 +307,6 @@ async def run_enhanced(
                 formatted_text=unread_user_prompt,
                 unread_msgs=unread_msgs,
                 native_multimodal=native_multimodal,
-                max_images=max_images_per_payload,
                 logger_override=logger,
             )
             _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.MODEL_TURN, logger=logger, reason="accepted unread batch")

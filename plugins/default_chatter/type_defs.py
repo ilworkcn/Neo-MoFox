@@ -119,7 +119,6 @@ class DefaultChatterRuntime(Protocol):
         formatted_text: str,
         unread_msgs: list[Message] | None = None,
         native_multimodal: bool = False,
-        max_images: int = 0,
         logger_override: Logger | None = None,
     ) -> None:
         """将未读消息写入待发送上下文。"""

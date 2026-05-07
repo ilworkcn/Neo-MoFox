@@ -177,14 +177,12 @@ class _FakeChatterAllowUser(_FakeChatter):
         formatted_text: str,
         unread_msgs: list[Any] | None = None,
         native_multimodal: bool = False,
-        max_images: int = 0,
         logger_override: Any = None,
     ) -> None:
         _ = (
             formatted_text,
             unread_msgs,
             native_multimodal,
-            max_images,
             logger_override,
         )
         response.add_payload(SimpleNamespace(role=ROLE.USER))

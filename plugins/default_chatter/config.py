@@ -98,16 +98,6 @@ class DefaultChatterConfig(BaseConfig):
             tag="ai",
             hint="启用前请确认 actor 模型支持图片输入"
         )
-        max_images_per_payload: int = Field(
-            default=4,
-            description=(
-                "原生多模态模式下的总图片配额（单次 payload 中所有来源的图片上限）。"
-                "配额由 bot 已发图片、用户新消息图片、历史图片三者共同占用，"
-                "优先级依次为：bot 已发 > 用户新消息 > 历史补充。"
-            ),
-            label="单次最大图片数",
-            tag="ai"
-        )
         theme_guide: ThemeGuideSection = Field(
             default_factory=ThemeGuideSection,
             description="按聊天类型区分的额外提示词",

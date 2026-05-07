@@ -74,19 +74,16 @@ class TestGetImageMediaList:
 
 
 class TestExtractImagesFromMessages:
-    def test_respects_max_items(self) -> None:
+    def test_returns_all_images_in_order(self) -> None:
         m1 = _make_msg(message_id="m1", media=[{"type": "image", "data": "1"}])
         m2 = _make_msg(message_id="m2", media=[{"type": "image", "data": "2"}])
         m3 = _make_msg(message_id="m3", media=[{"type": "image", "data": "3"}])
 
-        items = extract_images_from_messages([m1, m2, m3], max_items=2)
-        assert len(items) == 2
+        items = extract_images_from_messages([m1, m2, m3])
+        assert len(items) == 3
         assert items[0]["data"] == "1"
         assert items[1]["data"] == "2"
-
-    def test_zero_max_returns_empty(self) -> None:
-        m = _make_msg(media=[{"type": "image", "data": "1"}])
-        assert extract_images_from_messages([m], max_items=0) == []
+        assert items[2]["data"] == "3"
 
     def test_skips_emoji_and_voice(self) -> None:
         m = _make_msg(
@@ -96,7 +93,7 @@ class TestExtractImagesFromMessages:
                 {"type": "image", "data": "i"},
             ]
         )
-        items = extract_images_from_messages([m], max_items=10)
+        items = extract_images_from_messages([m])
         assert len(items) == 1
         assert items[0]["type"] == "image"
         assert items[0]["data"] == "i"

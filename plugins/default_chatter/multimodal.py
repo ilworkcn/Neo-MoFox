@@ -34,27 +34,18 @@ def get_image_media_list(msg: Message) -> list[dict[str, Any]]:
 
 def extract_images_from_messages(
     messages: list[Message],
-    max_items: int,
 ) -> list[dict[str, Any]]:
-    """按顺序从消息列表中提取图片，最多 ``max_items`` 张。
+    """按顺序从消息列表中提取全部图片。
 
     Args:
         messages: 待扫描的消息（可为未读消息或历史消息子集）
-        max_items: 提取上限，调用方需保证 >= 0
 
     Returns:
-        提取到的媒体字典列表，按消息顺序截断至 ``max_items``
+        提取到的媒体字典列表，保持原始消息顺序
     """
     items: list[dict[str, Any]] = []
-    if max_items <= 0:
-        return items
-
     for msg in messages:
-        if len(items) >= max_items:
-            break
         for media in get_image_media_list(msg):
-            if len(items) >= max_items:
-                break
             items.append(media)
     return items
 
