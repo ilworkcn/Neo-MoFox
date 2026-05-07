@@ -105,7 +105,7 @@ async def test_decide_should_respond_requests_sub_actor_reminder(
         chatter=_FakeChatter(),
         logger=SimpleNamespace(info=lambda *_a, **_k: None, warning=lambda *_a, **_k: None, debug=lambda *_a, **_k: None, error=lambda *_a, **_k: None),
         unreads_text="hello",
-        chat_stream=SimpleNamespace(stream_id="s1"),
+        chat_stream=SimpleNamespace(stream_id="s1", bot_id=""),
         fallback_prompt="hello {nickname}",
     )
 

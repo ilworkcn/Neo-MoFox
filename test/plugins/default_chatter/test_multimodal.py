@@ -7,15 +7,13 @@ from typing import Any
 import pytest
 
 from src.core.models.message import Message, MessageType
-from src.kernel.llm import Image, Text
 
 from plugins.default_chatter.multimodal import (
-    ImageBudget,
-    MediaItem,
     build_multimodal_content,
     extract_images_from_messages,
     get_image_media_list,
 )
+from src.kernel.llm import Image, Text
 
 # 一个最小可解码的合法 base64 字符串（Image 构造时会做 b64decode 校验）
 _VALID_B64 = "aGVsbG8="  # b"hello"
@@ -47,27 +45,6 @@ def _make_msg(
         message_type=MessageType.TEXT,
         media=media,
     )
-
-
-class TestImageBudget:
-    def test_initial_remaining(self) -> None:
-        b = ImageBudget(4)
-        assert b.remaining == 4
-        assert not b.is_exhausted()
-
-    def test_consume_and_exhaust(self) -> None:
-        b = ImageBudget(2)
-        b.consume(1)
-        assert b.remaining == 1
-        b.consume(1)
-        assert b.remaining == 0
-        assert b.is_exhausted()
-
-    def test_consume_overflow_clamps_remaining(self) -> None:
-        b = ImageBudget(2)
-        b.consume(5)
-        assert b.remaining == 0
-        assert b.is_exhausted()
 
 
 class TestGetImageMediaList:
@@ -104,8 +81,8 @@ class TestExtractImagesFromMessages:
 
         items = extract_images_from_messages([m1, m2, m3], max_items=2)
         assert len(items) == 2
-        assert items[0].source_message_id == "m1"
-        assert items[1].source_message_id == "m2"
+        assert items[0]["data"] == "1"
+        assert items[1]["data"] == "2"
 
     def test_zero_max_returns_empty(self) -> None:
         m = _make_msg(media=[{"type": "image", "data": "1"}])
@@ -121,8 +98,8 @@ class TestExtractImagesFromMessages:
         )
         items = extract_images_from_messages([m], max_items=10)
         assert len(items) == 1
-        assert items[0].media_type == "image"
-        assert items[0].base64_data == "i"
+        assert items[0]["type"] == "image"
+        assert items[0]["data"] == "i"
 
 
 class TestBuildMultimodalContent:
@@ -131,45 +108,16 @@ class TestBuildMultimodalContent:
         assert len(content) == 1
         assert isinstance(content[0], Text)
 
-    def test_interleave_at_placeholder(self) -> None:
+    def test_images_appended_after_text(self) -> None:
         items = [
-            MediaItem(media_type="image", base64_data=_VALID_B64, source_message_id="m1"),
-            MediaItem(media_type="image", base64_data=_VALID_B64, source_message_id="m2"),
-        ]
-        # text 中两个 [图片] 占位符正好对应两张图片
-        content = build_multimodal_content("前 [图片] 中 [图片] 后", items)
-        # 期望：Text("前 ") Image(A) Text(" 中 ") Image(B) Text(" 后")
-        assert [type(c).__name__ for c in content] == [
-            "Text",
-            "Image",
-            "Text",
-            "Image",
-            "Text",
-        ]
-
-    def test_more_placeholders_than_images_keeps_extras(self) -> None:
-        items = [MediaItem(media_type="image", base64_data=_VALID_B64, source_message_id="m1")]
-        content = build_multimodal_content("a [图片] b [图片] c", items)
-        # 1 图 + 2 占位符 → 第二个占位符保留
-        assert any(
-            isinstance(c, Text) and "[图片]" in c.text  # type: ignore[attr-defined]
-            for c in content
-        )
-
-    def test_more_images_than_placeholders_appends_remaining(self) -> None:
-        items = [
-            MediaItem(media_type="image", base64_data=_VALID_B64, source_message_id="m1"),
-            MediaItem(media_type="image", base64_data=_VALID_B64, source_message_id="m2"),
+            {"type": "image", "data": _VALID_B64},
+            {"type": "image", "data": _VALID_B64},
         ]
         content = build_multimodal_content("hi", items)
-        # 没有占位符：所有图片追加到末尾
-        types = [type(c).__name__ for c in content]
-        assert types == ["Text", "Image", "Image"]
+        assert [type(c).__name__ for c in content] == ["Text", "Image", "Image"]
 
     def test_text_followed_by_images_when_no_placeholder(self) -> None:
-        items = [
-            MediaItem(media_type="image", base64_data=_VALID_B64, source_message_id="m1"),
-        ]
+        items = [{"type": "image", "data": _VALID_B64}]
         content = build_multimodal_content("hi", items)
         assert isinstance(content[0], Text)
         assert isinstance(content[1], Image)

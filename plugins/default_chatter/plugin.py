@@ -217,8 +217,7 @@ sub_agent_system_prompt = """你是一个聊天意图识别助手。
 
 # 关于主机器人
 主机器人的名字是 {nickname}。
-它的 QQ 号是 {bot_id}。
-{personality_core_section}{personality_side_section}
+{bot_id_section}{personality_core_section}{personality_side_section}
 # 判定准则
 你应该在以下情况判定为 "需要回复" (should_respond = true)：
 1. 明确提及：
@@ -898,6 +897,7 @@ class DefaultChatterPlugin(BasePlugin):
             policies={
                 "nickname": optional(personality.nickname),
                 "bot_id": optional(""),
+                "bot_id_section": optional(""),
                 "personality_core_section": optional(personality.personality_core)
                 .then(wrap("它的核心人格是：", "\n")),
                 "personality_side_section": optional(personality.personality_side)

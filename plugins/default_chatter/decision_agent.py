@@ -111,9 +111,16 @@ async def decide_should_respond(
 
     nickname = get_core_config().personality.nickname
     bot_id = chat_stream.bot_id or ""
+    bot_id_section = f"它的 QQ 号是 {bot_id}。\n" if bot_id else ""
     tmpl = get_prompt_manager().get_template("default_chatter_sub_agent_prompt")
     if tmpl:
-        sub_prompt = await tmpl.set("nickname", nickname).set("bot_id", bot_id).build()
+        sub_prompt = (
+            await tmpl
+            .set("nickname", nickname)
+            .set("bot_id", bot_id)
+            .set("bot_id_section", bot_id_section)
+            .build()
+        )
     else:
         sub_prompt = fallback_prompt.format(nickname=nickname, bot_id=bot_id)
 
