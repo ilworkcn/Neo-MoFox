@@ -154,7 +154,7 @@ async def test_mark_archived(repo: BookuMemoryMetadataRepository) -> None:
 async def test_move_records(repo: BookuMemoryMetadataRepository) -> None:
     """move_records 应将旧 bucket 归一化为 memory，并更新 folder_id。"""
     await repo.upsert_record(**_sample_kwargs("mv1"))
-    count = await repo.move_records(["mv1"], to_bucket="inherent", to_folder_id="folder_b")
+    count = await repo.move_records(["mv1"], to_bucket="archived", to_folder_id="folder_b")
     assert count == 1
     rec = await repo.get_record("mv1")
     assert rec is not None

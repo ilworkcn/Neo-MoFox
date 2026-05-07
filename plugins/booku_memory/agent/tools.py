@@ -1,7 +1,7 @@
 """Booku Memory 命令工具。
 
 对外仅暴露一个工具：memory_command(command)。
-通过命令行风格参数执行 search/read/create/update/delete，支持 && 串联。
+通过命令行风格参数执行 help/search/read/create/update/delete，支持 && 串联。
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from typing import Annotated, Any
 from src.app.plugin_system.api import log_api
 from src.core.components import BaseTool
 
+from ..manual import BOOKU_MEMORY_COMMAND_MANUAL
 from ..service import BookuMemoryService
 
 logger = log_api.get_logger("booku_memory.command_tool")
@@ -131,8 +132,24 @@ def _pick_ids(options: dict[str, list[str]]) -> list[str]:
     return dedup
 
 
-def _pick_tag_triplet(options: dict[str, list[str]]) -> tuple[list[str], list[str], list[str]]:
-    """读取三元标签组。"""
+def _pick_tag_triplet(
+    options: dict[str, list[str]],
+    *,
+    required: bool = False,
+) -> tuple[list[str], list[str], list[str]]:
+    """读取并严格校验三元标签组。"""
+
+    tag_option_keys = (
+        "core_tags",
+        "core",
+        "diffusion_tags",
+        "diffusion",
+        "opposing_tags",
+        "opposing",
+        "triple_tags",
+        "triplet",
+    )
+    explicit_tag_input = any(key in options for key in tag_option_keys)
 
     core_tags = _parse_csv_list(_pick_option(options, "core_tags", "core"))
     diffusion_tags = _parse_csv_list(_pick_option(options, "diffusion_tags", "diffusion"))
@@ -142,12 +159,30 @@ def _pick_tag_triplet(options: dict[str, list[str]]) -> tuple[list[str], list[st
     if triplet:
         # 语法：core1,core2|diff1,diff2|opp1,opp2
         parts = [part.strip() for part in triplet.split("|")]
+        if len(parts) != 3:
+            raise ValueError(
+                "tag 三元组必须同时提供有效的 -core_tags、-diffusion_tags、-opposing_tags；"
+                '或使用 -triple_tags "核心|扩散|对立" 一次性传入三组。'
+            )
         if len(parts) >= 1 and not core_tags:
             core_tags = _parse_csv_list(parts[0])
         if len(parts) >= 2 and not diffusion_tags:
             diffusion_tags = _parse_csv_list(parts[1])
         if len(parts) >= 3 and not opposing_tags:
             opposing_tags = _parse_csv_list(parts[2])
+
+    has_all_groups = bool(core_tags) and bool(diffusion_tags) and bool(opposing_tags)
+    if required and not has_all_groups:
+        raise ValueError(
+            "必须同时提供有效的 -core_tags、-diffusion_tags、-opposing_tags 三组标签；"
+            '也可使用 -triple_tags "核心|扩散|对立"，且三组都不能为空。'
+        )
+
+    if explicit_tag_input and not has_all_groups:
+        raise ValueError(
+            "tag 参数一旦出现，就必须同时提供有效的 -core_tags、-diffusion_tags、-opposing_tags 三组；"
+            "禁止只传一组或两组。"
+        )
 
     return core_tags, diffusion_tags, opposing_tags
 
@@ -157,16 +192,19 @@ class BookuMemoryCommandTool(BaseTool):
 
     tool_name: str = "memory_command"
     tool_description: str = (
-        "Booku Memory 记忆系统命令工具。**应当频繁调用**——遇到涉及人物、事件、知识、偏好、计划等信息时，"
-        "主动写入或检索记忆，而不是依赖对话上下文。"
-        "仅接受 command 字符串，"
-        "支持 search/read/create/update/delete，支持 && 串联执行。"
-        "首次使用前请先阅读booku_memory的SKILL.md中的使用说明。"
+        "Booku Memory 命令工具。"
+        "支持 help/search/read/create/update/delete。"
+        "使用该工具应当非常频繁，多记多读。"
+
     )
 
     async def execute(
         self,
-        command: Annotated[str, "命令字符串，参数列表参考booku_memory的SKILL.md中的说明"],
+        command: Annotated[
+            str,
+            "Booku Memory 命令字符串。支持 help/search/read/create/update/delete 和 && 串联；"
+            "不确定格式时先执行 help。",
+        ],
     ) -> tuple[bool, str | dict]:
         """执行命令字符串。"""
 
@@ -174,16 +212,18 @@ class BookuMemoryCommandTool(BaseTool):
         if not raw_command:
             return False, "command 不能为空"
 
-        service = _service(self.plugin)
         segments = _split_segments(raw_command)
         if not segments:
             return False, "未解析到可执行命令"
 
         executions: list[dict[str, Any]] = []
+        service: BookuMemoryService | None = None
 
         for segment in segments:
             try:
                 op, options = _parse_segment(segment)
+                if op != "help" and service is None:
+                    service = _service(self.plugin)
                 result = await self._execute_single(service=service, operation=op, options=options)
                 executions.append({"command": segment, "success": True, "result": result})
             except Exception as error:  # noqa: BLE001
@@ -206,14 +246,24 @@ class BookuMemoryCommandTool(BaseTool):
     async def _execute_single(
         self,
         *,
-        service: BookuMemoryService,
+        service: BookuMemoryService | None,
         operation: str,
         options: dict[str, list[str]],
     ) -> dict[str, Any]:
         """执行单条命令。"""
 
+        if operation == "help":
+            return {
+                "action": "help",
+                "content": BOOKU_MEMORY_COMMAND_MANUAL,
+            }
+
+        if service is None:
+            raise ValueError("记忆服务不可用")
+
         if operation == "search":
             top_n = _parse_int(_pick_option(options, "topn", "top_n", "n"), 10)
+            core_tags, diffusion_tags, opposing_tags = _pick_tag_triplet(options)
             return await service.search_memory_entries(
                 top_n=top_n,
                 query_text=_pick_option(options, "query", "q"),
@@ -224,6 +274,9 @@ class BookuMemoryCommandTool(BaseTool):
                 include_archived=_parse_bool(_pick_option(options, "include_archived"), False),
                 include_knowledge=_parse_bool(_pick_option(options, "include_knowledge"), True),
                 include_related=_parse_bool(_pick_option(options, "include_related", "related"), False),
+                core_tags=core_tags,
+                diffusion_tags=diffusion_tags,
+                opposing_tags=opposing_tags,
             )
 
         if operation == "read":
@@ -246,7 +299,10 @@ class BookuMemoryCommandTool(BaseTool):
             if memory_type == "person" and not person_id:
                 raise ValueError("人物记忆必须提供 -person_id，格式为 platform:id")
 
-            core_tags, diffusion_tags, opposing_tags = _pick_tag_triplet(options)
+            core_tags, diffusion_tags, opposing_tags = _pick_tag_triplet(
+                options,
+                required=True,
+            )
             relation_memory_ids = _parse_csv_list(_pick_option(options, "relation_ids", "relation_memory_ids"))
             relation_aliases = _parse_csv_list(_pick_option(options, "relation_aliases"))
             related_people = _parse_csv_list(_pick_option(options, "related_people"))
@@ -318,7 +374,7 @@ class BookuMemoryCommandTool(BaseTool):
                 hard=_parse_bool(_pick_option(options, "hard"), False),
             )
 
-        raise ValueError(f"不支持的命令: {operation}")
+        raise ValueError(f"不支持的命令: {operation}，可先执行 help 查看支持的命令与参数说明")
 
 
 __all__ = ["BookuMemoryCommandTool"]

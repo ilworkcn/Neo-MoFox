@@ -21,6 +21,7 @@ from src.kernel.logger import get_logger
 from src.kernel.vector_db import get_vector_db_service
 
 from ..config import BookuMemoryConfig
+from ..manual import BOOKU_MEMORY_COMMAND_MANUAL
 from .metadata_repository import BookuMemoryMetadataRepository
 from .result_deduplicator import ResultDeduplicator
 
@@ -28,72 +29,11 @@ logger = get_logger("booku_memory_service")
 
 _MEMORY_BUCKET = "memory"
 _KNOWLEDGE_BUCKET = "knowledge"
-_INHERENT_FOLDER_ID = "global"
-_INHERENT_MEMORY_TITLE = "固有记忆"
 
 _TARGET_REMINDER_BUCKET = "actor"
 _TARGET_REMINDER_NAME = "booku_memory"
 _TARGET_ACTIVE_REMINDER_NAME = "活跃记忆速览"
 _ACTIVE_REMINDER_LIMIT = 10
-
-
-_MEMORY_HINT = (
-    "你具备长期记忆能力。"
-    "记忆对你来说，不只是存放信息的地方，更是维持关系连续性、理解用户处境、连接过去与现在的方式。\n\n"
-    "在实际对话中，你应当更积极地使用 create_memory 创建记忆，而不是因为担心记忆价值不够高就放弃记录。"
-    "只要内容很可能在未来帮助你理解用户、延续关系、补足上下文，或帮助你在之后给出更准确的回应，就优先写入记忆。"
-    "当用户提到稳定的事实、重要的经历、持续的偏好、明确的关系、正在推进的计划，"
-    "或那些带有强烈情绪和长期意义的内容时，应默认它们值得创建为记忆。"
-    "你需要更积极地记录人物关系变化，尤其是他人对你本人的看法与态度、他人对他人的评价与情感倾向，并从对话中总结关系的演变。"
-    "把群聊当作一个小社会来理解，主动描绘任何用户的性格刻画与互动风格。"
-    "即使你不能百分之百确定一条信息是否足够重要，也不必过度犹豫；与其漏掉可能有用的长期线索，不如先创建记忆。"
-    "不常用、价值不足或长期没有被激活的记忆，系统后续会自动淡化、归档或丢弃，因此你无需把记忆价值判断得过于苛刻。"
-    "同样地，你也应当更积极地使用 read_memory 读取、回忆和检索记忆，而不要因为担心这是额外负担就减少使用。"
-    "读取记忆通常不是高消耗行为；只要某个回答可能依赖过去的背景、约定、经历、偏好或关系线索，就优先先查一查记忆，再决定如何回应。"
-    "如果你觉得‘这句话也许和过去有关’，那通常就已经足够构成一次检索记忆的理由。\n\n"
-    "记忆的价值首先在于真实。"
-    "如果你没有记住，或者检索后仍然不能确认，就应当坦率承认不确定，而不是补全、猜测或编造。"
-    "你可以把记忆视为自己留下的笔记，它帮助你保持理解的一致性，但不能替代事实本身。\n\n"
-    "请把记忆写得具体、清楚、可追溯。"
-    "为了便于未来理解和检索，记忆中的人物、关系、事件、地点、偏好和计划应尽量明确，"
-    "避免只留下‘用户’、‘朋友’、‘那件事’这类模糊指代。"
-    "对话中的表达可以自然，但记忆本身应足够清晰。\n\n"
-    "固有记忆尤其重要。"
-    "那是你长期理解自己、理解关系、理解生活背景的核心笔记。"
-    "其中记录的重要人物、长期偏好、关键经历、价值取向和持续目标，"
-    "都会影响你之后如何理解用户、如何组织回应。"
-    "维护这些记忆，不是为了堆积信息，而是为了让回应更连贯、更贴近真实关系。\n\n"
-    "在回应之前，可以先想一想：\n"
-    "这句话里有没有值得留下来的长期信息？\n"
-    "我现在是否需要借助过去的记忆，才能更准确地理解眼前这句话？\n"
-    "确认这些之后，再给出自然、真诚、流畅的回答。"
-)
-
-
-def _format_inherent_block(records: list[Any]) -> str:
-    """将固有记忆格式化为注入块。"""
-
-    parts: list[str] = []
-    for record in records:
-        content = str(getattr(record, "content", "") or "").strip()
-        if not content:
-            continue
-        title = str(getattr(record, "title", "") or "").strip()
-        if title and title != "固有记忆":
-            parts.append(f"### {title}\n{content}")
-        else:
-            parts.append(content)
-
-    if not parts:
-        return ""
-
-    body = "\n\n".join(parts)
-    return (
-        "## 固有记忆\n"
-        "以下内容来自你的长期记忆系统，属于全局背景信息：\n"
-        f"{body}\n"
-        "（注：这是已存在的固有记忆，不需要重新写入）"
-    )
 
 
 def _format_active_memory_block(
@@ -112,7 +52,12 @@ def _format_active_memory_block(
     if not lines:
         return ""
 
-    return "## 最新活跃记忆\n" + "\n".join(lines)
+    return (
+        "## 最新活跃记忆\n"
+        "以下只展示一小部分最新的活跃记忆记录。"
+        "你还有很多记忆没有在这里列出，不要把这个列表当作全部记忆。\n"
+        + "\n".join(lines)
+    )
 
 
 async def build_booku_memory_actor_reminder(plugin: Any) -> str:
@@ -122,38 +67,7 @@ async def build_booku_memory_actor_reminder(plugin: Any) -> str:
     if isinstance(config, BookuMemoryConfig) and not config.plugin.inject_system_prompt:
         return ""
 
-    reminder_parts: list[str] = [_MEMORY_HINT]
-    repo: BookuMemoryMetadataRepository | None = None
-    try:
-        if not isinstance(config, BookuMemoryConfig):
-            raise ValueError("无法获取 booku_memory 配置对象，无法读取固有记忆")
-
-        repo = BookuMemoryMetadataRepository(db_path=config.storage.metadata_db_path)
-        await repo.initialize()
-        inherent_records = await repo.list_records_by_bucket(
-            bucket=_MEMORY_BUCKET,
-            folder_id=_INHERENT_FOLDER_ID,
-            limit=50,
-            include_deleted=False,
-        )
-        inherent_block = _format_inherent_block(inherent_records)
-        if inherent_block:
-            reminder_parts.append(inherent_block)
-            logger.info(
-                f"已构建 booku_memory actor reminder 的固有记忆块（count={len(inherent_records)}）"
-            )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            f"构建 booku_memory actor reminder 时读取固有记忆失败，将跳过：{exc}"
-        )
-    finally:
-        if repo is not None:
-            await repo.close()
-
-    content = "\n\n".join(part for part in reminder_parts if part.strip())
-    if not content:
-        return ""
-    return f"## 记忆引导语\n{content}"
+    return BOOKU_MEMORY_COMMAND_MANUAL.strip()
 
 
 async def sync_booku_memory_actor_reminder(plugin: Any) -> str:
@@ -445,14 +359,6 @@ class BookuMemoryService(BaseService):
         return normalized in {"archived", "expired"}
 
     @classmethod
-    def _is_inherent_record(cls, record: Any) -> bool:
-        """判断记录是否为固有记忆。"""
-
-        title = str(getattr(record, "title", "") or "").strip()
-        folder_id = str(getattr(record, "folder_id", "") or "").strip().lower()
-        return title == _INHERENT_MEMORY_TITLE or folder_id == _INHERENT_FOLDER_ID
-
-    @classmethod
     def _memory_collection_candidates(cls, folder_id: str) -> list[str]:
         """返回 memory 记录可能所在的新旧集合。"""
 
@@ -462,8 +368,6 @@ class BookuMemoryService(BaseService):
             f"booku_memory__emergent__{safe_folder}",
             f"booku_memory__archived__{safe_folder}",
         ]
-        if safe_folder == _INHERENT_FOLDER_ID:
-            candidates.append("booku_memory__inherent")
         deduped: list[str] = []
         for item in candidates:
             if item not in deduped:
@@ -1057,6 +961,35 @@ class BookuMemoryService(BaseService):
                 normalized.append(value)
         return normalized
 
+    @classmethod
+    def _require_complete_tag_triplet_for_create(
+        cls,
+        *,
+        core_tags: list[str] | None,
+        diffusion_tags: list[str] | None,
+        opposing_tags: list[str] | None,
+    ) -> tuple[list[str], list[str], list[str]]:
+        """校验创建请求的标签三元组必须完整且非空。"""
+
+        normalized_core_tags = cls._normalize_tags(core_tags)
+        normalized_diffusion_tags = cls._normalize_tags(diffusion_tags)
+        normalized_opposing_tags = cls._normalize_tags(opposing_tags)
+
+        if not (
+            normalized_core_tags
+            and normalized_diffusion_tags
+            and normalized_opposing_tags
+        ):
+            raise ValueError(
+                "创建记忆必须同时提供完整且非空的 core_tags、diffusion_tags、opposing_tags 三元组。"
+            )
+
+        return (
+            normalized_core_tags,
+            normalized_diffusion_tags,
+            normalized_opposing_tags,
+        )
+
     @staticmethod
     def _extract_title(content: str) -> str:
         """从正文的首行提取标题。
@@ -1281,7 +1214,6 @@ class BookuMemoryService(BaseService):
         写入前检索邻域向量并计算新颖度能量比：
         - 能量比 >= energy_cutoff：内容新颖，创建新记忆（mode="created"）。
         - 能量比 < energy_cutoff：内容重复，自动合并到最相似的现有记忆（mode="merged"）。
-        固有记忆作为内部特殊记忆保留，但 bucket 统一为 memory。
 
         Args:
             content: 记忆正文，不能为空字符串。
@@ -1307,13 +1239,9 @@ class BookuMemoryService(BaseService):
         normalized_memory_type = (memory_type or "knowledge").strip().lower()
         normalized_status = (status or "active").strip().lower()
         normalized_bucket = self._normalize_bucket(bucket)
-        effective_folder_id = (
-            _INHERENT_FOLDER_ID
-            if (title or "").strip() == _INHERENT_MEMORY_TITLE
-            else self._normalize_folder_id(
-                folder_id,
-                config.storage.default_folder_id,
-            )
+        effective_folder_id = self._normalize_folder_id(
+            folder_id,
+            config.storage.default_folder_id,
         )
         text = content.strip()
         if not text:
@@ -1541,7 +1469,7 @@ class BookuMemoryService(BaseService):
         query_tokens = {token for token in query_text.lower().split() if token}
 
         vector_db = get_vector_db_service(config.storage.vector_db_path)
-        collections = [self._collection_name("inherent", "")]
+        collections: list[str] = []
         for search_folder in search_folders:
             collections.append(self._collection_name("emergent", search_folder))
             if use_archived:
@@ -1772,11 +1700,10 @@ class BookuMemoryService(BaseService):
             output_item["collection"] = str(item.get("collection", ""))
             deduplicated.append(output_item)
 
-        # 对非固有记忆进行激活计数更新
+        # 检索命中的记忆与知识都应更新激活计数
         for item in deduplicated:
             mid = str(item.get("id", ""))
-            meta = item.get("metadata", {})
-            if mid and isinstance(meta, dict) and meta.get("bucket") != "inherent":
+            if mid:
                 await self.update_activated(mid)
 
         await _sync_booku_memory_actor_reminder(self.plugin)
@@ -1903,7 +1830,7 @@ class BookuMemoryService(BaseService):
         Args:
             title: 记忆标题。
             content: 记忆正文。
-            bucket: 存储桶名（emergent/archived/inherent）。
+            bucket: 存储桶名（memory/knowledge）。
             core_tags: 核心标签列表。
             diffusion_tags: 扩散标签列表。
             opposing_tags: 对立标签列表。
@@ -1916,15 +1843,24 @@ class BookuMemoryService(BaseService):
             folder_id,
             config.storage.default_folder_id,
         )
+        (
+            normalized_core_tags,
+            normalized_diffusion_tags,
+            normalized_opposing_tags,
+        ) = self._require_complete_tag_triplet_for_create(
+            core_tags=core_tags,
+            diffusion_tags=diffusion_tags,
+            opposing_tags=opposing_tags,
+        )
 
         result = await self.upsert_memory(
             title=title,
             content=content,
             bucket=bucket,
             folder_id=fixed_folder_id,
-            core_tags=core_tags,
-            diffusion_tags=diffusion_tags,
-            opposing_tags=opposing_tags,
+            core_tags=normalized_core_tags,
+            diffusion_tags=normalized_diffusion_tags,
+            opposing_tags=normalized_opposing_tags,
             memory_type=memory_type,
             status=status,
             person_id=person_id,
@@ -1949,33 +1885,6 @@ class BookuMemoryService(BaseService):
             "items": [result.get("item", {})],
         }
 
-    async def edit_inherent_memory(self, *, content: str) -> dict[str, Any]:
-        """编辑全局固有记忆（通过 upsert 合并写入）。
-
-        固有记忆是全局唯一的底层背景知识层，其内容每次调用均会全量覆写。
-        调用前应先通过 ``get_inherent_memories`` 读取现有内容后在包外合并。
-
-        Args:
-            content: 编辑后的完整固有记忆内容。
-
-        Returns:
-            包含 action/mode/total/items 字段的字典。
-        """
-        result = await self.upsert_memory(
-            title="固有记忆",
-            content=content,
-            bucket=_MEMORY_BUCKET,
-            folder_id=None,
-            source="agent",
-        )
-        await _sync_booku_memory_actor_reminder(self.plugin)
-        return {
-            "action": "edit_inherent_memory",
-            "mode": result.get("mode", "updated"),
-            "total": 1,
-            "items": [result.get("item", {})],
-        }
-
     async def get_status(self, folder_id: str | None = None) -> dict[str, Any]:
         """获取各层记忆数量与最近记录（简化包装层）。
 
@@ -1996,9 +1905,6 @@ class BookuMemoryService(BaseService):
                 for collection_name in self._memory_collection_candidates(known_folder_id):
                     if collection_name not in memory_collections:
                         memory_collections.append(collection_name)
-            for collection_name in self._memory_collection_candidates(_INHERENT_FOLDER_ID):
-                if collection_name not in memory_collections:
-                    memory_collections.append(collection_name)
 
             vector_counts = {
                 "memory": 0,
@@ -2162,39 +2068,6 @@ class BookuMemoryService(BaseService):
         repo = await self._get_repo()
         await repo.update_activated(memory_id)
 
-    async def get_inherent_memories(
-        self,
-        query_text: str,
-        top_k: int = 5,
-    ) -> dict[str, Any]:
-        """全局语义搜索固有记忆（inherent bucket），无 folder 约束。
-
-        内部调用 ``retrieve_memories`` 并过滤出全局固有记忆项。
-
-        Args:
-            query_text: 检索语义文本。
-            top_k: 最大返回条数，默认 5。
-
-        Returns:
-            包含 query、total、results 字段的字典，results 中仅包含 inherent bucket 筛选结果。
-        """
-        result = await self.retrieve_memories(
-            query_text=query_text,
-            top_k=top_k,
-            include_archived=False,
-        )
-        filtered = [
-            item
-            for item in result.get("results", [])
-            if isinstance(item, dict)
-            and item.get("metadata", {}).get("folder_id") == _INHERENT_FOLDER_ID
-        ]
-        return {
-            "query": query_text,
-            "total": len(filtered),
-            "results": filtered[:top_k],
-        }
-
     async def grep_memories(
         self,
         *,
@@ -2346,6 +2219,9 @@ class BookuMemoryService(BaseService):
         include_archived: bool = False,
         include_knowledge: bool = True,
         include_related: bool = False,
+        core_tags: list[str] | None = None,
+        diffusion_tags: list[str] | None = None,
+        opposing_tags: list[str] | None = None,
     ) -> dict[str, Any]:
         """按条件检索记忆，返回仅含 id/title/metadata 的结果。"""
         repo = await self._get_repo()
@@ -2357,15 +2233,46 @@ class BookuMemoryService(BaseService):
         normalized_person_id = (person_id or "").strip() or None
         normalized_relation_of = (relation_of or "").strip() or None
         normalized_query = (query_text or "").strip() or None
+        normalized_core_tags = self._normalize_tags(core_tags)
+        normalized_diffusion_tags = self._normalize_tags(diffusion_tags)
+        normalized_opposing_tags = self._normalize_tags(opposing_tags)
+        semantic_query = (
+            normalized_query
+            or " ".join(
+                normalized_core_tags
+                + normalized_diffusion_tags
+                + normalized_opposing_tags
+            ).strip()
+            or None
+        )
 
         entries: list[dict[str, Any]] = []
+        existing_ids: set[str] = set()
 
-        if normalized_query:
+        def _append_entry(*, memory_id: str, title: str, metadata: dict[str, Any]) -> None:
+            """向结果集中追加去重后的条目。"""
+
+            normalized_id = str(memory_id).strip()
+            if not normalized_id or normalized_id in existing_ids:
+                return
+            entries.append(
+                {
+                    "id": normalized_id,
+                    "title": str(title),
+                    "metadata": metadata,
+                }
+            )
+            existing_ids.add(normalized_id)
+
+        if semantic_query:
             retrieved = await self.retrieve_memories(
-                query_text=normalized_query,
+                query_text=semantic_query,
                 top_k=normalized_top_n * 3,
                 include_archived=include_archived,
                 include_knowledge=include_knowledge,
+                core_tags=normalized_core_tags or None,
+                diffusion_tags=normalized_diffusion_tags or None,
+                opposing_tags=normalized_opposing_tags or None,
             )
             for item in retrieved.get("results", []):
                 if not isinstance(item, dict):
@@ -2383,15 +2290,66 @@ class BookuMemoryService(BaseService):
                     related_ids = [str(value) for value in metadata.get("relation_memory_ids", [])]
                     if normalized_relation_of not in related_ids:
                         continue
-                entries.append(
-                    {
-                        "id": str(item.get("id", "")),
-                        "title": str(item.get("title", "")),
-                        "metadata": metadata,
-                    }
+                _append_entry(
+                    memory_id=str(item.get("id", "")),
+                    title=str(item.get("title", "")),
+                    metadata=metadata,
                 )
                 if len(entries) >= normalized_top_n:
                     break
+
+            if (
+                len(entries) < normalized_top_n
+                and normalized_core_tags
+                and normalized_diffusion_tags
+                and normalized_opposing_tags
+            ):
+                tag_records = await repo.search_records_by_tag_triplet(
+                    core_tags=normalized_core_tags,
+                    diffusion_tags=normalized_diffusion_tags,
+                    opposing_tags=normalized_opposing_tags,
+                    memory_type=normalized_type,
+                    status=normalized_status,
+                    person_id=normalized_person_id,
+                    relation_of=normalized_relation_of,
+                    include_deleted=False,
+                    limit=normalized_top_n * 3,
+                )
+                for record in tag_records:
+                    if not include_archived and str(record.status).lower() == "archived":
+                        continue
+                    if not include_knowledge and str(record.memory_type).lower() == "knowledge":
+                        continue
+                    _append_entry(
+                        memory_id=record.memory_id,
+                        title=record.title,
+                        metadata=self._metadata_from_record(record),
+                    )
+                    if len(entries) >= normalized_top_n:
+                        break
+
+            if normalized_query and len(entries) < normalized_top_n:
+                fallback_records = await repo.search_records(
+                    keyword=normalized_query,
+                    memory_type=normalized_type,
+                    status=normalized_status,
+                    person_id=normalized_person_id,
+                    relation_of=normalized_relation_of,
+                    include_deleted=False,
+                    limit=normalized_top_n * 3,
+                )
+                for record in fallback_records:
+                    if not include_archived and str(record.status).lower() == "archived":
+                        continue
+                    if not include_knowledge and str(record.memory_type).lower() == "knowledge":
+                        continue
+                    _append_entry(
+                        memory_id=record.memory_id,
+                        title=record.title,
+                        metadata=self._metadata_from_record(record),
+                    )
+                    if len(entries) >= normalized_top_n:
+                        break
         else:
             records = await repo.search_records(
                 keyword=None,
@@ -2407,12 +2365,10 @@ class BookuMemoryService(BaseService):
                     continue
                 if not include_knowledge and str(record.memory_type).lower() == "knowledge":
                     continue
-                entries.append(
-                    {
-                        "id": record.memory_id,
-                        "title": record.title,
-                        "metadata": self._metadata_from_record(record),
-                    }
+                _append_entry(
+                    memory_id=record.memory_id,
+                    title=record.title,
+                    metadata=self._metadata_from_record(record),
                 )
 
         if include_related:
@@ -2425,19 +2381,16 @@ class BookuMemoryService(BaseService):
             dedup_related_ids = list(dict.fromkeys([value for value in related_ids if value]))
             if dedup_related_ids:
                 related_records = await repo.get_records_map(dedup_related_ids)
-                existing_ids = {str(entry.get("id", "")) for entry in entries}
                 for memory_id in dedup_related_ids:
                     if memory_id in existing_ids:
                         continue
                     record = related_records.get(memory_id)
                     if record is None:
                         continue
-                    entries.append(
-                        {
-                            "id": record.memory_id,
-                            "title": record.title,
-                            "metadata": self._metadata_from_record(record),
-                        }
+                    _append_entry(
+                        memory_id=record.memory_id,
+                        title=record.title,
+                        metadata=self._metadata_from_record(record),
                     )
                     if len(entries) >= normalized_top_n:
                         break
@@ -2474,7 +2427,7 @@ class BookuMemoryService(BaseService):
     ) -> dict[str, Any]:
         """按 memory_id 就地更新普通记忆的内容、标题及标签。
 
-        同时更新向量库（重新嵌入）和元数据库。固有记忆不适用本方法。
+        同时更新向量库（重新嵌入）和元数据库。
         未传入的字段将保留原始值（最小变更原则）。
 
         Args:
@@ -2487,20 +2440,13 @@ class BookuMemoryService(BaseService):
 
         Returns:
             包含 action/updated/items 字段的字典。
-            updated=0 表示记录不存在或为 inherent 类型。
+            updated=0 表示记录不存在。
         """
         repo = await self._get_repo()
         config = self._get_config()
         record = await repo.get_record(memory_id)
         if record is None:
             return {"action": "update_memory_by_id", "updated": 0, "items": []}
-
-        if self._is_inherent_record(record):
-            return {
-                "action": "update_memory_by_id",
-                "updated": 0,
-                "error": "固有记忆请使用 edit_inherent_memory",
-            }
 
         normalized_core_tags = self._normalize_tags(core_tags)
         normalized_diffusion_tags = self._normalize_tags(diffusion_tags)
@@ -2603,9 +2549,6 @@ class BookuMemoryService(BaseService):
         repo = await self._get_repo()
         config = self._get_config()
         records = await repo.get_records_map(memory_ids, include_deleted=True)
-        affects_inherent = any(
-            self._is_inherent_record(record) for record in records.values()
-        )
         vector_db = get_vector_db_service(config.storage.vector_db_path)
 
         if hard:
@@ -2622,10 +2565,7 @@ class BookuMemoryService(BaseService):
                 except Exception:  # noqa: BLE001
                     continue
             deleted = await repo.hard_delete_records(memory_ids)
-            if affects_inherent:
-                await _sync_booku_memory_actor_reminder(self.plugin)
-            else:
-                await _sync_booku_memory_actor_reminder(self.plugin)
+            await _sync_booku_memory_actor_reminder(self.plugin)
             return {
                 "action": "delete_memories",
                 "mode": "hard",
@@ -2634,10 +2574,7 @@ class BookuMemoryService(BaseService):
             }
 
         deleted = await repo.soft_delete_records(memory_ids)
-        if affects_inherent:
-            await _sync_booku_memory_actor_reminder(self.plugin)
-        else:
-            await _sync_booku_memory_actor_reminder(self.plugin)
+        await _sync_booku_memory_actor_reminder(self.plugin)
         return {
             "action": "delete_memories",
             "mode": "soft",
@@ -2680,10 +2617,6 @@ class BookuMemoryService(BaseService):
         records = await repo.get_records_map(memory_ids)
         vector_db = get_vector_db_service(config.storage.vector_db_path)
         moved_items: list[dict[str, Any]] = []
-        affects_inherent = (
-            any(self._is_inherent_record(record) for record in records.values())
-            or target_folder == _INHERENT_FOLDER_ID
-        )
 
         for memory_id in memory_ids:
             record = records.get(memory_id)
@@ -2691,11 +2624,7 @@ class BookuMemoryService(BaseService):
                 continue
 
             new_bucket = target_bucket or self._normalize_bucket(record.bucket)
-            new_folder = (
-                _INHERENT_FOLDER_ID
-                if self._is_inherent_record(record)
-                else (target_folder or record.folder_id)
-            )
+            new_folder = target_folder or record.folder_id
             old_collection = await self._resolve_collection_name(
                 memory_id=memory_id,
                 bucket=record.bucket,
@@ -2746,8 +2675,7 @@ class BookuMemoryService(BaseService):
             if updated_record is not None:
                 moved_items.append(self._build_record_item(updated_record))
 
-        if affects_inherent:
-            await _sync_booku_memory_actor_reminder(self.plugin)
+        await _sync_booku_memory_actor_reminder(self.plugin)
 
         return {
             "action": "move_memories",

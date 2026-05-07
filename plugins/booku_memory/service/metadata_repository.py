@@ -296,7 +296,7 @@ class BookuMemoryMetadataRepository:
             memory_id: 记忆唯一标识符。
             title: 记忆标题。
             folder_id: 所属文件夹 ID。
-            bucket: 存储桶（emergent/archived/inherent）。
+            bucket: 存储桶（memory/knowledge）。
             content: 记忆全文内容。
             source: 来源标识字符串。
             novelty_energy: 写入时计算的新颖度能量比。
@@ -910,6 +910,94 @@ class BookuMemoryMetadataRepository:
                 )
 
             stmt = stmt.order_by(R.last_activated_at.desc(), R.updated_at.desc()).limit(max(1, int(limit)))
+            rows = (await s.execute(stmt)).scalars().all()
+
+        if not rows:
+            return []
+
+        ids = [row.memory_id for row in rows]
+        tags = await self.get_records_map(ids, include_deleted=include_deleted)
+        return [tags[row.memory_id] for row in rows if row.memory_id in tags]
+
+    async def search_records_by_tag_triplet(
+        self,
+        *,
+        core_tags: list[str],
+        diffusion_tags: list[str],
+        opposing_tags: list[str],
+        memory_type: str | None = None,
+        status: str | None = None,
+        person_id: str | None = None,
+        relation_of: str | None = None,
+        folder_id: str | None = None,
+        include_deleted: bool = False,
+        limit: int = 20,
+    ) -> list[BookuMemoryRecord]:
+        """按三元标签组召回至少各命中一轴的记录。"""
+
+        normalized_core_tags = [str(tag).strip().lower() for tag in core_tags if str(tag).strip()]
+        normalized_diffusion_tags = [
+            str(tag).strip().lower() for tag in diffusion_tags if str(tag).strip()
+        ]
+        normalized_opposing_tags = [
+            str(tag).strip().lower() for tag in opposing_tags if str(tag).strip()
+        ]
+        if not (
+            normalized_core_tags
+            and normalized_diffusion_tags
+            and normalized_opposing_tags
+        ):
+            return []
+
+        R = BookuMemoryRecordModel
+        T = BookuMemoryTagModel
+
+        core_exists = (
+            select(T.memory_id)
+            .where(
+                T.memory_id == R.memory_id,
+                T.tag_type == "core",
+                T.tag_value.in_(normalized_core_tags),
+            )
+            .exists()
+        )
+        diffusion_exists = (
+            select(T.memory_id)
+            .where(
+                T.memory_id == R.memory_id,
+                T.tag_type == "diffusion",
+                T.tag_value.in_(normalized_diffusion_tags),
+            )
+            .exists()
+        )
+        opposing_exists = (
+            select(T.memory_id)
+            .where(
+                T.memory_id == R.memory_id,
+                T.tag_type == "opposing",
+                T.tag_value.in_(normalized_opposing_tags),
+            )
+            .exists()
+        )
+
+        async with self._db.session() as s:
+            stmt = select(R).where(core_exists, diffusion_exists, opposing_exists)
+            if folder_id is not None:
+                stmt = stmt.where(R.folder_id == folder_id)
+            if memory_type:
+                stmt = stmt.where(R.memory_type == memory_type)
+            if status:
+                stmt = stmt.where(R.status == status)
+            if person_id:
+                stmt = stmt.where(R.person_id == person_id)
+            if relation_of:
+                stmt = stmt.where(R.relation_memory_ids.like(f'%"{relation_of}"%'))
+            if not include_deleted:
+                stmt = stmt.where(R.is_deleted == 0)
+
+            stmt = stmt.order_by(R.last_activated_at.desc(), R.updated_at.desc()).limit(
+                max(1, int(limit))
+            )
             rows = (await s.execute(stmt)).scalars().all()
 
         if not rows:

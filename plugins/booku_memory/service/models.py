@@ -22,7 +22,7 @@ class BookuMemoryRecordModel(Base):
     memory_id: Mapped[str] = mapped_column(Text, primary_key=True, comment="记忆唯一 ID")
     title: Mapped[str] = mapped_column(Text, nullable=False, default="", comment="标题")
     folder_id: Mapped[str] = mapped_column(Text, nullable=False, comment="所属文件夹 ID")
-    bucket: Mapped[str] = mapped_column(Text, nullable=False, comment="存储桶：inherent/emergent/archived")
+    bucket: Mapped[str] = mapped_column(Text, nullable=False, comment="存储桶：memory/knowledge")
     content: Mapped[str] = mapped_column(Text, nullable=False, comment="记忆内容")
     source: Mapped[str] = mapped_column(Text, nullable=False, comment="来源标识")
     memory_type: Mapped[str] = mapped_column(Text, nullable=False, default="knowledge", comment="记忆类型：person/event/knowledge/place/asset/procedure")

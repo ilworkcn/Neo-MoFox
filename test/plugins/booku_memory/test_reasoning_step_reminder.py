@@ -1,6 +1,7 @@
 """Tests for booku_memory memory_command behavior.
 
 此文件沿用原文件名，当前覆盖 memory_command 的关键语义：
+- help 命令的本地帮助返回
 - search/read/create/update/delete 的分发
 - && 串联执行与失败短路
 """
@@ -50,6 +51,27 @@ class _FakeService:
 
 
 @pytest.mark.asyncio
+async def test_memory_command_help_returns_local_manual(monkeypatch: pytest.MonkeyPatch) -> None:
+    """help 命令应直接返回本地命令手册，不依赖服务可用性。"""
+
+    def _fail_if_called(_plugin: Any) -> Any:
+        raise AssertionError("help 不应访问底层 service")
+
+    monkeypatch.setattr("plugins.booku_memory.agent.tools._service", _fail_if_called)
+
+    tool = BookuMemoryCommandTool(plugin=cast(Any, _DummyPlugin()))
+    ok, payload = await tool.execute(command="help")
+
+    assert ok is True
+    assert isinstance(payload, dict)
+    assert payload.get("ok") is True
+    first = payload.get("results", [])[0]
+    assert first.get("result", {}).get("action") == "help"
+    assert "search" in str(first.get("result", {}).get("content", ""))
+    assert "create" in str(first.get("result", {}).get("content", ""))
+
+
+@pytest.mark.asyncio
 async def test_memory_command_dispatch_and_chain(monkeypatch: pytest.MonkeyPatch) -> None:
     """memory_command 应支持多命令串联并保持顺序执行。"""
 
@@ -60,6 +82,7 @@ async def test_memory_command_dispatch_and_chain(monkeypatch: pytest.MonkeyPatch
     ok, payload = await tool.execute(
         command=(
             "search -type person -person_id qq:10001 -topn 3 "
+            "-core_tags 同学 -diffusion_tags 校园 -opposing_tags 陌生人 "
             "&& read -ids m1,m2 "
             "&& delete -id m2 -hard true"
         )
@@ -73,6 +96,9 @@ async def test_memory_command_dispatch_and_chain(monkeypatch: pytest.MonkeyPatch
     assert [name for name, _ in fake_service.calls] == ["search", "read", "delete"]
     assert fake_service.calls[0][1]["memory_type"] == "person"
     assert fake_service.calls[0][1]["person_id"] == "qq:10001"
+    assert fake_service.calls[0][1]["core_tags"] == ["同学"]
+    assert fake_service.calls[0][1]["diffusion_tags"] == ["校园"]
+    assert fake_service.calls[0][1]["opposing_tags"] == ["陌生人"]
 
 
 @pytest.mark.asyncio
@@ -85,8 +111,9 @@ async def test_memory_command_folder_option_is_ignored(monkeypatch: pytest.Monke
     tool = BookuMemoryCommandTool(plugin=cast(Any, _DummyPlugin()))
     ok, payload = await tool.execute(
         command=(
-            "search -query 复盘 -folder_id events "
-            "&& create -type event -title 年会 -content 内容 -folder archive"
+            "search -query 复盘 -core_tags 复盘 -diffusion_tags 项目 -opposing_tags 闲聊 -folder_id events "
+            "&& create -type event -title 年会 -content 内容 -folder archive "
+            "-core_tags 年会 -diffusion_tags 公司 -opposing_tags 缺席"
         )
     )
 
@@ -109,7 +136,10 @@ async def test_memory_command_requires_person_id_for_person_create(
 
     tool = BookuMemoryCommandTool(plugin=cast(Any, _DummyPlugin()))
     ok, payload = await tool.execute(
-        command="create -type person -title 张三 -content 测试人物"
+        command=(
+            "create -type person -title 张三 -content 测试人物 "
+            "-core_tags 同学 -diffusion_tags 校园 -opposing_tags 陌生人"
+        )
     )
 
     assert ok is False
@@ -117,6 +147,90 @@ async def test_memory_command_requires_person_id_for_person_create(
     assert payload.get("ok") is False
     first = payload.get("results", [])[0]
     assert "person_id" in str(first.get("error", ""))
+
+
+@pytest.mark.asyncio
+async def test_memory_command_search_requires_complete_tag_triplet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """search 命令必须提供完整且非空的标签三元组。"""
+
+    fake_service = _FakeService()
+    monkeypatch.setattr("plugins.booku_memory.agent.tools._service", lambda _plugin: fake_service)
+
+    tool = BookuMemoryCommandTool(plugin=cast(Any, _DummyPlugin()))
+    ok, payload = await tool.execute(command="search -query 复盘 -core_tags 复盘")
+
+    assert ok is False
+    assert isinstance(payload, dict)
+    assert payload.get("ok") is False
+    first = payload.get("results", [])[0]
+    assert "禁止只传一组或两组" in str(first.get("error", ""))
+    assert fake_service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_memory_command_search_without_tags_is_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """search 未提供 tag 时应兼容为普通无筛选检索。"""
+
+    fake_service = _FakeService()
+    monkeypatch.setattr("plugins.booku_memory.agent.tools._service", lambda _plugin: fake_service)
+
+    tool = BookuMemoryCommandTool(plugin=cast(Any, _DummyPlugin()))
+    ok, payload = await tool.execute(command="search -topn 50")
+
+    assert ok is True
+    assert isinstance(payload, dict)
+    assert payload.get("ok") is True
+    assert [name for name, _ in fake_service.calls] == ["search"]
+    assert fake_service.calls[0][1]["top_n"] == 50
+    assert fake_service.calls[0][1]["core_tags"] == []
+    assert fake_service.calls[0][1]["diffusion_tags"] == []
+    assert fake_service.calls[0][1]["opposing_tags"] == []
+
+
+@pytest.mark.asyncio
+async def test_memory_command_create_requires_complete_tag_triplet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """create 命令必须提供完整且非空的标签三元组。"""
+
+    fake_service = _FakeService()
+    monkeypatch.setattr("plugins.booku_memory.agent.tools._service", lambda _plugin: fake_service)
+
+    tool = BookuMemoryCommandTool(plugin=cast(Any, _DummyPlugin()))
+    ok, payload = await tool.execute(
+        command="create -type event -title 年会 -content 内容 -core_tags 年会 -diffusion_tags 公司"
+    )
+
+    assert ok is False
+    assert isinstance(payload, dict)
+    assert payload.get("ok") is False
+    first = payload.get("results", [])[0]
+    assert "三组标签" in str(first.get("error", ""))
+    assert fake_service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_memory_command_update_rejects_partial_tag_triplet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """update 命令只要传标签，就必须整组三元标签一起传。"""
+
+    fake_service = _FakeService()
+    monkeypatch.setattr("plugins.booku_memory.agent.tools._service", lambda _plugin: fake_service)
+
+    tool = BookuMemoryCommandTool(plugin=cast(Any, _DummyPlugin()))
+    ok, payload = await tool.execute(command="update -id mem-1 -core_tags 已归档")
+
+    assert ok is False
+    assert isinstance(payload, dict)
+    assert payload.get("ok") is False
+    first = payload.get("results", [])[0]
+    assert "禁止只传一组或两组" in str(first.get("error", ""))
+    assert fake_service.calls == []
 
 
 @pytest.mark.asyncio

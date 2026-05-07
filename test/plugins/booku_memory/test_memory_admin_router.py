@@ -89,13 +89,6 @@ class StubMemoryService:
                 title="现有记忆",
                 content="这是已经存在的记忆正文。",
             ),
-            "m-inherent": _build_item(
-                "m-inherent",
-                title="固有记忆",
-                content="这里是固有记忆全文。",
-                folder_id="global",
-                bucket="memory",
-            ),
         }
         self.last_create: dict[str, Any] | None = None
         self.last_update: dict[str, Any] | None = None
@@ -119,7 +112,7 @@ class StubMemoryService:
         counts = {"memory": 0, "knowledge": 0}
         for item in self.items.values():
             metadata = item["metadata"]
-            if folder_id and metadata.get("folder_id") != folder_id and metadata.get("folder_id") != "global":
+            if folder_id and metadata.get("folder_id") != folder_id:
                 continue
             if metadata.get("is_deleted"):
                 continue
@@ -259,15 +252,6 @@ class StubMemoryService:
             "requested": len(memory_ids),
         }
 
-    async def edit_inherent_memory(self, *, content: str) -> dict[str, Any]:
-        """编辑固有记忆。"""
-
-        item = self.items["m-inherent"]
-        item["content"] = content
-        item["content_snippet"] = content[:280]
-        return {"action": "edit_inherent_memory", "items": [{"id": "m-inherent"}]}
-
-
 @pytest.fixture
 def stub_service() -> StubMemoryService:
     """创建服务桩。"""
@@ -317,7 +301,7 @@ async def test_list_and_create_memory(client: AsyncClient, stub_service: StubMem
 
     list_response = await client.get("/api/memories")
     assert list_response.status_code == 200
-    assert list_response.json()["total"] == 2
+    assert list_response.json()["total"] == 1
 
     folders_response = await client.get("/api/folders")
     assert folders_response.status_code == 200
@@ -333,6 +317,8 @@ async def test_list_and_create_memory(client: AsyncClient, stub_service: StubMem
             "memory_type": "event",
             "status": "active",
             "core_tags": ["alpha", "beta"],
+            "diffusion_tags": ["workflow"],
+            "opposing_tags": ["noise"],
         },
     )
     assert create_response.status_code == 200
@@ -343,6 +329,34 @@ async def test_list_and_create_memory(client: AsyncClient, stub_service: StubMem
     assert detail["item"]["metadata"]["bucket"] == "knowledge"
     assert stub_service.last_create is not None
     assert stub_service.last_create["folder_id"] == "project-a"
+
+
+@pytest.mark.asyncio
+async def test_create_memory_rejects_incomplete_tag_triplet(
+    client: AsyncClient,
+    stub_service: StubMemoryService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """创建接口应将不完整三元组作为 400 返回。"""
+
+    async def _reject_create(**kwargs: Any) -> dict[str, Any]:
+        raise ValueError("创建记忆必须同时提供完整且非空的 core_tags、diffusion_tags、opposing_tags 三元组。")
+
+    monkeypatch.setattr(stub_service, "create_memory", _reject_create)
+
+    create_response = await client.post(
+        "/api/memories",
+        json={
+            "title": "新建记忆",
+            "content": "这是新的正文。",
+            "core_tags": ["alpha"],
+            "diffusion_tags": ["workflow"],
+            "opposing_tags": [],
+        },
+    )
+
+    assert create_response.status_code == 400
+    assert "完整且非空" in create_response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -380,12 +394,12 @@ async def test_update_and_delete_memory(client: AsyncClient, stub_service: StubM
 
 
 @pytest.mark.asyncio
-async def test_update_inherent_memory_requires_content(client: AsyncClient) -> None:
-    """固有记忆更新时必须提供完整正文。"""
+async def test_update_memory_allows_partial_payload(client: AsyncClient) -> None:
+    """普通记忆更新允许只传局部字段。"""
 
     response = await client.put(
-        "/api/memories/m-inherent",
+        "/api/memories/m-1",
         json={"title": "改名但不给正文"},
     )
-    assert response.status_code == 400
-    assert "content" in response.text
+    assert response.status_code == 200
+    assert response.json()["item"]["title"] == "改名但不给正文"

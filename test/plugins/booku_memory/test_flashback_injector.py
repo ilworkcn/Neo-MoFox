@@ -274,43 +274,22 @@ async def test_flashback_injector_dedup_in_cooldown_window(tmp_path: Path) -> No
 @pytest.mark.asyncio
 async def test_sync_booku_memory_actor_reminder_writes_actor_reminder(tmp_path: Path) -> None:
     from plugins.booku_memory.config import BookuMemoryConfig
+    from plugins.booku_memory.manual import BOOKU_MEMORY_COMMAND_MANUAL
     from plugins.booku_memory.service import sync_booku_memory_actor_reminder
 
-    db_path = str(tmp_path / "system_inherent.db")
-    repo = BookuMemoryMetadataRepository(db_path)
-    await repo.initialize()
     reset_system_reminder_store()
 
-    await repo.upsert_record(
-        memory_id="inherent_1",
-        title="固有记忆",
-        folder_id="global",
-        bucket="inherent",
-        content="这是固有记忆内容",
-        source="unit_test",
-        novelty_energy=0.1,
-        tags=[],
-        core_tags=[],
-        diffusion_tags=[],
-        opposing_tags=[],
-    )
-
     cfg = BookuMemoryConfig()
-    cfg.storage.metadata_db_path = db_path
+    cfg.storage.metadata_db_path = str(tmp_path / "system_reminder.db")
     cfg.plugin.inject_system_prompt = True
 
     class _DummyPlugin:
         config = cfg
 
-    try:
-        reminder = await sync_booku_memory_actor_reminder(_DummyPlugin())
-    finally:
-        await repo.close()
+    reminder = await sync_booku_memory_actor_reminder(_DummyPlugin())
 
     stored = get_system_reminder_store().get("actor", names=["booku_memory"])
-    assert "## 记忆引导语" in reminder
-    assert "## 固有记忆" in reminder
-    assert "这是固有记忆内容" in reminder
+    assert reminder == BOOKU_MEMORY_COMMAND_MANUAL.strip()
     assert stored == "[booku_memory]\n" + reminder
 
 
@@ -338,18 +317,40 @@ async def test_sync_booku_memory_actor_reminder_clears_when_disabled(tmp_path: P
 @pytest.mark.asyncio
 async def test_booku_memory_plugin_load_and_unload_manage_actor_reminder(tmp_path: Path) -> None:
     from plugins.booku_memory.config import BookuMemoryConfig
+    from plugins.booku_memory.manual import BOOKU_MEMORY_COMMAND_MANUAL
 
-    db_path = str(tmp_path / "plugin_lifecycle.db")
+    reset_system_reminder_store()
+
+    cfg = BookuMemoryConfig()
+    cfg.storage.metadata_db_path = str(tmp_path / "plugin_lifecycle.db")
+    cfg.plugin.inject_system_prompt = True
+
+    plugin = BookuMemoryAgentPlugin(config=cfg)
+
+    await plugin.on_plugin_loaded()
+    stored = get_system_reminder_store().get("actor", names=["booku_memory"])
+    assert stored == "[booku_memory]\n" + BOOKU_MEMORY_COMMAND_MANUAL.strip()
+
+    await plugin.on_plugin_unloaded()
+    assert get_system_reminder_store().get("actor", names=["booku_memory"]) == ""
+
+
+@pytest.mark.asyncio
+async def test_sync_booku_memory_actor_reminder_writes_active_memory_notice(tmp_path: Path) -> None:
+    from plugins.booku_memory.config import BookuMemoryConfig
+    from plugins.booku_memory.service import sync_booku_memory_actor_reminder
+
+    db_path = str(tmp_path / "active_memory_notice.db")
     repo = BookuMemoryMetadataRepository(db_path)
     await repo.initialize()
     reset_system_reminder_store()
 
     await repo.upsert_record(
-        memory_id="inherent_2",
-        title="固有记忆",
-        folder_id="global",
-        bucket="inherent",
-        content="插件生命周期固有记忆",
+        memory_id="active-1",
+        title="最近事项",
+        folder_id="default",
+        bucket="memory",
+        content="这是最近的一条活跃记忆。",
         source="unit_test",
         novelty_energy=0.1,
         tags=[],
@@ -362,15 +363,15 @@ async def test_booku_memory_plugin_load_and_unload_manage_actor_reminder(tmp_pat
     cfg.storage.metadata_db_path = db_path
     cfg.plugin.inject_system_prompt = True
 
-    plugin = BookuMemoryAgentPlugin(config=cfg)
+    class _DummyPlugin:
+        config = cfg
 
     try:
-        await plugin.on_plugin_loaded()
-        stored = get_system_reminder_store().get("actor", names=["booku_memory"])
-        assert "## 记忆引导语" in stored
-        assert "插件生命周期固有记忆" in stored
-
-        await plugin.on_plugin_unloaded()
-        assert get_system_reminder_store().get("actor", names=["booku_memory"]) == ""
+        await sync_booku_memory_actor_reminder(_DummyPlugin())
     finally:
         await repo.close()
+
+    active_reminder = get_system_reminder_store().get("actor", names=["活跃记忆速览"])
+    assert "以下只展示一小部分最新的活跃记忆记录" in active_reminder
+    assert "不要把这个列表当作全部记忆" in active_reminder
+    assert "最近事项" in active_reminder

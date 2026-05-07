@@ -21,7 +21,6 @@ logger = log_api.get_logger("booku_memory.admin_router")
 
 _MEMORY_BUCKET = "memory"
 _KNOWLEDGE_BUCKET = "knowledge"
-_INHERENT_FOLDER_ID = "global"
 
 
 class MemoryCreatePayload(BaseModel):
@@ -229,29 +228,32 @@ class BookuMemoryAdminRouter(BaseRouter):
             """创建一条记忆。"""
 
             service = self._get_service()
-            created = await service.create_memory(
-                title=payload.title.strip(),
-                content=payload.content.strip(),
-                folder_id=self._normalize_single(payload.folder_id),
-                bucket=self._normalize_bucket(payload.bucket),
-                memory_type=payload.memory_type.strip().lower(),
-                status=payload.status.strip().lower(),
-                person_id=self._normalize_single(payload.person_id),
-                core_tags=self._normalize_text_list(payload.core_tags) or [],
-                diffusion_tags=self._normalize_text_list(payload.diffusion_tags) or [],
-                opposing_tags=self._normalize_text_list(payload.opposing_tags) or [],
-                relation_memory_ids=self._normalize_text_list(payload.relation_memory_ids) or [],
-                relation_aliases=self._normalize_text_list(payload.relation_aliases) or [],
-                related_people=self._normalize_text_list(payload.related_people) or [],
-                event_start_at=float(payload.event_start_at or 0.0),
-                event_end_at=float(payload.event_end_at or 0.0),
-                knowledge_type=(payload.knowledge_type or "").strip(),
-                address_or_coord=(payload.address_or_coord or "").strip(),
-                place_type=(payload.place_type or "").strip(),
-                asset_type=(payload.asset_type or "").strip(),
-                disposition_status=(payload.disposition_status or "").strip(),
-                procedure_type=(payload.procedure_type or "").strip(),
-            )
+            try:
+                created = await service.create_memory(
+                    title=payload.title.strip(),
+                    content=payload.content.strip(),
+                    folder_id=self._normalize_single(payload.folder_id),
+                    bucket=self._normalize_bucket(payload.bucket),
+                    memory_type=payload.memory_type.strip().lower(),
+                    status=payload.status.strip().lower(),
+                    person_id=self._normalize_single(payload.person_id),
+                    core_tags=self._normalize_text_list(payload.core_tags) or [],
+                    diffusion_tags=self._normalize_text_list(payload.diffusion_tags) or [],
+                    opposing_tags=self._normalize_text_list(payload.opposing_tags) or [],
+                    relation_memory_ids=self._normalize_text_list(payload.relation_memory_ids) or [],
+                    relation_aliases=self._normalize_text_list(payload.relation_aliases) or [],
+                    related_people=self._normalize_text_list(payload.related_people) or [],
+                    event_start_at=float(payload.event_start_at or 0.0),
+                    event_end_at=float(payload.event_end_at or 0.0),
+                    knowledge_type=(payload.knowledge_type or "").strip(),
+                    address_or_coord=(payload.address_or_coord or "").strip(),
+                    place_type=(payload.place_type or "").strip(),
+                    asset_type=(payload.asset_type or "").strip(),
+                    disposition_status=(payload.disposition_status or "").strip(),
+                    procedure_type=(payload.procedure_type or "").strip(),
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
             items = created.get("items", [])
             if not items:
                 raise HTTPException(status_code=500, detail="创建记忆失败，未返回有效结果")
@@ -272,17 +274,6 @@ class BookuMemoryAdminRouter(BaseRouter):
                 current_metadata = {}
 
             current_bucket = self._normalize_bucket(current_metadata.get("bucket", ""))
-            current_folder_id = str(current_metadata.get("folder_id", "") or "").strip().lower()
-            is_inherent = current_folder_id == _INHERENT_FOLDER_ID or str(current_item.get("title", "") or "").strip() == "固有记忆"
-            if is_inherent:
-                if payload.bucket and self._normalize_bucket(payload.bucket) != _MEMORY_BUCKET:
-                    raise HTTPException(status_code=400, detail="固有记忆不支持通过后台移动 bucket")
-                if payload.folder_id and payload.folder_id.strip():
-                    raise HTTPException(status_code=400, detail="固有记忆不支持通过后台修改 folder")
-                if payload.content is None:
-                    raise HTTPException(status_code=400, detail="更新固有记忆时必须提供完整 content")
-                await service.edit_inherent_memory(content=payload.content.strip())
-                return await self._ensure_detail(memory_id)
 
             updated = await service.update_memory_by_id(
                 memory_id=memory_id,

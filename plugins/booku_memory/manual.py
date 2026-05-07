@@ -1,9 +1,6 @@
----
-name: booku-memory
-description: Booku Memory 记忆系统操作手册。在任何会话开始时，或者在使用记忆工具前都*必须*阅读并牢记此文档，确保对记忆系统的正确使用。
----
+"""Booku Memory 共享命令手册文本。"""
 
-# Booku Memory 命令手册
+BOOKU_MEMORY_COMMAND_MANUAL: str = """# Booku Memory 命令手册
 
 Booku Memory 统一通过单工具调用：`memory_command(command)`。
 
@@ -16,6 +13,8 @@ Booku Memory 统一通过单工具调用：`memory_command(command)`。
 ## 三元标签组（语义检索的核心机制）
 
 > **重要**：三元标签组是 Booku Memory 语义检索的主要驱动力。写入记忆时务必认真标注，检索时也应主动利用，效果远优于纯文本关键词匹配。
+
+只要使用标签参数，就必须同时提供完整且非空的 core/diffusion/opposing 三组；缺任何一组都会直接报错。
 
 三元标签组由三类语义轴构成，共同定义一条记忆的"语义重力场"：
 
@@ -33,7 +32,7 @@ Booku Memory 统一通过单工具调用：`memory_command(command)`。
 
 **最佳实践**：
 - 写入时：`core_tags` 填记忆的关键词（名词/概念），`diffusion_tags` 填周边场景，`opposing_tags` 填容易混淆的对立概念。
-- 检索时：在 `search` 命令中传入三元标签，可大幅提升召回精度，替代或补充 `-query`。
+- 检索时：可以不传标签直接做普通检索；但只要传标签，就必须同时传入完整三元标签，也可与 `-query` 组合使用。
 
 ## 统一字段约定
 
@@ -51,7 +50,7 @@ Booku Memory 统一通过单工具调用：`memory_command(command)`。
 - 作用：返回 TopN 记忆条目的 `id` / `title` / `metadata`（不含正文）
 - 常用参数：
 	- `-topn 10`
-	- `-query "关键词"`（可与三元标签结合使用，也可单独使用其中一种）
+	- `-query "关键词"`（可单独使用，也可与完整三元标签结合使用）
 	- `-core_tags 标签1,标签2`（**首选检索方式**，提升语义精准度）
 	- `-diffusion_tags 标签`（扩展相关语义范围）
 	- `-opposing_tags 标签`（排除反向干扰记忆）
@@ -70,14 +69,14 @@ Booku Memory 统一通过单工具调用：`memory_command(command)`。
 
 - 作用：创建记忆条目
 - 必填参数：`-title`、`-content`
-- 强烈建议：写入时附带 `-triple_tags` 或 `-core_tags`，这是日后语义检索的关键依据
+- 必填约束：必须同时提供完整且非空的三元标签组，这是日后语义检索的关键依据
 - 关键约束：`-type person` 时必须提供 `-person_id platform:id`
 
 ### 4. `update`
 
 - 作用：按 `id` 更新属性或正文
 - 必填参数：`-id`
-- 可更新：标题、正文、状态、类型、三元标签、关联链与各类型专属字段
+- 可更新：标题、正文、状态、类型、三元标签、关联链与各类型专属字段；若更新标签，必须整组三元标签一起传
 
 ### 5. `delete`
 
@@ -173,7 +172,7 @@ Booku Memory 统一通过单工具调用：`memory_command(command)`。
 
 ```text
 # 三元标签检索（语义精准，推荐）
-memory_command("search -core_tags 年会,团建 -diffusion_tags 公司,同事 -topn 5")
+memory_command("search -core_tags 年会,团建 -diffusion_tags 公司,同事 -opposing_tags 请假,缺席 -topn 5")
 memory_command("search -triple_tags \"编程,Python|学习,技术|休闲,娱乐\" -topn 5")
 
 # 结构化过滤检索
@@ -181,18 +180,22 @@ memory_command("search -type person -person_id qq:10001 -topn 10")
 memory_command("search -type event -status active -topn 5")
 
 # 关键词 + 标签混合检索
-memory_command("search -query 项目复盘 -core_tags 复盘,总结 -topn 5")
+memory_command("search -query 项目复盘 -core_tags 复盘,总结 -diffusion_tags 项目,团队 -opposing_tags 闲聊,跑题 -topn 5")
 
 # 读取全文
 memory_command("read -ids mem-a,mem-b")
 
 # 创建时附带三元标签
-memory_command("create -type person -person_id qq:10001 -title 张三 -content 用户同学 -status active -triple_tags \"朋友,同学|学校,班级|\"")
-memory_command("create -type event -title 年会 -content 2025年公司年会 -event_start_at 1735689600 -core_tags 年会,公司 -diffusion_tags 团建,同事")
+memory_command("create -type person -person_id qq:10001 -title 张三 -content 用户同学 -status active -triple_tags \"朋友,同学|学校,班级|陌生人,路人\"")
+memory_command("create -type event -title 年会 -content 2025年公司年会 -event_start_at 1735689600 -core_tags 年会,公司 -diffusion_tags 团建,同事 -opposing_tags 缺席,请假")
 
 # 更新标签与状态
-memory_command("update -id mem-a -status archived -relation_ids mem-b,mem-c -core_tags 已归档")
+memory_command("update -id mem-a -status archived -relation_ids mem-b,mem-c -core_tags 已归档 -diffusion_tags 历史,存档 -opposing_tags 活跃,当前")
 
 # && 串联
-memory_command("search -core_tags 项目,复盘 -topn 5 && read -id mem-x")
+memory_command("search -core_tags 项目,复盘 -diffusion_tags 会议,团队 -opposing_tags 闲聊,跑题 -topn 5 && read -id mem-x")
 ```
+"""
+
+
+__all__ = ["BOOKU_MEMORY_COMMAND_MANUAL"]
