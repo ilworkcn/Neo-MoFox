@@ -33,9 +33,13 @@ from src.core.config import get_core_config
 from src.core.prompt import get_prompt_manager
 from src.core.models.message import Message
 from src.kernel.llm import LLMPayload, ROLE, Text
+from src.kernel.llm.payload.content import Content
+from src.kernel.llm.payload.tooling import LLMUsable
+from src.kernel.logger import Logger
 
 from .config import DefaultChatterConfig
 from .decision_agent import decide_should_respond
+from .multimodal import build_multimodal_content, extract_images_from_messages
 from .prompt_builder import DefaultChatterPromptBuilder
 from .runners import run_enhanced
 from .type_defs import LLMConversationState, LLMResponseLike, SubAgentDecision
@@ -704,17 +708,37 @@ class DefaultChatter(BaseChatter):
     def _upsert_pending_unread_payload(
         response: LLMConversationState,
         formatted_text: str,
+        unread_msgs: list[Message] | None = None,
+        native_multimodal: bool = False,
+        max_images: int = 0,
+        logger_override: Logger | None = None,
     ) -> None:
         """在未发送前合并未读消息到最后一个 USER payload。"""
+        content_list: list[Content | LLMUsable]
+        if native_multimodal and unread_msgs and max_images > 0:
+            images = extract_images_from_messages(unread_msgs, max_images)
+            content_list = build_multimodal_content(formatted_text, images)
+            if images:
+                (logger_override or logger).debug(f"已提取 {len(images)} 张图片")
+        else:
+            content_list = [Text(formatted_text)]
+
         if response.payloads and response.payloads[-1].role == ROLE.USER:
             last_payload = response.payloads[-1]
-            if last_payload.content and isinstance(last_payload.content[-1], Text):
+            if (
+                last_payload.content
+                and isinstance(last_payload.content[-1], Text)
+                and isinstance(content_list[0], Text)
+            ):
                 existing_text = last_payload.content[-1].text
-                last_payload.content[-1] = Text(f"{existing_text}\n{formatted_text}")
+                last_payload.content[-1] = Text(
+                    f"{existing_text}\n{content_list[0].text}"
+                )
+                last_payload.content.extend(content_list[1:])
             else:
-                last_payload.content.append(Text(formatted_text))
+                last_payload.content.extend(content_list)
         else:
-            response.add_payload(LLMPayload(ROLE.USER, Text(formatted_text)))
+            response.add_payload(LLMPayload(ROLE.USER, content_list))
 
     async def sub_agent(
         self,

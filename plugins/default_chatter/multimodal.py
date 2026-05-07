@@ -113,8 +113,4 @@ def _read_raw_media(msg: Message) -> list[dict[str, Any]]:
         if items:
             return items
 
-    items = _extract_dict_list(getattr(msg, "media", None))
-    if items:
-        return items
-
     return []
