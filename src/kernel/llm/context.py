@@ -534,6 +534,7 @@ class LLMContextManager:
 
         remaining_payloads = self._flatten_groups(kept_groups)
         try:
+            logger.info(f"触发上下文压缩: total_tokens={total_tokens}, model_name={model.get('model_identifier')}, request_name={request.request_name}")
             summary_payloads = await self.context_compression_handler(
                 request,
                 dropped_groups,

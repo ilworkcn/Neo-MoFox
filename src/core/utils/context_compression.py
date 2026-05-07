@@ -10,15 +10,7 @@ from src.kernel.llm.types import ModelEntry, ModelSet
 CONTEXT_COMPRESSION_TIMEOUT_SECONDS = 120.0
 CONTEXT_COMPRESSION_MAX_RETRY = 3
 
-DEFAULT_CHAT_CONTEXT_COMPRESSION_PROMPT = """根据你的需求，我将原始面向代码开发场景的上下文压缩提示词，调整为面向**社交平台聊天机器人**的版本。修改要点：将技术细节（文件名、代码片段、函数签名、错误修复等）替换为对话交互元素（话题、情感、用户意图、回复风格、冲突/误解、用户纠正等），保留原有的分析流程和摘要结构框架，但内容描述完全适配聊天机器人场景。
-
-以下是修改后的提示词：
-
----
-
-# 社交平台聊天机器人上下文压缩提示词（中文版）
-
-## 主要提示
+DEFAULT_CHAT_CONTEXT_COMPRESSION_PROMPT = """## 主要提示
 你的任务是创建一个迄今为止对话的详细摘要，密切关注用户的表述、情感倾向、话题演变以及你作为机器人的历史回复。该摘要应全面捕获用户的核心诉求、讨论的关键话题、你已提供的答复以及任何未解决的疑问或冲突，以便在不丢失对话连续性和用户个性的情况下继续后续交流。
 
 ## 分析流程
