@@ -33,9 +33,13 @@ from src.core.config import get_core_config
 from src.core.prompt import get_prompt_manager
 from src.core.models.message import Message
 from src.kernel.llm import LLMPayload, ROLE, Text
+from src.kernel.llm.payload.content import Content
+from src.kernel.llm.payload.tooling import LLMUsable
+from src.kernel.logger import Logger
 
 from .config import DefaultChatterConfig
 from .decision_agent import decide_should_respond
+from .multimodal import build_multimodal_content, extract_images_from_messages
 from .prompt_builder import DefaultChatterPromptBuilder
 from .runners import run_enhanced
 from .type_defs import LLMConversationState, LLMResponseLike, SubAgentDecision
@@ -217,19 +221,22 @@ sub_agent_system_prompt = """你是一个聊天意图识别助手。
 
 # 关于主机器人
 主机器人的名字是 {nickname}。
-{personality_core_section}{personality_side_section}
+{bot_id_section}{personality_core_section}{personality_side_section}
 # 判定准则
 你应该在以下情况判定为 "需要回复" (should_respond = true)：
-1. 明确提及：消息中明确提到了机器人的名字({nickname})或代称。
+1. 明确提及：
+   - 消息中明确提到了机器人的名字({nickname})或代称。
+   - 消息中存在艾特(@)行为，且艾特的 QQ 号必须是 {bot_id}。**注意：如果艾特的 QQ 号不是 {bot_id}，则绝对不是在叫它，即使艾特的昵称看起来像。**
 2. 话题相关：消息内容与当前正在进行的话题高度相关，需要机器人进一步说明、回答或参与。
 3. 话语完整：对方的话已经说完，或者是一个完整的问题/指令。
 4. 情感互动：对方在表达某种需要回应的情绪（如问候、告别、称赞、抱怨等）。
 
 你应该在以下情况判定为 "不需要回复" (should_respond = false)：
 1. 话题无关：消息是群聊中的闲聊，且机器人并非话题参与者。
-2. 话未说完：明显是一连串消息中的中间部分，可以继续等待后续。
-3. 机器博弈：检测到是其他 Bot 的自动回复或无意义的刷屏消息。
-4. 纯粹表情：只有单个表情且不携带任何需要回复的语义。
+2. 艾特他人：消息艾特了其他人（QQ 号不是 {bot_id}）。
+3. 话未说完：明显是一连串消息中的中间部分，可以继续等待后续。
+4. 机器博弈：检测到是其他 Bot 的自动回复或无意义的刷屏消息。
+5. 纯粹表情：只有单个表情且不携带任何需要回复的语义。
 
 # 输出格式
 请务必返回 JSON 格式，如下所示：
@@ -701,22 +708,37 @@ class DefaultChatter(BaseChatter):
     def _upsert_pending_unread_payload(
         response: LLMConversationState,
         formatted_text: str,
+        unread_msgs: list[Message] | None = None,
+        native_multimodal: bool = False,
+        max_images: int = 0,
+        logger_override: Logger | None = None,
     ) -> None:
         """在未发送前合并未读消息到最后一个 USER payload。"""
-        if response.payloads:
-            last_payload = response.payloads[-1]
-            if last_payload.role == ROLE.USER:
-                if last_payload.content and isinstance(last_payload.content[-1], Text):
-                    existing_text = last_payload.content[-1].text
-                    separator = "\n" if existing_text else ""
-                    last_payload.content[-1] = Text(
-                        f"{existing_text}{separator}{formatted_text}"
-                    )
-                else:
-                    last_payload.content.append(Text(formatted_text))
-                return
+        content_list: list[Content | LLMUsable]
+        if native_multimodal and unread_msgs and max_images > 0:
+            images = extract_images_from_messages(unread_msgs, max_images)
+            content_list = build_multimodal_content(formatted_text, images)
+            if images:
+                (logger_override or logger).debug(f"已提取 {len(images)} 张图片")
+        else:
+            content_list = [Text(formatted_text)]
 
-        response.add_payload(LLMPayload(ROLE.USER, Text(formatted_text)))
+        if response.payloads and response.payloads[-1].role == ROLE.USER:
+            last_payload = response.payloads[-1]
+            if (
+                last_payload.content
+                and isinstance(last_payload.content[-1], Text)
+                and isinstance(content_list[0], Text)
+            ):
+                existing_text = last_payload.content[-1].text
+                last_payload.content[-1] = Text(
+                    f"{existing_text}\n{content_list[0].text}"
+                )
+                last_payload.content.extend(content_list[1:])
+            else:
+                last_payload.content.extend(content_list)
+        else:
+            response.add_payload(LLMPayload(ROLE.USER, content_list))
 
     async def sub_agent(
         self,
@@ -797,11 +819,15 @@ class DefaultChatter(BaseChatter):
     ) -> AsyncGenerator[Wait | Success | Failure | Stop, WaitResumeEvent | None]:
         """执行 DefaultChatter 对话流程。"""
         plugin_config = getattr(self.plugin, "config", None)
-        enable_cooldown = (
-            plugin_config.plugin.enable_cooldown
-            if isinstance(plugin_config, DefaultChatterConfig)
-            else False
-        )
+        if isinstance(plugin_config, DefaultChatterConfig):
+            enable_cooldown = plugin_config.plugin.enable_cooldown
+            native_multimodal = plugin_config.plugin.native_multimodal
+            max_images_per_payload = plugin_config.plugin.max_images_per_payload
+        else:
+            enable_cooldown = False
+            native_multimodal = False
+            max_images_per_payload = 4
+
         runner = run_enhanced(
             chatter=self,
             chat_stream=chat_stream,
@@ -811,6 +837,8 @@ class DefaultChatter(BaseChatter):
             suspend_text=_SUSPEND_TEXT,
             enable_action_suspend=self._is_action_suspend_enabled(),
             enable_cooldown=enable_cooldown,
+            native_multimodal=native_multimodal,
+            max_images_per_payload=max_images_per_payload,
         )
         resume_event: WaitResumeEvent | None = None
 
@@ -892,6 +920,8 @@ class DefaultChatterPlugin(BasePlugin):
             template=sub_agent_system_prompt,
             policies={
                 "nickname": optional(personality.nickname),
+                "bot_id": optional(""),
+                "bot_id_section": optional(""),
                 "personality_core_section": optional(personality.personality_core)
                 .then(wrap("它的核心人格是：", "\n")),
                 "personality_side_section": optional(personality.personality_side)

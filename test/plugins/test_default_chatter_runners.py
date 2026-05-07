@@ -172,8 +172,21 @@ class _FakeChatterAllowUser(_FakeChatter):
     """允许 enhanced 正常注入 USER payload 的 chatter 替身。"""
 
     @staticmethod
-    def _upsert_pending_unread_payload(response: Any, formatted_text: str) -> None:
-        _ = formatted_text
+    def _upsert_pending_unread_payload(
+        response: Any,
+        formatted_text: str,
+        unread_msgs: list[Any] | None = None,
+        native_multimodal: bool = False,
+        max_images: int = 0,
+        logger_override: Any = None,
+    ) -> None:
+        _ = (
+            formatted_text,
+            unread_msgs,
+            native_multimodal,
+            max_images,
+            logger_override,
+        )
         response.add_payload(SimpleNamespace(role=ROLE.USER))
 
     async def flush_unreads(self, _unread_messages: list[Any]) -> int:
