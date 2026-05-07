@@ -613,8 +613,6 @@ class MessageConverter:
                         continue
                     media_to_recognize.append((i, media))
                 elif media_type == "voice":
-                    if manager.should_skip_vlm(stream_id, media_type):
-                        continue
                     voice_to_recognize.append((i, media))
             
             # 早退策略：没有待识别媒体就直接返回原结果
