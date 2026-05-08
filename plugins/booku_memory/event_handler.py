@@ -135,6 +135,20 @@ class BookuMemoryStartupIngestHandler(BaseEventHandler):
             await sync_booku_knowledge_actor_reminder(self.plugin)
             return EventDecision.SUCCESS, params
 
+        # 启动导入涉及 embedding API 调用，可能耗时较长。
+        # 为避免阻塞事件管道（事件处理器默认有 5 秒超时），
+        # 将实际导入逻辑放入后台任务异步执行，立即返回。
+        from src.kernel.concurrency import get_task_manager
+
+        tm = get_task_manager()
+        tm.create_task(
+            self._run_startup_ingest(startup, config),
+            name="booku_memory_startup_ingest_bg",
+        )
+        return EventDecision.SUCCESS, params
+
+    async def _run_startup_ingest(self, startup, config) -> None:
+        """后台执行启动知识库导入（不阻塞事件管道）。"""
         targets = [item for item in startup.paths if isinstance(item, str)]
         files = self._collect_files(targets, recursive=bool(startup.recursive))
         roots = self._resolve_ingest_roots(targets)
@@ -194,7 +208,6 @@ class BookuMemoryStartupIngestHandler(BaseEventHandler):
             f"启动自动导入完成: ingested={ingested}, skipped={skipped}, failed={failed}"
         )
         await sync_booku_knowledge_actor_reminder(self.plugin)
-        return EventDecision.SUCCESS, params
 
 
 class MemoryFlashbackInjector(BaseEventHandler):
