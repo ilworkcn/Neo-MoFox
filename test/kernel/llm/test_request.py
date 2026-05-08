@@ -25,6 +25,7 @@ from src.kernel.llm.policy import (
     set_default_policy_factory,
 )
 from src.kernel.llm.context import LLMContextManager
+from src.kernel.llm import request as request_module
 from src.kernel.llm.request import LLMRequest
 from src.kernel.llm.roles import ROLE
 
@@ -871,6 +872,110 @@ class TestLLMRequestSend:
         # No metrics should be recorded
         history = collector.get_recent_history(limit=10)
         assert len(history) == 0
+
+    def test_init_accepts_meta_data(
+        self, mock_model_set: list[dict[str, Any]]
+    ) -> None:
+        """Test that request keeps caller-provided meta_data intact."""
+        request = LLMRequest(
+            mock_model_set,
+            "test_request",
+            meta_data={"stream_id": "stream-456", "trace_id": "trace-1"},
+        )
+
+        assert request.meta_data == {"stream_id": "stream-456", "trace_id": "trace-1"}
+
+    def test_calculate_request_cost_prefers_cache_miss_tokens(
+        self, mock_model_set: list[dict[str, Any]]
+    ) -> None:
+        """Test that request cost supports a dedicated cache-hit input price."""
+        model = dict(mock_model_set[0])
+        model["cache_hit_price_in"] = 0.00001
+
+        cost = request_module._calculate_request_cost(
+            model=model,
+            usage={
+                "prompt_tokens": 1000,
+                "completion_tokens": 500,
+                "cache_hit_tokens": 700,
+                "cache_miss_tokens": 300,
+            },
+        )
+
+        expected = round((300 * 0.00003 + 700 * 0.00001 + 500 * 0.00006) / 1_000_000, 8)
+        assert cost == expected
+
+    def test_calculate_request_cost_falls_back_to_normal_input_price(
+        self, mock_model_set: list[dict[str, Any]]
+    ) -> None:
+        """Test that cache-hit input price falls back to price_in when omitted."""
+        cost = request_module._calculate_request_cost(
+            model=mock_model_set[0],
+            usage={
+                "prompt_tokens": 1000,
+                "completion_tokens": 500,
+                "cache_hit_tokens": 700,
+                "cache_miss_tokens": 300,
+            },
+        )
+
+        expected = round((1000 * 0.00003 + 500 * 0.00006) / 1_000_000, 8)
+        assert cost == expected
+
+    @pytest.mark.asyncio
+    async def test_stream_stats_record_after_response_consumed(
+        self, mock_model_set: list[dict[str, Any]]
+    ) -> None:
+        """Test that stream usage stats are recorded after the response is fully consumed."""
+
+        class StreamUsageClient:
+            async def create(
+                self,
+                *,
+                model_name: str,
+                payloads: list[LLMPayload],
+                tools: list[LLMUsable],
+                request_name: str,
+                model_set: Any,
+                stream: bool,
+            ) -> tuple[str | None, list[dict[str, Any]] | None, AsyncIterator[StreamEvent] | None, str | None, dict[str, Any] | None]:
+                del model_name, payloads, tools, request_name, model_set
+
+                async def stream_gen() -> AsyncIterator[StreamEvent]:
+                    yield StreamEvent(text_delta="hello")
+                    if stream:
+                        yield StreamEvent(
+                            usage={
+                                "prompt_tokens": 120,
+                                "completion_tokens": 30,
+                                "total_tokens": 150,
+                                "cache_hit_tokens": 80,
+                                "cache_miss_tokens": 40,
+                            }
+                        )
+
+                return None, None, stream_gen(), None, None
+
+        request = LLMRequest(mock_model_set[:1], "stream_stats", meta_data={"stream_id": "stream-1"})
+        request.add_payload(LLMPayload(ROLE.USER, Text("Hello")))
+        request.clients.openai = StreamUsageClient()
+
+        captured: list[dict[str, Any]] = []
+
+        def fake_record(**kwargs: Any) -> None:
+            captured.append(kwargs)
+
+        with patch("src.kernel.llm.request._record_llm_stats", side_effect=fake_record):
+            response = await request.send(stream=True)
+            assert captured == []
+
+            text = await response
+
+        assert text == "hello"
+        assert len(captured) == 1
+        assert captured[0]["stream"] is True
+        assert captured[0]["usage"]["total_tokens"] == 150
+        assert captured[0]["meta_data"]["stream_id"] == "stream-1"
 
     @pytest.mark.asyncio
     async def test_send_invalid_model_identifier(

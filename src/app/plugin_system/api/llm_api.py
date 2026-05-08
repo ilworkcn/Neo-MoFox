@@ -17,6 +17,7 @@ from src.kernel.llm import (
     ModelSet,
     RerankRequest,
     ToolRegistry,
+    get_llm_stats_collector,
 )
 from src.core.config import get_model_config
 from src.core.utils.llm_tool_call import (
@@ -31,6 +32,12 @@ __all__ = [
     "get_model_set_by_task",
     "get_model_set_by_name",
     "create_tool_registry",
+    "get_llm_stats_summary",
+    "get_llm_stats_by_model",
+    "get_llm_stats_by_request_name",
+    "get_llm_stats_by_stream",
+    "get_llm_cache_hit_rate",
+    "get_recent_llm_requests",
     "exec_llm_usable",
     "run_tool_call",
 ]
@@ -180,3 +187,33 @@ def create_tool_registry(tools: list[type[LLMUsable]] | None = None) -> ToolRegi
         for tool in tools:
             registry.register(tool)
     return registry
+
+
+async def get_llm_stats_summary() -> dict[str, Any]:
+    """获取 LLM 统计摘要。"""
+    return await get_llm_stats_collector().get_summary()
+
+
+async def get_llm_stats_by_model() -> list[dict[str, Any]]:
+    """获取按模型分组的 LLM 统计。"""
+    return await get_llm_stats_collector().get_by_model()
+
+
+async def get_llm_stats_by_request_name() -> list[dict[str, Any]]:
+    """获取按 request_name 分组的 LLM 统计。"""
+    return await get_llm_stats_collector().get_by_request_name()
+
+
+async def get_llm_stats_by_stream() -> list[dict[str, Any]]:
+    """获取按聊天流分组的 LLM 统计。"""
+    return await get_llm_stats_collector().get_by_stream()
+
+
+async def get_llm_cache_hit_rate(stream_id: str | None = None) -> dict[str, Any]:
+    """获取全局或指定聊天流的缓存命中率。"""
+    return await get_llm_stats_collector().get_cache_hit_rate(stream_id=stream_id)
+
+
+async def get_recent_llm_requests(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    """获取近期 LLM 请求统计明细。"""
+    return await get_llm_stats_collector().get_recent(limit=limit, offset=offset)

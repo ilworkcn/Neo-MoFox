@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 
 from src.kernel.llm.model_client.base import StreamEvent
@@ -11,9 +13,9 @@ from src.kernel.llm.types import ModelEntry, ModelSet
 def dummy_model_set() -> ModelSet:
     return [
         ModelEntry(
-        {
-            "api_provider": "OpenAI",
-            "base_url": "https://api.openai.com/v1",
+            {
+                "api_provider": "OpenAI",
+                "base_url": "https://api.openai.com/v1",
             "model_identifier": "dummy",
             "api_key": "dummy-key",
             "client_type": "openai",
@@ -139,3 +141,45 @@ def test_add_payload_appends_current_response_before_tool_result() -> None:
     assert resp.payloads[1].role == ROLE.ASSISTANT
     assert resp.payloads[1].content[0] == ReasoningText("step ", signature="sig_1")
     assert resp.payloads[2].role == ROLE.TOOL_RESULT
+
+
+@pytest.mark.asyncio
+async def test_response_send_inherits_upper_stream_metadata() -> None:
+    req = LLMRequest(
+        dummy_model_set(),
+        request_name="t",
+        meta_data={"stream_id": "stream-789", "trace_id": "trace-1"},
+    )
+    resp = LLMResponse(
+        _stream=None,
+        _upper=req,
+        _auto_append_response=False,
+        payloads=[LLMPayload(ROLE.USER, Text("hi"))],
+        model_set=req.model_set,
+        message="hello",
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def fake_send(
+        self: LLMRequest,
+        auto_append_response: bool = True,
+        *,
+        stream: bool = True,
+    ) -> LLMResponse:
+        captured["meta_data"] = dict(self.meta_data)
+        return LLMResponse(
+            _stream=None,
+            _upper=self,
+            _auto_append_response=auto_append_response,
+            payloads=list(self.payloads),
+            model_set=self.model_set,
+            message="done",
+        )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(LLMRequest, "send", fake_send)
+        next_resp = await resp.send(stream=False)
+
+    assert next_resp.message == "done"
+    assert captured["meta_data"] == {"trace_id": "trace-1", "stream_id": "stream-789"}

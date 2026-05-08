@@ -68,6 +68,8 @@ class LLMContextManager:
     context_compression_handler: AsyncContextCompressionHandler | None = None
     _reminders: list[RegisteredReminder] | None = None
     _reminder_sources: list[RegisteredReminderSource] | None = None
+    # 当前轮已解析出的 reminder 文本集合，用于观测当前注入状态。
+    _injected_reminder_texts: set[str] | None = None
 
     def validate_for_send(self, payloads: list[LLMPayload]) -> None:
         """在发起 LLM 请求前校验上下文结构。
@@ -299,36 +301,69 @@ class LLMContextManager:
         )
 
     def _apply_reminders(self, payloads: list[LLMPayload]) -> list[LLMPayload]:
-        """根据插入类型将 reminder 注入目标 USER 消息首段。"""
+        """将 reminder 注入目标 USER 消息首段。
 
-        resolved_reminders, reminder_texts_for_stripping = self._resolve_reminders()
-        if not resolved_reminders:
-            return payloads
+        reminder 会作为 USER 前缀存在，因此每次都需要先剥离旧的 reminder 前缀，
+        再按当前 fixed / dynamic 的目标位置重新注入，避免 dynamic reminder 在内容变化
+        或最后一条 USER 变化时发生累积叠加。
+        """
 
         updated = list(payloads)
-
         user_indices = [idx for idx, payload in enumerate(updated) if payload.role == ROLE.USER]
         if not user_indices:
             return updated
 
+        resolved_reminders, strip_texts = self._resolve_reminders()
+        strip_set = set(strip_texts)
+
+        if strip_set:
+            for user_index in user_indices:
+                user_payload = updated[user_index]
+                prefix_end = 0
+                while prefix_end < len(user_payload.content):
+                    part = user_payload.content[prefix_end]
+                    if not isinstance(part, Text) or part.text not in strip_set:
+                        break
+                    prefix_end += 1
+
+                if prefix_end <= 0:
+                    continue
+
+                updated[user_index] = LLMPayload(
+                    ROLE.USER,
+                    list(user_payload.content[prefix_end:]),
+                )
+
+        if not resolved_reminders:
+            self._injected_reminder_texts = set()
+            return updated
+
         first_user_index = user_indices[0]
         last_user_index = user_indices[-1]
-        all_reminder_parts = [Text(text) for text in reminder_texts_for_stripping]
-        target_parts: dict[int, list[Content | LLMUsable]] = {}
 
+        new_parts: dict[int, list[Text]] = {}
+        seen_targets: set[tuple[int, str]] = set()
         for reminder in resolved_reminders:
             target_index = (
                 first_user_index
                 if reminder.insert_type == SystemReminderInsertType.FIXED
                 else last_user_index
             )
-            target_parts.setdefault(target_index, []).append(Text(reminder.text))
+            target_key = (target_index, reminder.text)
+            if target_key in seen_targets:
+                continue
+            seen_targets.add(target_key)
+            new_parts.setdefault(target_index, []).append(Text(reminder.text))
 
-        for user_index in user_indices:
-            prefix_parts = target_parts.get(user_index, [])
-            existing = self._strip_registered_reminders(updated[user_index].content, all_reminder_parts)
-            rebuilt = prefix_parts + existing
+        if not new_parts:
+            self._injected_reminder_texts = {reminder.text for reminder in resolved_reminders}
+            return updated
+
+        for user_index, prefix_parts in new_parts.items():
+            user_payload = updated[user_index]
+            rebuilt = list(prefix_parts) + list(user_payload.content)
             updated[user_index] = LLMPayload(ROLE.USER, rebuilt)
+        self._injected_reminder_texts = {reminder.text for reminder in resolved_reminders}
 
         return updated
 
@@ -370,30 +405,6 @@ class LLMContextManager:
 
         deduped_strip_texts = list(dict.fromkeys(strip_texts))
         return resolved, deduped_strip_texts
-
-    def _strip_registered_reminders(
-        self,
-        content: Sequence[Content | LLMUsable],
-        reminder_parts: Sequence[Content | LLMUsable],
-    ) -> list[Content | LLMUsable]:
-        """移除内容开头已登记的 reminder 文本，便于按最新目标位置重建前缀。"""
-
-        offset = 0
-        while offset < len(content):
-            matched = any(
-                self._is_same_text_part(content[offset], reminder_part)
-                for reminder_part in reminder_parts
-            )
-            if not matched:
-                break
-            offset += 1
-
-        return list(content[offset:])
-
-    def _is_same_text_part(self, left: Content | LLMUsable, right: Content | LLMUsable) -> bool:
-        """判断两个内容片段是否为同一文本片段。"""
-
-        return isinstance(left, Text) and isinstance(right, Text) and left.text == right.text
 
     def maybe_trim(
         self,

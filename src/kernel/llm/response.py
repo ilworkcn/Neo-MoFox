@@ -12,6 +12,7 @@ LLMResponse 支持：
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable, Awaitable
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Self, TYPE_CHECKING
@@ -45,6 +46,9 @@ class LLMResponse:
     reasoning_parts: list[ReasoningText] | None = None
     call_list: list[ToolCall] | None = None
     tool_call_compat: bool = False
+    _stream_stats_recorder: Callable[[dict[str, Any] | None, float], None] | None = None
+    _stream_started_at: float | None = None
+    _usage: dict[str, Any] | None = None
 
     _consumed: bool = False
     _appended_to_context: bool = False
@@ -114,6 +118,8 @@ class LLMResponse:
                     full_reasoning.append(event.reasoning_delta)
                 if event.tool_name or event.tool_args_delta or event.tool_call_id:
                     tool_acc.apply(event)
+                if event.usage:
+                    self._usage = dict(event.usage)
         except Exception as e:
             # 部分 provider/SDK 会在流尾抛出"连接关闭"等异常。
             # 先记录异常，确保已收集的内容能正确落库，再重新抛出。
@@ -125,6 +131,7 @@ class LLMResponse:
         self.call_list = tool_acc.finalize()
         self._maybe_apply_tool_call_compat()
         self._maybe_append_response_to_context()
+        self._maybe_record_stream_stats()
 
         if stream_error is not None:
             raise stream_error
@@ -157,6 +164,8 @@ class LLMResponse:
                     full_reasoning.append(event.reasoning_delta)
                 if event.tool_name or event.tool_args_delta or event.tool_call_id:
                     tool_acc.apply(event)
+                if event.usage:
+                    self._usage = dict(event.usage)
         except Exception as e:
             # 部分 provider/SDK 会在流尾抛出"连接关闭"等异常。
             # 先记录异常，确保已收集的内容能正确落库，再重新抛出。
@@ -168,6 +177,7 @@ class LLMResponse:
         self.call_list = tool_acc.finalize()
         self._maybe_apply_tool_call_compat()
         self._maybe_append_response_to_context()
+        self._maybe_record_stream_stats()
 
         if stream_error is not None:
             raise stream_error
@@ -308,6 +318,7 @@ class LLMResponse:
         req = LLMRequest(
             self.model_set,
             request_name=getattr(self._upper, "request_name", ""),
+            meta_data=dict(getattr(self._upper, "meta_data", {})),
             context_manager=self.context_manager,
         )
         req.payloads = list(self.payloads)
@@ -350,6 +361,8 @@ class LLMResponse:
                 reasoning_acc.apply(event)
             if event.tool_name or event.tool_args_delta or event.tool_call_id:
                 tool_acc.apply(event)
+            if event.usage:
+                self._usage = dict(event.usage)
 
         self.message = "".join(full_content)
         self.reasoning_parts = reasoning_acc.finalize() or self.reasoning_parts
@@ -358,6 +371,7 @@ class LLMResponse:
         self.call_list = tool_acc.finalize()
         self._maybe_apply_tool_call_compat()
         self._maybe_append_response_to_context()
+        self._maybe_record_stream_stats()
         return self.message
 
     async def stream_with_buffer(self, buffer_size: int = 10) -> AsyncIterator[str]:
@@ -410,6 +424,8 @@ class LLMResponse:
                     reasoning_acc.apply(event)
                 if event.tool_name or event.tool_args_delta or event.tool_call_id:
                     tool_acc.apply(event)
+                if event.usage:
+                    self._usage = dict(event.usage)
         except Exception as e:
             # 有些 provider/SDK 会在流尾抛出“连接关闭”等异常。
             # 对于带 buffer 的消费方式，这会导致最后未 flush 的片段丢失。
@@ -427,9 +443,21 @@ class LLMResponse:
         self.call_list = tool_acc.finalize()
         self._maybe_apply_tool_call_compat()
         self._maybe_append_response_to_context()
+        self._maybe_record_stream_stats()
 
         if stream_error is not None:
             raise stream_error
+
+    def _maybe_record_stream_stats(self) -> None:
+        """在流式响应完整消费后写入统计。"""
+        if self._stream_stats_recorder is None:
+            return
+
+        started_at = self._stream_started_at
+        latency = time.perf_counter() - started_at if started_at is not None else 0.0
+        recorder = self._stream_stats_recorder
+        self._stream_stats_recorder = None
+        recorder(self._usage, latency)
 
 
 class _ToolCallAccumulator:

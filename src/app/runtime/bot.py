@@ -368,6 +368,18 @@ class Bot:
         self.storage = JSONStore("data/json_storage")
         self.ui.update_phase_status("存储", "已初始化")
 
+        # Step 10: LLM 统计
+        from src.kernel.llm.stats import LLMStatsConfig, init_llm_stats
+        assert self.config is not None
+        await init_llm_stats(
+            config=LLMStatsConfig(
+                db_path=self.config.llm_stats.db_path,
+                enabled=self.config.llm_stats.enabled,
+                max_records=self.config.llm_stats.max_records,
+            ),
+        )
+        self.ui.update_phase_status("LLM统计", "已初始化")
+
     async def _preflight_llm_providers(self) -> None:
         assert self.config is not None
         if not self.config.bot.llm_preflight_check:
@@ -916,6 +928,10 @@ class Bot:
             from src.kernel.vector_db import close_all_vector_db_services
 
             await close_all_vector_db_services()
+
+            # 10.5 关闭 LLM 统计数据库
+            from src.kernel.llm.stats import close_llm_stats_db
+            await close_llm_stats_db()
 
             # 11. 关闭日志系统（停止事件广播）
             from src.kernel.logger import shutdown_logger_system

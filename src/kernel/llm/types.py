@@ -29,6 +29,7 @@ class ModelEntry(TypedDict, total=True):
     timeout: float
     retry_interval: float
     price_in: float
+    cache_hit_price_in: float
     price_out: float
     temperature: float
     max_tokens: int

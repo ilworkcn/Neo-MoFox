@@ -200,11 +200,11 @@ async def default_chat_context_compression_handler(
         LLMPayload(ROLE.USER, Text(DEFAULT_CHAT_CONTEXT_COMPRESSION_PROMPT))
     ]
 
-    _set_stream_context_compressing(request.stream_id, True)
+    _set_stream_context_compressing(request.meta_data.get("stream_id"), True)
     try:
         response = await compression_request.send(auto_append_response=False, stream=False)
     finally:
-        _set_stream_context_compressing(request.stream_id, False)
+        _set_stream_context_compressing(request.meta_data.get("stream_id"), False)
 
     summary_content = _extract_summary_content(response.message or "")
     if not summary_content:

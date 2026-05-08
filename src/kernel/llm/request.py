@@ -12,6 +12,7 @@ LLMRequest 支持：
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import Any, Self
 
@@ -80,19 +81,24 @@ def _normalize_client_create_result(
     list[dict[str, Any]] | None,
     Any,
     str | list[ReasoningText] | None,
+    dict[str, Any] | None,
 ]:
-    """兼容 provider client 的 3 元组与 4 元组返回格式。"""
+    """兼容 provider client 的 3/4/5 元组返回格式。"""
+    if len(result) == 5:
+        message, tool_calls, stream_iter, reasoning_content, usage = result
+        return message, tool_calls, stream_iter, reasoning_content, usage
+
     if len(result) == 4:
         message, tool_calls, stream_iter, reasoning_content = result
-        return message, tool_calls, stream_iter, reasoning_content
+        return message, tool_calls, stream_iter, reasoning_content, None
 
     if len(result) == 3:
         message, tool_calls, stream_iter = result
-        return message, tool_calls, stream_iter, None
+        return message, tool_calls, stream_iter, None, None
 
     raise ValueError(
-        "client.create 必须返回长度为 3 或 4 的元组："
-        "(message, tool_calls, stream_iter[, reasoning_content])"
+        "client.create 必须返回长度为 3/4/5 的元组："
+        "(message, tool_calls, stream_iter[, reasoning_content[, usage]])"
     )
 
 
@@ -112,7 +118,7 @@ class LLMRequest:
 
     model_set: ModelSet
     request_name: str = ""
-    stream_id: str | None = None
+    meta_data: dict[str, Any] = field(default_factory=dict)
 
     payloads: list[LLMPayload] = field(default_factory=list)
     policy: Policy | None = None
@@ -130,6 +136,10 @@ class LLMRequest:
             self.clients = ModelClientRegistry()
         if self.context_manager is None:
             self.context_manager = LLMContextManager()
+        if self.meta_data is None:
+            self.meta_data = {}
+        elif not isinstance(self.meta_data, dict):
+            self.meta_data = dict(self.meta_data)
 
     def add_payload(self, payload: LLMPayload, position=None) -> Self:
         """
@@ -173,6 +183,7 @@ class LLMRequest:
             LLMResponse: 包含响应消息和工具调用信息的对象。
         """
         model_set = _validate_model_set(self.model_set)
+        request_started_at = time.perf_counter()
 
         # TOOL_RESULT payload 规范化（确保 provider 端可读）
         payloads = [_normalize_tool_result_payload(p) for p in self.payloads]
@@ -237,14 +248,14 @@ class LLMRequest:
                         isinstance(timeout_seconds, (int, float))
                         and timeout_seconds > 0
                     ):
-                        message, tool_calls, stream_iter, reasoning_content = _normalize_client_create_result(
+                        message, tool_calls, stream_iter, reasoning_content, usage = _normalize_client_create_result(
                             await asyncio.wait_for(
                                 create_task,
                                 timeout=float(timeout_seconds),
                             )
                         )
                     else:
-                        message, tool_calls, stream_iter, reasoning_content = _normalize_client_create_result(
+                        message, tool_calls, stream_iter, reasoning_content, usage = _normalize_client_create_result(
                             await create_task
                         )
 
@@ -282,7 +293,18 @@ class LLMRequest:
                     ]
 
                 # 记录成功指标
-                if self.enable_metrics:
+                if self.enable_metrics and not stream:
+                    _record_llm_stats(
+                        model=model,
+                        model_identifier=model_identifier,
+                        request_name=self.request_name,
+                        meta_data=self.meta_data,
+                        latency=timer.elapsed,
+                        usage=usage,
+                        success=True,
+                        stream=False,
+                        retry_count=retry_count,
+                    )
                     metrics = RequestMetrics(
                         model_name=model_identifier,
                         request_name=self.request_name,
@@ -293,6 +315,19 @@ class LLMRequest:
                         model_index=step.meta.get("model_index", 0) if step.meta else 0,
                     )
                     get_global_collector().record_request(metrics)
+                elif self.enable_metrics and stream:
+                    resp._stream_stats_recorder = lambda final_usage, final_latency: _record_llm_stats(
+                        model=model,
+                        model_identifier=model_identifier,
+                        request_name=self.request_name,
+                        meta_data=self.meta_data,
+                        latency=final_latency,
+                        usage=final_usage,
+                        success=True,
+                        stream=True,
+                        retry_count=retry_count,
+                    )
+                    resp._stream_started_at = request_started_at
 
                 session.record_success(latency=timer.elapsed)
                 return resp
@@ -340,6 +375,18 @@ class LLMRequest:
                     )
 
                 # 记录失败指标
+                if self.enable_metrics:
+                    _record_llm_stats(
+                        model=model,
+                        model_identifier=model_identifier,
+                        request_name=self.request_name,
+                        meta_data=self.meta_data,
+                        latency=timer.elapsed,
+                        usage=None,
+                        success=False,
+                        stream=stream,
+                        retry_count=retry_count,
+                    )
                 if self.enable_metrics:
                     metrics = RequestMetrics(
                         model_name=model_identifier,
@@ -429,6 +476,7 @@ def _validate_model_entry(model: dict[str, Any]) -> ModelEntry:
 
     model.setdefault("tool_call_compat", False)
     model.setdefault("max_context", 0)
+    model.setdefault("cache_hit_price_in", model.get("price_in", 0.0))
 
     return model  # type: ignore[return-value]
 
@@ -442,3 +490,74 @@ def _validate_model_set(model_set: Any) -> ModelSet:
     if not all(isinstance(x, dict) for x in model_set):
         raise LLMConfigurationError("model_set 必须是 list[dict]")
     return [_validate_model_entry(x) for x in model_set]
+
+
+def _record_llm_stats(
+    *,
+    model: ModelEntry,
+    model_identifier: str,
+    request_name: str,
+    meta_data: dict[str, Any],
+    latency: float,
+    usage: dict[str, Any] | None,
+    success: bool,
+    stream: bool,
+    retry_count: int,
+) -> None:
+    """将请求统计写入 LLM 统计模块（非阻塞）。"""
+    try:
+        from src.kernel.llm.stats import LLMRequestRecord, get_llm_stats_collector
+
+        collector = get_llm_stats_collector()
+        if not collector.enabled:
+            return
+
+        usage_data = usage or {}
+        cost = _calculate_request_cost(model=model, usage=usage_data)
+        record = LLMRequestRecord(
+            model_name=model.get("model_name", model_identifier),
+            model_identifier=model_identifier,
+            api_provider=str(model.get("api_provider", "")),
+            request_name=request_name,
+            stream_id=meta_data.get("stream_id"),
+            prompt_tokens=usage_data.get("prompt_tokens", 0),
+            completion_tokens=usage_data.get("completion_tokens", 0),
+            total_tokens=usage_data.get("total_tokens", 0),
+            cache_hit_tokens=usage_data.get("cache_hit_tokens", 0),
+            cache_miss_tokens=usage_data.get("cache_miss_tokens", 0),
+            cache_write_tokens=usage_data.get("cache_write_tokens", 0),
+            cost=cost,
+            latency=latency,
+            success=success,
+            stream=stream,
+            retry_count=retry_count,
+        )
+
+        import asyncio
+        asyncio.ensure_future(collector.record(record))
+    except Exception:
+        pass
+
+
+def _calculate_request_cost(*, model: ModelEntry, usage: dict[str, Any]) -> float:
+    """根据模型单价与 usage 估算请求成本。"""
+    prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+    cache_hit_tokens = int(usage.get("cache_hit_tokens", 0) or 0)
+    completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+    cache_miss_tokens = int(usage.get("cache_miss_tokens", 0) or 0)
+    price_in = float(model.get("price_in", 0.0) or 0.0)
+    cache_hit_price_raw = model.get("cache_hit_price_in", price_in)
+    cache_hit_price_in = price_in if cache_hit_price_raw is None else float(cache_hit_price_raw)
+    price_out = float(model.get("price_out", 0.0) or 0.0)
+    if cache_hit_tokens > 0 or cache_miss_tokens > 0:
+        billable_prompt_tokens = (
+            cache_miss_tokens
+            if cache_miss_tokens > 0
+            else max(prompt_tokens - cache_hit_tokens, 0)
+        )
+    else:
+        billable_prompt_tokens = prompt_tokens
+
+    input_cost = billable_prompt_tokens * price_in + cache_hit_tokens * cache_hit_price_in
+    output_cost = completion_tokens * price_out
+    return round((input_cost + output_cost) / 1_000_000, 8)

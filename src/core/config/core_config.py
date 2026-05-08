@@ -246,6 +246,35 @@ class CoreConfig(ConfigBase):
 
     llm: LLMSection = Field(default_factory=LLMSection)
 
+    @config_section("llm_stats")
+    class LLMStatsSection(SectionBase):
+        """LLM 统计配置节。"""
+
+        enabled: bool = Field(
+            default=True,
+            description="是否启用 LLM 请求统计",
+            label="启用统计",
+            tag="ai",
+            input_type="switch",
+        )
+        db_path: str = Field(
+            default="data/llm_stats/llm_stats.db",
+            description="LLM 统计 SQLite 数据库路径",
+            label="统计数据库路径",
+            tag="file",
+            input_type="text",
+            placeholder="data/llm_stats/llm_stats.db",
+        )
+        max_records: int = Field(
+            default=100_000,
+            description="保留的最大请求记录数，0 表示不限制",
+            label="最大记录数",
+            tag="performance",
+            input_type="number",
+        )
+
+    llm_stats: LLMStatsSection = Field(default_factory=LLMStatsSection)
+
     @config_section("personality")
     class PersonalitySection(SectionBase):
         """Bot 人格配置节

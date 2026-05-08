@@ -286,6 +286,38 @@ def test_context_manager_reminder_bucket_refreshes_updated_dynamic_content() -> 
     reset_system_reminder_store()
 
 
+def test_context_manager_dynamic_bucket_multiple_updates_do_not_accumulate() -> None:
+    reset_system_reminder_store()
+    store = get_system_reminder_store()
+    store.set("actor", "screen", "第一次", insert_type=SystemReminderInsertType.DYNAMIC)
+
+    manager = LLMContextManager()
+    payloads: list[LLMPayload] = []
+    manager.reminder_bucket("actor", wrap_with_system_tag=True)
+
+    payloads = manager.add_payload(payloads, LLMPayload(ROLE.USER, Text("第一条")))
+    store.set("actor", "screen", "第二次", insert_type=SystemReminderInsertType.DYNAMIC)
+    payloads = manager.add_payload(payloads, LLMPayload(ROLE.ASSISTANT, Text("回复一")))
+    payloads = manager.add_payload(payloads, LLMPayload(ROLE.USER, Text("第二条")))
+
+    store.set("actor", "screen", "第三次", insert_type=SystemReminderInsertType.DYNAMIC)
+    payloads = manager.add_payload(payloads, LLMPayload(ROLE.ASSISTANT, Text("回复二")))
+    payloads = manager.add_payload(payloads, LLMPayload(ROLE.USER, Text("第三条")))
+
+    assert cast(Text, payloads[0].content[0]).text == "第一条"
+    assert cast(Text, payloads[2].content[0]).text == "第二条"
+    assert cast(Text, payloads[4].content[0]).text == "<system_reminder>\n[screen]\n第三次\n</system_reminder>"
+    assert cast(Text, payloads[4].content[1]).text == "第三条"
+    assert len(
+        [
+            part for payload in payloads if payload.role == ROLE.USER for part in payload.content
+            if isinstance(part, Text) and part.text.startswith("<system_reminder>\n[screen]\n")
+        ]
+    ) == 1
+
+    reset_system_reminder_store()
+
+
 def test_context_manager_defers_missing_tool_result_placeholder_at_tail() -> None:
     manager = LLMContextManager()
     payloads = [LLMPayload(ROLE.USER, Text("帮我调用工具"))]

@@ -595,6 +595,25 @@ class RequestInspector:
                 }
             )
 
+        @router.get("/api/analytics")
+        async def get_analytics() -> JSONResponse:
+            """返回综合统计指标。"""
+            try:
+                from src.kernel.llm.stats import get_llm_stats_collector
+                collector = get_llm_stats_collector()
+                summary = await collector.get_summary()
+                by_model = await collector.get_by_model()
+                by_request = await collector.get_by_request_name()
+                by_stream = await collector.get_by_stream()
+                return JSONResponse({
+                    "summary": summary,
+                    "by_model": by_model,
+                    "by_request_name": by_request,
+                    "by_stream": by_stream,
+                })
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
         @router.get("/api/stream", include_in_schema=False)
         async def sse_stream() -> StreamingResponse:
             queue: asyncio.Queue[CapturedRequest | None] = asyncio.Queue(maxsize=50)
@@ -627,6 +646,10 @@ class RequestInspector:
                     "X-Accel-Buffering": "no",
                 },
             )
+
+        @router.get("/analytics", response_class=HTMLResponse, include_in_schema=False)
+        async def analytics_page() -> HTMLResponse:
+            return HTMLResponse(_ANALYTICS_HTML)
 
         return router
 
@@ -1027,6 +1050,34 @@ _WEBUI_HTML = r"""<!DOCTYPE html>
   .role-unknown .dot { background: var(--muted); }
   .message-meta { color: var(--muted); font-size: 12px; }
   .message-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .message-card.cache-hit-candidate {
+    background: linear-gradient(180deg, rgba(221, 247, 227, 0.92), rgba(248, 255, 249, 0.94));
+    border-color: rgba(58, 138, 83, 0.22);
+  }
+  .message-card.cache-miss-candidate {
+    background: linear-gradient(180deg, rgba(254, 236, 232, 0.92), rgba(255, 248, 246, 0.95));
+    border-color: rgba(181, 78, 58, 0.18);
+  }
+  .cache-probe-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+  .cache-probe-chip.hit {
+    color: #215b34;
+    background: rgba(132, 204, 151, 0.2);
+    border: 1px solid rgba(58, 138, 83, 0.2);
+  }
+  .cache-probe-chip.miss {
+    color: #8a3428;
+    background: rgba(244, 114, 102, 0.14);
+    border: 1px solid rgba(181, 78, 58, 0.16);
+  }
   .block {
     border: 1px solid rgba(70, 53, 32, 0.08);
     border-radius: 16px;
@@ -1107,6 +1158,7 @@ _WEBUI_HTML = r"""<!DOCTYPE html>
   <div class="toolbar">
     <div class="toolbar-group">
       <input type="text" id="filter-input" placeholder="过滤 model / api…">
+      <a href="/_inspector/analytics"><button type="button">统计页</button></a>
       <button id="import-toggle-btn">导入 JSON</button>
       <button id="auto-scroll-btn" class="active" title="自动滚动到最新">跟随最新</button>
     </div>
@@ -1179,6 +1231,7 @@ let activeId = null;
 let autoScroll = true;
 let viewMode = 'pretty';
 let fullCache = {};
+const CACHE_PROBE_WINDOW = 8;
 
 function connectSSE() {
   const es = new EventSource('/_inspector/api/stream');
@@ -1255,12 +1308,27 @@ filterInput.addEventListener('input', renderList);
 async function selectItem(id) {
   activeId = id;
   document.querySelectorAll('.req-item').forEach(el => el.classList.toggle('active', +el.dataset.id === id));
-  if (!fullCache[id]) {
-    detailTitle.textContent = '加载中…';
-    const res = await fetch(`/_inspector/api/requests/${id}`);
-    fullCache[id] = await res.json();
-  }
+  detailTitle.textContent = '加载中…';
+  await ensureRequestDetails([id, ...getRecentProbeIds(id)]);
   renderActiveDetail();
+}
+
+function getRecentProbeIds(id) {
+  const currentIndex = requests.findIndex(item => item.id === id);
+  if (currentIndex <= 0) {
+    return [];
+  }
+  return requests.slice(Math.max(0, currentIndex - CACHE_PROBE_WINDOW), currentIndex).map(item => item.id);
+}
+
+async function ensureRequestDetails(ids) {
+  const pending = ids.filter(reqId => reqId != null && !fullCache[reqId]).map(async reqId => {
+    const res = await fetch(`/_inspector/api/requests/${reqId}`);
+    fullCache[reqId] = await res.json();
+  });
+  if (pending.length) {
+    await Promise.all(pending);
+  }
 }
 
 function renderActiveDetail() {
@@ -1284,7 +1352,7 @@ function renderPrettyDetail(rendered) {
   const fragment = document.createDocumentFragment();
   fragment.appendChild(renderOverviewSection(rendered.overview || []));
   fragment.appendChild(renderToolsSection(rendered.tools || []));
-  fragment.appendChild(renderMessagesSection(rendered.messages || []));
+  fragment.appendChild(renderMessagesSection(rendered.messages || [], buildCacheProbeStates(rendered.messages || [])));
   detailBody.appendChild(fragment);
 }
 
@@ -1338,32 +1406,115 @@ function renderToolsSection(tools) {
   return section;
 }
 
-function renderMessagesSection(messages) {
+function renderMessagesSection(messages, cacheProbeStates) {
   const section = document.createElement('section');
   section.className = 'section';
-  section.innerHTML = '<div class="section-head"><h2>Messages 对话流</h2><span class="section-hint">按 role 拆分板块，渲染 Markdown、工具调用与结果</span></div>';
+  section.innerHTML = `<div class="section-head"><h2>Messages 对话流</h2><span class="section-hint">按 role 拆分板块，渲染 Markdown、工具调用与结果。绿色表示最近 ${CACHE_PROBE_WINDOW} 条同类请求中存在相同前缀，红色表示本地模拟未命中或前缀在此断开。</span></div>`;
   if (!messages.length) {
     section.innerHTML += '<div class="empty-tip">本次请求没有 messages，或并非 chat 类型请求。</div>';
     return section;
   }
   const stack = document.createElement('div');
   stack.className = 'message-stack';
-  messages.forEach(message => stack.appendChild(renderMessageCard(message)));
+  messages.forEach((message, index) => stack.appendChild(renderMessageCard(message, cacheProbeStates[index] || null)));
   section.appendChild(stack);
   return section;
 }
 
-function renderMessageCard(message) {
+function renderMessageCard(message, cacheProbeState) {
   const card = document.createElement('article');
   const role = normalizeRoleClass(message.role || 'unknown');
-  card.className = `message-card role-${role}`;
-  const meta = message.meta ? `<span class="message-meta">${escHtml(message.meta)}</span>` : '<span class="message-meta">&nbsp;</span>';
-  card.innerHTML = `<div class="message-head"><div class="message-role"><span class="dot"></span><span>${escHtml(message.label || role)}</span></div>${meta}</div>`;
+  const probeClass = cacheProbeState && cacheProbeState.hit ? ' cache-hit-candidate' : (cacheProbeState ? ' cache-miss-candidate' : '');
+  card.className = `message-card role-${role}${probeClass}`;
+  const metaText = message.meta ? escHtml(message.meta) : '&nbsp;';
+  const probeChip = cacheProbeState
+    ? `<span class="cache-probe-chip ${cacheProbeState.hit ? 'hit' : 'miss'}">${escHtml(cacheProbeState.label || '')}</span>`
+    : '';
+  card.innerHTML = `<div class="message-head"><div class="message-role"><span class="dot"></span><span>${escHtml(message.label || role)}</span></div><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">${probeChip}<span class="message-meta">${metaText}</span></div></div>`;
   const body = document.createElement('div');
   body.className = 'message-body';
   (message.blocks || []).forEach(block => body.appendChild(renderBlock(block)));
   card.appendChild(body);
   return card;
+}
+
+function buildCacheProbeStates(messages) {
+  if (activeId == null || !messages.length) {
+    return [];
+  }
+
+  const currentData = fullCache[activeId] || {};
+  const currentRecord = requests.find(item => item.id === activeId) || {};
+  const currentGroup = getCacheProbeGroupKey(currentRecord, currentData);
+  const currentFingerprints = messages.map(message => fingerprintMessageForCacheProbe(message));
+  const candidates = getRecentProbeIds(activeId)
+    .map(reqId => ({ record: requests.find(item => item.id === reqId) || {}, data: fullCache[reqId] || null }))
+    .filter(entry => entry.data && getCacheProbeGroupKey(entry.record, entry.data) === currentGroup)
+    .map(entry => (entry.data.rendered && Array.isArray(entry.data.rendered.messages) ? entry.data.rendered.messages : []))
+    .map(candidateMessages => candidateMessages.map(message => fingerprintMessageForCacheProbe(message)));
+
+  return currentFingerprints.map((fingerprint, index) => {
+    let hit = false;
+    let prefixBreak = false;
+    for (const candidate of candidates) {
+      if (index > 0 && hasMatchingPrefix(candidate, currentFingerprints, index - 1) && !hasMatchingPrefix(candidate, currentFingerprints, index)) {
+        prefixBreak = true;
+      }
+      if (hasMatchingPrefix(candidate, currentFingerprints, index)) {
+        hit = true;
+        break;
+      }
+    }
+
+    if (hit) {
+      return { hit: true, label: '命中候选' };
+    }
+    if (prefixBreak) {
+      return { hit: false, label: '前缀在此断开' };
+    }
+    return { hit: false, label: candidates.length ? '最近样本未命中' : '无对照样本' };
+  });
+}
+
+function hasMatchingPrefix(candidateFingerprints, currentFingerprints, endIndex) {
+  if (!Array.isArray(candidateFingerprints) || candidateFingerprints.length <= endIndex) {
+    return false;
+  }
+  for (let index = 0; index <= endIndex; index += 1) {
+    if (candidateFingerprints[index] !== currentFingerprints[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function getCacheProbeGroupKey(record, data) {
+  const metadata = data && data.metadata ? data.metadata : {};
+  const provider = metadata.api_provider || record.api_provider || '-';
+  const requestName = metadata.request_name || '';
+  return [record.api_name || '', provider, record.model || '', requestName].join('|');
+}
+
+function fingerprintMessageForCacheProbe(message) {
+  const blocks = Array.isArray(message.blocks) ? message.blocks.map(block => normalizeBlockForCacheProbe(block)) : [];
+  return JSON.stringify({ role: message.role || 'unknown', blocks });
+}
+
+function normalizeBlockForCacheProbe(block) {
+  if (!block || typeof block !== 'object') {
+    return block;
+  }
+  return {
+    type: block.type || 'unknown',
+    text: block.text || '',
+    label: block.label || '',
+    call_id: block.call_id || '',
+    name: block.name || '',
+    arguments_text: block.arguments_text || '',
+    title: block.title || '',
+    meta: block.meta || '',
+    media_type: block.media_type || '',
+  };
 }
 
 function renderBlock(block) {
@@ -1645,6 +1796,289 @@ function syntaxHighlight(json) {
     return `<span class="${cls}">${match}</span>`;
   });
 }
+</script>
+</body>
+</html>"""
+
+
+_ANALYTICS_HTML = r"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM 统计仪表盘</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{--bg:#f4efe7;--panel:rgba(255,252,246,0.92);--border:rgba(70,53,32,0.12);--text:#2f261d;--muted:#7a6856;--accent:#0e7490;--accent-soft:rgba(14,116,144,0.14);--success:#1f7a4d;--danger:#aa3a2a;--amber:#b45309;--rose:#c2416c;--ink:#3b3228}
+  body{background:radial-gradient(circle at top left,rgba(14,116,144,0.14),transparent 28%),radial-gradient(circle at top right,rgba(180,83,9,0.12),transparent 32%),linear-gradient(180deg,var(--bg) 0%,#f8f3eb 100%);color:var(--text);font-family:'Segoe UI','PingFang SC',sans-serif;font-size:14px;padding:24px;min-height:100vh}
+  header{margin-bottom:24px;display:flex;justify-content:space-between;align-items:center}
+  h1{font-size:22px;font-weight:700}
+  .nav{display:flex;gap:12px}
+  .nav a{padding:8px 16px;border-radius:12px;border:1px solid var(--border);text-decoration:none;color:var(--text);font-size:13px}
+  .nav a:hover{background:var(--panel);border-color:var(--accent)}
+  .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:24px}
+  .kpi{border:1px solid var(--border);border-radius:18px;background:var(--panel);padding:18px;box-shadow:0 12px 32px rgba(78,60,37,0.06)}
+  .kpi .kpi-label{color:var(--muted);font-size:12px}
+  .kpi .kpi-value{margin-top:10px;font-size:26px;font-weight:700}
+  .kpi .kpi-sub{color:var(--muted);font-size:11px;margin-top:4px}
+  .chart-grid{display:grid;grid-template-columns:1.15fr 1fr;gap:18px;margin-bottom:18px}
+  .chart-card{background:var(--panel);border:1px solid var(--border);border-radius:22px;padding:20px;box-shadow:0 12px 32px rgba(78,60,37,0.06);overflow:hidden}
+  .chart-card h2{font-size:16px;margin-bottom:6px}
+  .chart-subtitle{color:var(--muted);font-size:12px;margin-bottom:16px}
+  .chart-stack{display:grid;gap:18px}
+  .ring-layout{display:grid;grid-template-columns:160px 1fr;gap:20px;align-items:center}
+  .ring{width:160px;height:160px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--accent) 0deg, var(--accent) 180deg, rgba(0,0,0,0.08) 180deg 360deg);position:relative;margin:auto}
+  .ring::after{content:"";position:absolute;inset:18px;border-radius:50%;background:linear-gradient(180deg,#fffaf2 0%,#fbf6ee 100%);box-shadow:inset 0 1px 0 rgba(255,255,255,0.8)}
+  .ring-center{position:relative;z-index:1;text-align:center}
+  .ring-value{font-size:28px;font-weight:700;line-height:1}
+  .ring-label{font-size:12px;color:var(--muted);margin-top:6px}
+  .legend{display:grid;gap:10px}
+  .legend-item{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center}
+  .swatch{width:10px;height:10px;border-radius:999px}
+  .legend-name{font-size:13px;color:var(--ink)}
+  .legend-value{font-size:12px;color:var(--muted)}
+  .metric-rail{height:12px;border-radius:999px;background:rgba(60,50,40,0.08);overflow:hidden;display:flex}
+  .metric-fill{height:100%}
+  .chart-list{display:grid;gap:12px}
+  .chart-row{display:grid;grid-template-columns:minmax(0,160px) 1fr auto;gap:12px;align-items:center}
+  .chart-label{font-size:12px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chart-value{font-size:12px;color:var(--muted)}
+  .bar-track{height:14px;border-radius:999px;background:rgba(60,50,40,0.08);overflow:hidden;position:relative}
+  .bar-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),#2aa1b7)}
+  .bar-fill.alt{background:linear-gradient(90deg,#d97706,#f59e0b)}
+  .bar-fill.rose{background:linear-gradient(90deg,#be185d,#ec4899)}
+  .two-up{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .section2{background:var(--panel);border:1px solid var(--border);border-radius:18px;padding:20px;margin-bottom:18px;box-shadow:0 12px 32px rgba(78,60,37,0.06)}
+  .section2 h2{font-size:16px;margin-bottom:14px}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:10px 14px;text-align:left;border-bottom:1px solid var(--border);font-size:13px}
+  th{color:var(--muted);font-weight:600;font-size:11px}
+  .tag{padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600}
+  .tag-ok{background:rgba(31,122,77,0.12);color:var(--success)}
+  .tag-warn{background:rgba(180,83,9,0.12);color:#b45309}
+  .empty{text-align:center;color:var(--muted);padding:48px}
+  .refresh-bar{display:flex;gap:10px;align-items:center;margin-bottom:18px}
+  .refresh-bar button{padding:8px 14px;border:1px solid var(--border);border-radius:10px;background:var(--panel);cursor:pointer;font-size:12px}
+  .refresh-bar button:hover{border-color:var(--accent)}
+  .mono{font-family:'JetBrains Mono','Consolas',monospace;font-size:12px}
+  @media (max-width: 980px){.chart-grid,.two-up,.ring-layout{grid-template-columns:1fr}.chart-row{grid-template-columns:minmax(0,110px) 1fr auto}}
+</style>
+</head>
+<body>
+<header>
+  <h1>LLM 消耗统计仪表盘</h1>
+  <div class="nav">
+    <a href="/_inspector/">请求检视器</a>
+    <a href="/_inspector/analytics" style="background:var(--accent);color:#fff;border-color:var(--accent)">统计</a>
+  </div>
+</header>
+<div class="refresh-bar">
+  <button onclick="loadData()">刷新数据</button>
+  <span id="last-update" style="color:var(--muted);font-size:12px"></span>
+</div>
+<div class="kpi-grid" id="kpi-grid"></div>
+<div class="chart-grid">
+  <div class="chart-card">
+    <h2>缓存与 Token 结构</h2>
+    <div class="chart-subtitle">快速查看整体命中率与输入输出比例</div>
+    <div class="chart-stack">
+      <div class="ring-layout">
+        <div class="ring" id="cache-ring">
+          <div class="ring-center">
+            <div class="ring-value" id="cache-ring-value">0.0%</div>
+            <div class="ring-label">全局缓存命中</div>
+          </div>
+        </div>
+        <div class="legend" id="cache-legend"></div>
+      </div>
+      <div>
+        <div class="chart-subtitle" style="margin-bottom:10px">Token 构成</div>
+        <div class="metric-rail" id="token-composition"></div>
+        <div class="legend" id="token-legend" style="margin-top:12px"></div>
+      </div>
+    </div>
+  </div>
+  <div class="chart-card">
+    <h2>流量分布</h2>
+    <div class="chart-subtitle">按模型和请求名称查看占比</div>
+    <div class="two-up">
+      <div>
+        <div class="chart-subtitle" style="margin-bottom:10px">模型请求占比</div>
+        <div class="chart-list" id="model-share-chart"></div>
+      </div>
+      <div>
+        <div class="chart-subtitle" style="margin-bottom:10px">请求名称占比</div>
+        <div class="chart-list" id="request-share-chart"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="chart-card" style="margin-bottom:18px">
+  <h2>聊天流比例视图</h2>
+  <div class="chart-subtitle">观察最活跃聊天流的请求量与缓存命中差异</div>
+  <div class="chart-list" id="stream-share-chart"></div>
+</div>
+<div class="section2"><h2>按模型统计</h2><div id="by-model"></div></div>
+<div class="section2"><h2>按请求名称统计</h2><div id="by-request"></div></div>
+<div class="section2"><h2>按聊天流统计（含缓存命中率）</h2><div id="by-stream"></div></div>
+<script>
+async function loadData() {
+  try {
+    const resp = await fetch('/_inspector/api/analytics');
+    const data = await resp.json();
+    renderKPIs(data.summary || {});
+    renderVisualOverview(data.summary || {}, data.by_model || [], data.by_request_name || [], data.by_stream || []);
+    renderTable('by-model', data.by_model || [], ['model_name','api_provider','total_requests','total_tokens','total_cost','avg_latency']);
+    renderTable('by-request', data.by_request_name || [], ['request_name','total_requests','total_tokens','total_cost','avg_latency']);
+    renderStreamTable('by-stream', data.by_stream || []);
+    document.getElementById('last-update').textContent = '最后更新: ' + new Date().toLocaleTimeString();
+  } catch(e) { console.error(e); }
+}
+function renderKPIs(s) {
+  const grid = document.getElementById('kpi-grid');
+  const f = (n) => n != null ? Number(n).toLocaleString() : '-';
+  const p = (n) => n != null ? (Number(n)*100).toFixed(1)+'%' : '-';
+  const c = (n) => n != null ? '$'+Number(n).toFixed(4) : '-';
+  const cacheObserved = Number(s.total_cache_hit_tokens || 0) + Number(s.total_cache_miss_tokens || 0) > 0;
+  const items = [
+    {l:'总请求数',v:f(s.total_requests)},
+    {l:'成功率',v:p(s.success_rate),sub:(s.success_count||0)+' / '+(s.error_count||0)},
+    {l:'总 Token',v:f(s.total_tokens),sub:'in:'+f(s.total_prompt_tokens)+' out:'+f(s.total_completion_tokens)},
+    {l:'缓存命中率',v:p(s.cache_hit_rate),sub:cacheObserved ? 'hit:'+f(s.total_cache_hit_tokens)+' miss:'+f(s.total_cache_miss_tokens) : ((s.total_requests||0) > 0 ? '当前记录未返回缓存指标' : 'hit:0 miss:0')},
+    {l:'总成本',v:c(s.total_cost)},
+    {l:'平均延迟',v:s.avg_latency != null ? Number(s.avg_latency).toFixed(2)+'s' : '-'},
+  ];
+  grid.innerHTML = items.map(i=>`<div class="kpi"><div class="kpi-label">${i.l}</div><div class="kpi-value">${i.v}</div>${i.sub?`<div class="kpi-sub">${i.sub}</div>`:''}</div>`).join('');
+}
+function clampPercent(value) {
+  const num = Number(value || 0);
+  return Math.max(0, Math.min(100, num));
+}
+function renderVisualOverview(summary, byModel, byRequest, byStream) {
+  renderCacheChart(summary);
+  renderTokenComposition(summary);
+  renderShareChart('model-share-chart', byModel, 'model_name', 'total_requests', '请求', 'accent');
+  renderShareChart('request-share-chart', byRequest, 'request_name', 'total_requests', '请求', 'rose');
+  renderStreamShareChart(byStream);
+}
+function renderCacheChart(summary) {
+  const ring = document.getElementById('cache-ring');
+  const ringValue = document.getElementById('cache-ring-value');
+  const legend = document.getElementById('cache-legend');
+  const hit = Number(summary.total_cache_hit_tokens || 0);
+  const miss = Number(summary.total_cache_miss_tokens || 0);
+  const total = hit + miss;
+  const hitRate = total > 0 ? hit / total : 0;
+  const angle = clampPercent(hitRate * 100) * 3.6;
+  ring.style.background = `conic-gradient(var(--accent) 0deg ${angle}deg, rgba(60,50,40,0.09) ${angle}deg 360deg)`;
+  ringValue.textContent = total > 0 ? `${(hitRate * 100).toFixed(1)}%` : ((summary.total_requests || 0) > 0 ? 'N/A' : '0.0%');
+  legend.innerHTML = [
+    {label:'缓存命中',value:hit,color:'var(--accent)'},
+    {label:'缓存未命中',value:miss,color:'var(--amber)'},
+    {label:'指标状态',value:total > 0 ? '已采集' : ((summary.total_requests || 0) > 0 ? '未返回' : '暂无数据'),color:'rgba(60,50,40,0.32)'}
+  ].map(item => `
+    <div class="legend-item">
+      <span class="swatch" style="background:${item.color}"></span>
+      <span class="legend-name">${item.label}</span>
+      <span class="legend-value">${typeof item.value === 'number' ? Number(item.value).toLocaleString() : item.value}</span>
+    </div>
+  `).join('');
+}
+function renderTokenComposition(summary) {
+  const track = document.getElementById('token-composition');
+  const legend = document.getElementById('token-legend');
+  const prompt = Number(summary.total_prompt_tokens || 0);
+  const completion = Number(summary.total_completion_tokens || 0);
+  const total = prompt + completion;
+  const promptWidth = total > 0 ? (prompt / total) * 100 : 0;
+  const completionWidth = total > 0 ? (completion / total) * 100 : 0;
+  track.innerHTML = `
+    <div class="metric-fill" style="width:${promptWidth}%;background:linear-gradient(90deg,var(--accent),#2aa1b7)"></div>
+    <div class="metric-fill" style="width:${completionWidth}%;background:linear-gradient(90deg,#c2416c,#ec4899)"></div>
+  `;
+  legend.innerHTML = [
+    {label:'Prompt Tokens',value:prompt,color:'var(--accent)'},
+    {label:'Completion Tokens',value:completion,color:'var(--rose)'}
+  ].map(item => `
+    <div class="legend-item">
+      <span class="swatch" style="background:${item.color}"></span>
+      <span class="legend-name">${item.label}</span>
+      <span class="legend-value">${Number(item.value).toLocaleString()}</span>
+    </div>
+  `).join('');
+}
+function renderShareChart(id, rows, labelKey, valueKey, unitLabel, tone) {
+  const container = document.getElementById(id);
+  if (!rows.length) {
+    container.innerHTML = '<div class="empty">暂无数据</div>';
+    return;
+  }
+  const items = rows.slice(0, 6);
+  const maxValue = Math.max(...items.map(row => Number(row[valueKey] || 0)), 1);
+  const fillClass = tone === 'rose' ? 'bar-fill rose' : tone === 'accent' ? 'bar-fill' : 'bar-fill alt';
+  container.innerHTML = items.map(row => {
+    const value = Number(row[valueKey] || 0);
+    const width = (value / maxValue) * 100;
+    const label = String(row[labelKey] || '(未命名)');
+    return `
+      <div class="chart-row">
+        <div class="chart-label" title="${label}">${label}</div>
+        <div class="bar-track"><div class="${fillClass}" style="width:${width}%"></div></div>
+        <div class="chart-value">${value.toLocaleString()} ${unitLabel}</div>
+      </div>
+    `;
+  }).join('');
+}
+function renderStreamShareChart(rows) {
+  const container = document.getElementById('stream-share-chart');
+  if (!rows.length) {
+    container.innerHTML = '<div class="empty">暂无按聊天流的数据</div>';
+    return;
+  }
+  const items = rows.slice(0, 8);
+  const maxRequests = Math.max(...items.map(row => Number(row.total_requests || 0)), 1);
+  container.innerHTML = items.map(row => {
+    const requests = Number(row.total_requests || 0);
+    const width = (requests / maxRequests) * 100;
+    const hitRate = Number(row.cache_hit_rate || 0);
+    const label = String(row.stream_id || '-').slice(0, 24);
+    return `
+      <div class="chart-row">
+        <div class="chart-label mono" title="${row.stream_id || '-'}">${label}</div>
+        <div class="bar-track"><div class="bar-fill alt" style="width:${width}%"></div></div>
+        <div class="chart-value">${requests.toLocaleString()} 请求 / ${(hitRate * 100).toFixed(1)}%</div>
+      </div>
+    `;
+  }).join('');
+}
+function renderTable(id, rows, cols) {
+  const container = document.getElementById(id);
+  if (!rows.length) { container.innerHTML = '<div class="empty">暂无数据</div>'; return; }
+  const labels = cols.map(c=>c.replace(/_/g,' ').replace(/\b\w/g,l=>l.toUpperCase()));
+  const fmt = (v,k) => {
+    if (k === 'total_cost') return v != null ? '$'+Number(v).toFixed(4) : '-';
+    if (k === 'avg_latency') return v != null ? Number(v).toFixed(2)+'s' : '-';
+    if (k && k.includes('token')) return v != null ? Number(v).toLocaleString() : '-';
+    return v != null ? String(v) : '-';
+  };
+  container.innerHTML = `<table><thead><tr>${labels.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${cols.map(c=>`<td>${fmt(r[c],c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+}
+function renderStreamTable(id, rows) {
+  const container = document.getElementById(id);
+  if (!rows.length) { container.innerHTML = '<div class="empty">暂无按聊天流的数据</div>'; return; }
+  container.innerHTML = `<table><thead><tr><th>Stream ID</th><th>请求数</th><th>Prompt</th><th>Completion</th><th>缓存命中</th><th>缓存未命中</th><th>命中率</th><th>成本</th></tr></thead><tbody>${rows.map(r=>`<tr>
+    <td class="mono">${String(r.stream_id||'-').slice(0,24)}</td>
+    <td>${r.total_requests}</td>
+    <td>${Number(r.total_prompt_tokens).toLocaleString()}</td>
+    <td>${Number(r.total_completion_tokens).toLocaleString()}</td>
+    <td>${Number(r.total_cache_hit).toLocaleString()}</td>
+    <td>${Number(r.total_cache_miss).toLocaleString()}</td>
+    <td><span class="tag ${r.cache_hit_rate>0.5?'tag-ok':'tag-warn'}">${(r.cache_hit_rate*100).toFixed(1)}%</span></td>
+    <td>$${Number(r.total_cost).toFixed(4)}</td>
+  </tr>`).join('')}</tbody></table>`;
+}
+loadData();
+setInterval(loadData, 30000);
 </script>
 </body>
 </html>"""

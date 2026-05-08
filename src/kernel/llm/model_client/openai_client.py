@@ -501,6 +501,114 @@ def _should_backfill_reasoning_content(messages: list[dict[str, Any]]) -> bool:
     return False
 
 
+_USAGE_FIELD_MISSING = object()
+
+
+def _get_usage_field(usage_obj: Any, field_name: str, default: Any = 0) -> Any:
+    """从 usage 对象或映射中读取字段。
+
+    兼容 OpenAI SDK 对象、Pydantic model 以及部分兼容供应商返回的嵌套 dict。
+
+    Args:
+        usage_obj: usage 对象或 dict。
+        field_name: 字段名。
+        default: 字段缺失时返回的默认值。
+
+    Returns:
+        读取到的字段值；若不存在或为 None，则返回 default。
+    """
+    if usage_obj is None:
+        return default
+
+    value: Any = _USAGE_FIELD_MISSING
+    if isinstance(usage_obj, dict):
+        value = usage_obj.get(field_name, _USAGE_FIELD_MISSING)
+    else:
+        value = getattr(usage_obj, field_name, _USAGE_FIELD_MISSING)
+        if value is _USAGE_FIELD_MISSING:
+            model_extra = getattr(usage_obj, "model_extra", None)
+            if isinstance(model_extra, dict):
+                value = model_extra.get(field_name, _USAGE_FIELD_MISSING)
+        if value is _USAGE_FIELD_MISSING:
+            model_dump = getattr(usage_obj, "model_dump", None)
+            if callable(model_dump):
+                try:
+                    dumped = model_dump()
+                except Exception:
+                    dumped = None
+                if isinstance(dumped, dict):
+                    value = dumped.get(field_name, _USAGE_FIELD_MISSING)
+
+    if value is _USAGE_FIELD_MISSING or value is None:
+        return default
+    return value
+
+
+def _has_usage_field(usage_obj: Any, field_name: str) -> bool:
+    """判断 usage 对象中是否存在指定字段。"""
+    return _get_usage_field(usage_obj, field_name, _USAGE_FIELD_MISSING) is not _USAGE_FIELD_MISSING
+
+
+def _extract_usage_from_obj(usage_obj: Any) -> dict[str, Any]:
+    """从 OpenAI usage 对象中提取统计信息。"""
+    if usage_obj is None:
+        return {}
+
+    result: dict[str, Any] = {
+        "prompt_tokens": _get_usage_field(usage_obj, "prompt_tokens", 0) or 0,
+        "completion_tokens": _get_usage_field(usage_obj, "completion_tokens", 0) or 0,
+        "total_tokens": _get_usage_field(usage_obj, "total_tokens", 0) or 0,
+        "cache_hit_tokens": 0,
+        "cache_miss_tokens": 0,
+    }
+
+    details = _get_usage_field(usage_obj, "prompt_tokens_details", None)
+    if details is None:
+        details = _get_usage_field(usage_obj, "input_tokens_details", None)
+    if details is not None:
+        result["cache_hit_tokens"] = _get_usage_field(details, "cached_tokens", 0) or 0
+
+    explicit_cache_hit = (
+        _get_usage_field(usage_obj, "prompt_cache_hit_tokens", 0)
+        or _get_usage_field(usage_obj, "cache_read_input_tokens", 0)
+        or 0
+    )
+    explicit_cache_miss = _get_usage_field(usage_obj, "prompt_cache_miss_tokens", 0) or 0
+    result["cache_hit_tokens"] = result["cache_hit_tokens"] or explicit_cache_hit
+    result["cache_miss_tokens"] = explicit_cache_miss
+    result["cache_write_tokens"] = _get_usage_field(usage_obj, "cache_creation_input_tokens", 0) or 0
+
+    has_cache_signal = (
+        _has_usage_field(usage_obj, "prompt_cache_hit_tokens")
+        or _has_usage_field(usage_obj, "prompt_cache_miss_tokens")
+        or _has_usage_field(usage_obj, "cache_read_input_tokens")
+        or (details is not None and _has_usage_field(details, "cached_tokens"))
+    )
+    if (
+        has_cache_signal
+        and result["cache_miss_tokens"] <= 0
+        and result["prompt_tokens"] >= result["cache_hit_tokens"]
+    ):
+        result["cache_miss_tokens"] = result["prompt_tokens"] - result["cache_hit_tokens"]
+    return result
+
+
+def _extract_usage(resp: Any) -> dict[str, Any]:
+    """从 OpenAI 响应对象中提取 usage 统计信息。
+
+    解析 prompt_tokens、completion_tokens、total_tokens，
+    以及 prompt_tokens_details 中的 cached_tokens（缓存命中）。
+    兼容 DeepSeek 等提供商的 prompt_cache_hit_tokens / prompt_cache_miss_tokens。
+
+    Args:
+        resp: OpenAI ChatCompletion 响应对象。
+
+    Returns:
+        包含 token 统计的字典；若无 usage 字段则返回空 dict。
+    """
+    return _extract_usage_from_obj(_get_usage_field(resp, "usage", None))
+
+
 # _ClientCacheKey: (api_key, base_url, loop_id, timeout, trust_env, force_ipv4)
 _ClientCacheKey = tuple[str, str | None, int, float | None, bool, bool]
 
@@ -724,7 +832,7 @@ class OpenAIChatClient:
         request_name: str,
         model_set: Any,
         stream: bool,
-    ) -> tuple[str | None, list[dict[str, Any]] | None, AsyncIterator[StreamEvent] | None, str | None]:
+    ) -> tuple[str | None, list[dict[str, Any]] | None, AsyncIterator[StreamEvent] | None, str | None, dict[str, Any] | None]:
         """发起一次聊天请求。
 
         Args:
@@ -860,7 +968,7 @@ class OpenAIChatClient:
         trust_env: bool,
         force_ipv4: bool,
         model_name: str,
-    ) -> tuple[str | None, list[dict[str, Any]] | None, None, str | None]:
+    ) -> tuple[str | None, list[dict[str, Any]] | None, None, str | None, dict[str, Any] | None]:
         """执行非流式聊天请求并返回解析结果。
 
         遇到网络/超时异常时会驱逐缓存的客户端，以便下次请求重建连接。
@@ -920,16 +1028,17 @@ class OpenAIChatClient:
             parsed_message, parsed_calls = parse_tool_call_compat_response(
                 message_content
             )
-            return parsed_message, parsed_calls, None, reasoning_content
+            return parsed_message, parsed_calls, None, reasoning_content, _extract_usage(resp)
 
-        return message_content, tool_calls, None, reasoning_content
+        usage = _extract_usage(resp)
+        return message_content, tool_calls, None, reasoning_content, usage
 
     async def _create_stream(
         self,
         *,
         client: Any,
         params: dict[str, Any],
-    ) -> tuple[None, None, AsyncIterator[StreamEvent], None]:
+    ) -> tuple[None, None, AsyncIterator[StreamEvent], None, dict[str, Any] | None]:
         """执行流式聊天请求并返回事件迭代器。
 
         Args:
@@ -937,10 +1046,11 @@ class OpenAIChatClient:
             params: 请求参数 dict（不含 ``stream`` 键）。
 
         Returns:
-            四元组 ``(None, None, AsyncIterator[StreamEvent], None)``。
+            五元组 ``(None, None, AsyncIterator[StreamEvent], None, None)``。
         """
         stream_params = dict(params)
         stream_params["stream"] = True
+        stream_params.setdefault("stream_options", {"include_usage": True})
         stream_resp = await client.chat.completions.create(**stream_params)
 
         async def iter_events() -> AsyncIterator[StreamEvent]:
@@ -953,6 +1063,10 @@ class OpenAIChatClient:
 
             try:
                 async for chunk in stream_resp:
+                    usage = _extract_usage_from_obj(_get_usage_field(chunk, "usage", None))
+                    if usage:
+                        yield StreamEvent(usage=usage)
+
                     if not chunk.choices:
                         continue
                     choice = chunk.choices[0]
@@ -1011,7 +1125,7 @@ class OpenAIChatClient:
                 if callable(close_sync):
                     close_sync()
 
-        return None, None, iter_events(), None
+        return None, None, iter_events(), None, None
 
     async def create_embedding(
         self,
