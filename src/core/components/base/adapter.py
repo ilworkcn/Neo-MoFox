@@ -106,6 +106,9 @@ class BaseAdapter(AdapterBase):
         # 调用父类启动
         await super().start()
 
+        # 在创建健康检查任务前标记运行中，避免协程抢占后立即退出。
+        self._running = True
+
         # 启动健康检查
         tm = get_task_manager()
         self._health_check_task_info = tm.create_task(
@@ -113,8 +116,6 @@ class BaseAdapter(AdapterBase):
             name=f"{self.adapter_name}_health_check",
             daemon=True,
         )
-
-        self._running = True
 
     async def stop(self) -> None:
         """停止适配器。
