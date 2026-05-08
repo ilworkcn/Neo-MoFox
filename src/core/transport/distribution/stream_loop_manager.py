@@ -294,6 +294,13 @@ class StreamLoopManager:
         Returns:
             bool: 是否实际执行了重启
         """
+        context = await self._get_stream_context(stream_id)
+        if context and getattr(context, "is_context_compressing", False):
+            logger.debug(
+                f"[管理器] stream={stream_id[:8]}, 上下文压缩进行中，跳过 WatchDog 重启"
+            )
+            return False
+
         now = time.monotonic()
         next_allowed_at = self._restart_next_allowed_at.get(stream_id, 0.0)
 

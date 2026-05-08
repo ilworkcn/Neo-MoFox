@@ -712,6 +712,11 @@ class TestLLMRequestSend:
         """Test that send performs context compression when token usage reaches 95% threshold."""
         from src.core.utils.context_compression import default_chat_context_compression_handler
 
+        class CompressionTool:
+            @classmethod
+            def to_schema(cls) -> dict[str, Any]:
+                return {"name": "compression_tool"}
+
         threshold_model_set = [{**mock_model_set[0], "max_context": 60, "extra_params": {}}]
         request = LLMRequest(
             threshold_model_set,
@@ -720,6 +725,8 @@ class TestLLMRequestSend:
                 context_compression_handler=default_chat_context_compression_handler
             ),
         )
+        request.add_payload(LLMPayload(ROLE.SYSTEM, Text("sys")))
+        request.add_payload(LLMPayload(ROLE.TOOL, CompressionTool))
         request.add_payload(LLMPayload(ROLE.USER, Text("q1")))
         request.add_payload(LLMPayload(ROLE.ASSISTANT, Text("a1")))
         request.add_payload(LLMPayload(ROLE.USER, Text("q2")))
@@ -745,10 +752,22 @@ class TestLLMRequestSend:
         assert len(client.calls) == 2
         assert client.calls[0]["request_name"] == "test_request:context_compression"
         assert client.calls[0]["model_set"]["timeout"] == 120.0
+        assert len(client.calls[0]["tools"]) == 1
 
         compression_prompt = client.calls[0]["payloads"][-1]
         assert compression_prompt.role == ROLE.USER
-        assert "社交平台聊天机器人上下文压缩提示词" in compression_prompt.content[0].text
+        assert "创建一个迄今为止对话的详细摘要" in compression_prompt.content[0].text
+
+        compression_payload_texts = [
+            part.text
+            for payload in client.calls[0]["payloads"]
+            for part in payload.content
+            if isinstance(part, Text)
+        ]
+        assert "sys" in compression_payload_texts
+        assert "q1" in compression_payload_texts
+        assert "q2" in compression_payload_texts
+        assert "q3" in compression_payload_texts
 
         final_payload_texts = [
             part.text
@@ -758,8 +777,19 @@ class TestLLMRequestSend:
         ]
         assert any("压缩后的历史" in text for text in final_payload_texts)
         assert "q1" not in final_payload_texts
-        assert "q2" in final_payload_texts
-        assert "q3" in final_payload_texts
+        assert "q2" not in final_payload_texts
+        assert "q3" not in final_payload_texts
+
+        request_payload_texts = [
+            part.text
+            for payload in request.payloads
+            for part in payload.content
+            if isinstance(part, Text)
+        ]
+        assert any("压缩后的历史" in text for text in request_payload_texts)
+        assert "q1" not in request_payload_texts
+        assert "q2" not in request_payload_texts
+        assert "q3" not in request_payload_texts
 
     @pytest.mark.asyncio
     async def test_send_skips_compression_before_token_threshold(

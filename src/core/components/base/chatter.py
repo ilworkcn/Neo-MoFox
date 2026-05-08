@@ -488,6 +488,7 @@ class BaseChatter(ABC):
         request = LLMRequest(
             model_set=model_set,
             request_name=request_name or self.chatter_name,
+            stream_id=self.stream_id,
             context_manager=context_manager,
         )
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
 
 from src.kernel.llm import LLMRequest, LLMPayload, ROLE, Text
 from src.kernel.llm.types import ModelEntry, ModelSet
@@ -142,24 +143,50 @@ def _extract_summary_content(raw_text: str) -> str:
     if not raw_text:
         return ""
 
+    try:
+        root = ET.fromstring(f"<root>{raw_text}</root>")
+        summary_node = root.find("summary")
+        if summary_node is not None:
+            summary_text = "".join(summary_node.itertext()).strip()
+            if summary_text:
+                return summary_text
+    except ET.ParseError:
+        pass
+
     match = re.search(r"<summary>(.*?)</summary>", raw_text, re.DOTALL | re.IGNORECASE)
     if match:
         return match.group(1).strip()
     return raw_text.strip()
 
 
+def _set_stream_context_compressing(stream_id: str | None, value: bool) -> None:
+    """更新运行中聊天流的上下文压缩标记。"""
+
+    if not stream_id:
+        return
+
+    from src.core.managers import get_stream_manager
+
+    stream = get_stream_manager()._streams.get(stream_id)
+    if stream is None:
+        return
+
+    stream.context.is_context_compressing = value
+
+
 async def default_chat_context_compression_handler(
     request: LLMRequest,
-    dropped_groups: list[list[LLMPayload]],
-    remaining_payloads: list[LLMPayload],
+    source_payloads: list[LLMPayload],
     model: ModelEntry,
 ) -> list[LLMPayload]:
     """将超出窗口的历史对话压缩为单条 user 摘要消息。"""
 
-    del remaining_payloads, model
+    del model
 
-    history_payloads = [payload for group in dropped_groups for payload in group]
-    if not history_payloads:
+    if not source_payloads:
+        source_payloads = list(request.payloads)
+
+    if not source_payloads:
         return []
 
     compression_request = LLMRequest(
@@ -168,11 +195,17 @@ async def default_chat_context_compression_handler(
         clients=request.clients,
         enable_metrics=request.enable_metrics,
     )
-    compression_request.payloads = list(history_payloads) + [
+    compression_request.context_manager = None
+    compression_request.payloads = source_payloads + [
         LLMPayload(ROLE.USER, Text(DEFAULT_CHAT_CONTEXT_COMPRESSION_PROMPT))
     ]
 
-    response = await compression_request.send(auto_append_response=False, stream=False)
+    _set_stream_context_compressing(request.stream_id, True)
+    try:
+        response = await compression_request.send(auto_append_response=False, stream=False)
+    finally:
+        _set_stream_context_compressing(request.stream_id, False)
+
     summary_content = _extract_summary_content(response.message or "")
     if not summary_content:
         return []

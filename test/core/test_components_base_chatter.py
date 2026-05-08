@@ -114,6 +114,7 @@ class TestBaseChatter:
 
         assert request.context_manager is not None
         assert request.context_manager.context_compression_handler is not None
+        assert request.stream_id == "stream_123"
 
     def test_create_request_registers_dynamic_system_reminder(self, mock_plugin):
         """测试 dynamic reminder 会跟随最后一个 USER。"""

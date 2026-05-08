@@ -30,6 +30,7 @@ class StreamContext:
         history_messages: 历史消息列表
         is_active: 是否活跃
         is_chatter_processing: Chatter 是否正在处理
+        is_context_compressing: 是否正在执行上下文压缩
         message_cache: 消息缓存队列
         is_cache_enabled: 是否启用消息缓存
         last_message_time: 最近一次收到新消息的时间戳，None 表示尚未收到
@@ -43,6 +44,7 @@ class StreamContext:
     history_messages: list["Message"] = field(default_factory=list)
     is_active: bool = True
     is_chatter_processing: bool = False
+    is_context_compressing: bool = False
 
     # 当前消息
     current_message: "Message | None" = None

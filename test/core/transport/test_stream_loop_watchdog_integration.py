@@ -181,6 +181,22 @@ async def test_watchdog_restart_callback_is_throttled(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
+async def test_watchdog_restart_skips_when_context_compression_is_running() -> None:
+    """上下文压缩进行中时，WatchDog 不应重启同一聊天流。"""
+    manager = StreamLoopManager()
+    stream_id = "stream_context_compressing"
+
+    context = SimpleNamespace(is_context_compressing=True)
+    manager._get_stream_context = AsyncMock(return_value=context)
+    manager.restart_stream_loop = AsyncMock(return_value=True)
+
+    restarted = await manager._restart_stream_loop_from_watchdog(stream_id, cooldown=1.0)
+
+    assert restarted is False
+    manager.restart_stream_loop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_force_restart_does_not_wait_for_stuck_old_task(monkeypatch: pytest.MonkeyPatch) -> None:
     """强制重启应立即切换到新任务，而不是卡在已取消但不退出的旧任务上。"""
     manager = StreamLoopManager()

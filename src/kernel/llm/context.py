@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 TokenCounter = Callable[[list[LLMPayload]], int]
 AsyncContextCompressionHandler = Callable[
-    ["LLMRequest", list[list[LLMPayload]], list[LLMPayload], ModelEntry],
+    ["LLMRequest", list[LLMPayload], ModelEntry],
     Awaitable[list[LLMPayload]],
 ]
 
@@ -511,34 +511,13 @@ class LLMContextManager:
             return payloads
 
         pinned, tail = self._split_pinned_prefix(payloads)
-        groups = self._build_qa_groups(tail)
-        if not groups:
+        if not tail:
             return payloads
-
-        def token_counter(items: list[LLMPayload]) -> int:
-            try:
-                return count_payload_tokens(items, model_identifier=model_identifier)
-            except RuntimeError:
-                return 0
-
-        kept_groups = list(groups)
-        dropped_groups: list[list[LLMPayload]] = []
-        while len(kept_groups) > 1:
-            candidate = pinned + self._flatten_groups(kept_groups)
-            if token_counter(candidate) < compression_trigger:
-                break
-            dropped_groups.append(kept_groups.pop(0))
-
-        if not dropped_groups:
-            return payloads
-
-        remaining_payloads = self._flatten_groups(kept_groups)
         try:
             logger.info(f"触发上下文压缩: total_tokens={total_tokens}, model_name={model.get('model_identifier')}, request_name={request.request_name}")
             summary_payloads = await self.context_compression_handler(
                 request,
-                dropped_groups,
-                remaining_payloads,
+                payloads,
                 model,
             )
         except Exception as exc:
@@ -548,7 +527,7 @@ class LLMContextManager:
         if not summary_payloads:
             return payloads
 
-        return pinned + summary_payloads + remaining_payloads
+        return pinned + summary_payloads
 
     def _trim_by_tokens(
         self,

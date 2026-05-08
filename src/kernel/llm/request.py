@@ -112,6 +112,7 @@ class LLMRequest:
 
     model_set: ModelSet
     request_name: str = ""
+    stream_id: str | None = None
 
     payloads: list[LLMPayload] = field(default_factory=list)
     policy: Policy | None = None
@@ -248,6 +249,10 @@ class LLMRequest:
                         )
 
                 reasoning_text, reasoning_parts = _split_reasoning_result(reasoning_content)
+
+                # 发送成功后，将本次实际发出的 payload 写回当前 request，
+                # 让后续复用同一 request 的链路与调试视图保持一致。
+                self.payloads = list(trimmed_payloads)
 
                 resp = LLMResponse(
                     _stream=stream_iter,
