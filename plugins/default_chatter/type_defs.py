@@ -8,6 +8,7 @@ from typing import Protocol, TypedDict, TypeAlias
 from src.core.models.message import Message
 from src.core.models.stream import ChatStream
 from src.kernel.llm import LLMPayload, LLMRequest, ToolCall, ToolRegistry
+from src.kernel.logger import Logger
 
 
 class SubAgentDecision(TypedDict):
@@ -57,7 +58,6 @@ class DefaultChatterRuntime(Protocol):
         self,
         task: str = "actor",
         request_name: str = "",
-        max_context: int | None = None,
         with_reminder: str | None = None,
     ) -> LLMRequest:
         """创建 LLM 请求。"""
@@ -117,6 +117,9 @@ class DefaultChatterRuntime(Protocol):
         self,
         response: LLMConversationState,
         formatted_text: str,
+        unread_msgs: list[Message] | None = None,
+        native_multimodal: bool = False,
+        logger_override: Logger | None = None,
     ) -> None:
         """将未读消息写入待发送上下文。"""
         ...
@@ -153,7 +156,6 @@ class SupportsRequestCreation(Protocol):
         self,
         task: str = "actor",
         request_name: str = "",
-        max_context: int | None = None,
         with_reminder: str | None = None,
     ) -> LLMRequest:
         """创建 LLM 请求。"""

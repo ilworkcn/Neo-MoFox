@@ -17,6 +17,7 @@ class StreamEvent:
     tool_call_id: str | None = None
     tool_name: str | None = None
     tool_args_delta: str | None = None
+    usage: dict[str, Any] | None = None
 
 
 class ChatModelClient(Protocol):
@@ -34,14 +35,17 @@ class ChatModelClient(Protocol):
         list[dict[str, Any]] | None,
         AsyncIterator[StreamEvent] | None,
         str | list[ReasoningText] | None,
+        dict[str, Any] | None,
     ]:
         """发起一次聊天请求。
 
-        返回四元组：
+        返回五元组：
         - message: 非流时的完整文本；流式则为 None
         - tool_calls: 非流时解析出的工具调用列表；流式则为 None（将通过 StreamEvent 解析）
         - stream_iter: 流式迭代器；非流则为 None
         - reasoning_content: 非流时的推理内容；流式则为 None（将通过 StreamEvent 解析）
+        - usage: API 返回的 usage 字典（含 prompt_tokens/completion_tokens/cache 等）；
+          流式且未启用 usage 上报时为 None
         """
         ...
 

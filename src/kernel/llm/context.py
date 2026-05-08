@@ -2,21 +2,36 @@
 
 from __future__ import annotations
 
+import math
 import uuid
+from collections.abc import Awaitable
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from src.core.prompt import SystemReminderInsertType
+from src.kernel.logger import get_logger
 
 from .payload import LLMPayload
 from .payload.content import Content, Text
 from .payload.tooling import LLMUsable, ToolCall, ToolResult
 from .roles import ROLE
 from .exceptions import LLMContextError
+from .token_counter import count_payload_tokens
+from .types import ModelEntry
 
-CompressionHook = Callable[[list[list[LLMPayload]], list[LLMPayload]], list[LLMPayload]]
+if TYPE_CHECKING:
+    from .request import LLMRequest
+
 TokenCounter = Callable[[list[LLMPayload]], int]
+AsyncContextCompressionHandler = Callable[
+    ["LLMRequest", list[LLMPayload], ModelEntry],
+    Awaitable[list[LLMPayload]],
+]
+
+logger = get_logger("kernel.llm.context", display="LLM 上下文")
+
+CONTEXT_COMPRESSION_TRIGGER_RATIO = 0.95
 
 
 @dataclass(slots=True, frozen=True)
@@ -34,7 +49,7 @@ class RegisteredReminderSource:
     bucket: str
     names: tuple[str, ...] | None
     wrap_with_system_tag: bool
-    last_rendered_texts: tuple[str, ...] = ()
+    last_rendered: tuple[RegisteredReminder, ...] = ()
 
 
 @dataclass(slots=True)
@@ -45,15 +60,16 @@ class LLMContextManager:
     1. 接管 payload 列表写入（add_payload/system/tool）；
     2. 接管 reminder 的延迟登记；
     3. 在写入后执行结构校验（strict，不做自动修复）；
-    4. 最后按 max_payloads/token_budget 执行裁剪。
+    4. 最后按 token_budget 执行裁剪。
 
     对于 reminder：固定注入到“首个真实 USER 消息的首段”；若尚无 USER，则继续等待后续 USER。
     """
 
-    max_payloads: int | None = None
-    compression_hook: CompressionHook | None = None
+    context_compression_handler: AsyncContextCompressionHandler | None = None
     _reminders: list[RegisteredReminder] | None = None
     _reminder_sources: list[RegisteredReminderSource] | None = None
+    # 当前轮已解析出的 reminder 文本集合，用于观测当前注入状态。
+    _injected_reminder_texts: set[str] | None = None
 
     def validate_for_send(self, payloads: list[LLMPayload]) -> None:
         """在发起 LLM 请求前校验上下文结构。
@@ -89,7 +105,8 @@ class LLMContextManager:
         else:
             updated.append(payload)
 
-        updated = self._apply_reminders(updated)
+        if payload.role == ROLE.USER:
+            updated = self._apply_reminders(updated)
         trimmed = self.maybe_trim(updated)
 
         # strict：不做自动修复，但要尽早暴露“非尾部”的链路错误。
@@ -285,57 +302,102 @@ class LLMContextManager:
         )
 
     def _apply_reminders(self, payloads: list[LLMPayload]) -> list[LLMPayload]:
-        """根据插入类型将 reminder 注入目标 USER 消息首段。"""
+        """将 reminder 注入目标 USER 消息首段。
 
-        resolved_reminders, reminder_texts_for_stripping = self._resolve_reminders()
-        if not resolved_reminders:
-            return payloads
+        fixed reminder 固定挂在首个 USER 前缀；dynamic reminder 只在当前目标 USER
+        前缀上做局部替换，不改写其它历史 USER，避免已经发送过的前缀被重写而导致
+        邻接请求的缓存链提前断开。
+        """
 
         updated = list(payloads)
-
         user_indices = [idx for idx, payload in enumerate(updated) if payload.role == ROLE.USER]
         if not user_indices:
             return updated
 
+        resolved_reminders, strip_texts_by_type = self._resolve_reminders()
+
+        if not resolved_reminders:
+            self._injected_reminder_texts = set()
+            return updated
+
         first_user_index = user_indices[0]
         last_user_index = user_indices[-1]
-        all_reminder_parts = [Text(text) for text in reminder_texts_for_stripping]
-        target_parts: dict[int, list[Content | LLMUsable]] = {}
 
+        new_parts: dict[int, list[Text]] = {}
+        seen_targets: set[tuple[int, str]] = set()
         for reminder in resolved_reminders:
             target_index = (
                 first_user_index
                 if reminder.insert_type == SystemReminderInsertType.FIXED
                 else last_user_index
             )
-            target_parts.setdefault(target_index, []).append(Text(reminder.text))
+            target_key = (target_index, reminder.text)
+            if target_key in seen_targets:
+                continue
+            seen_targets.add(target_key)
+            new_parts.setdefault(target_index, []).append(Text(reminder.text))
 
-        for user_index in user_indices:
-            prefix_parts = target_parts.get(user_index, [])
-            existing = self._strip_registered_reminders(updated[user_index].content, all_reminder_parts)
-            rebuilt = prefix_parts + existing
+        if not new_parts:
+            self._injected_reminder_texts = {reminder.text for reminder in resolved_reminders}
+            return updated
+
+        for user_index, prefix_parts in new_parts.items():
+            user_payload = updated[user_index]
+            content_parts = list(user_payload.content)
+            target_strip_set: set[str] = set()
+            if user_index == first_user_index:
+                target_strip_set.update(
+                    strip_texts_by_type[SystemReminderInsertType.FIXED]
+                )
+            if user_index == last_user_index:
+                target_strip_set.update(
+                    strip_texts_by_type[SystemReminderInsertType.FIXED]
+                )
+                target_strip_set.update(
+                    strip_texts_by_type[SystemReminderInsertType.DYNAMIC]
+                )
+
+            if target_strip_set:
+                prefix_end = 0
+                while prefix_end < len(content_parts):
+                    part = content_parts[prefix_end]
+                    if not isinstance(part, Text) or part.text not in target_strip_set:
+                        break
+                    prefix_end += 1
+                if prefix_end > 0:
+                    content_parts = content_parts[prefix_end:]
+
+            rebuilt = list(prefix_parts) + content_parts
             updated[user_index] = LLMPayload(ROLE.USER, rebuilt)
+        self._injected_reminder_texts = {reminder.text for reminder in resolved_reminders}
 
         return updated
 
-    def _resolve_reminders(self) -> tuple[list[RegisteredReminder], list[str]]:
+    def _resolve_reminders(
+        self,
+    ) -> tuple[list[RegisteredReminder], dict[SystemReminderInsertType, list[str]]]:
         """Resolve direct reminders and bucket-backed reminders into current renderable texts."""
 
         resolved: list[RegisteredReminder] = []
-        strip_texts: list[str] = []
+        strip_texts_by_type: dict[SystemReminderInsertType, list[str]] = {
+            SystemReminderInsertType.FIXED: [],
+            SystemReminderInsertType.DYNAMIC: [],
+        }
 
         if self._reminders:
             resolved.extend(self._reminders)
-            strip_texts.extend(item.text for item in self._reminders)
+            for item in self._reminders:
+                strip_texts_by_type[item.insert_type].append(item.text)
 
         if self._reminder_sources:
             from src.core.prompt import get_system_reminder_store
 
             store = get_system_reminder_store()
             for source in self._reminder_sources:
-                strip_texts.extend(source.last_rendered_texts)
+                for previous in source.last_rendered:
+                    strip_texts_by_type[previous.insert_type].append(previous.text)
                 items = store.get_items(source.bucket, names=source.names)
-                current_texts: list[str] = []
+                current_items: list[RegisteredReminder] = []
                 for item in items:
                     text = item.render()
                     if source.wrap_with_system_tag:
@@ -344,42 +406,21 @@ class LLMContextManager:
                             f"{text}\n"
                             "</system_reminder>"
                         )
-                    current_texts.append(text)
-                    resolved.append(
-                        RegisteredReminder(
-                            text=text,
-                            insert_type=item.insert_type,
-                        )
+                    reminder = RegisteredReminder(
+                        text=text,
+                        insert_type=item.insert_type,
                     )
-                source.last_rendered_texts = tuple(current_texts)
-                strip_texts.extend(current_texts)
+                    current_items.append(reminder)
+                    resolved.append(reminder)
+                source.last_rendered = tuple(current_items)
+                for current in current_items:
+                    strip_texts_by_type[current.insert_type].append(current.text)
 
-        deduped_strip_texts = list(dict.fromkeys(strip_texts))
+        deduped_strip_texts = {
+            insert_type: list(dict.fromkeys(texts))
+            for insert_type, texts in strip_texts_by_type.items()
+        }
         return resolved, deduped_strip_texts
-
-    def _strip_registered_reminders(
-        self,
-        content: Sequence[Content | LLMUsable],
-        reminder_parts: Sequence[Content | LLMUsable],
-    ) -> list[Content | LLMUsable]:
-        """移除内容开头已登记的 reminder 文本，便于按最新目标位置重建前缀。"""
-
-        offset = 0
-        while offset < len(content):
-            matched = any(
-                self._is_same_text_part(content[offset], reminder_part)
-                for reminder_part in reminder_parts
-            )
-            if not matched:
-                break
-            offset += 1
-
-        return list(content[offset:])
-
-    def _is_same_text_part(self, left: Content | LLMUsable, right: Content | LLMUsable) -> bool:
-        """判断两个内容片段是否为同一文本片段。"""
-
-        return isinstance(left, Text) and isinstance(right, Text) and left.text == right.text
 
     def maybe_trim(
         self,
@@ -389,24 +430,15 @@ class LLMContextManager:
         token_counter: TokenCounter | None = None,
     ) -> list[LLMPayload]:
         """
-        根据 max_payloads 和 max_token_budget 对 payloads 进行裁剪。
+        根据 max_token_budget 对 payloads 进行裁剪。
 
         裁剪策略：
         1. 保留开头的系统/工具消息（pinned prefix）。
         2. 将剩余消息按用户/助手对话分组，整体裁剪掉较早的对话组。
-        3. 如果提供了 compression_hook，则在裁剪掉一批对话组后，调用该 hook 生成压缩后的消息，并将其插入剩余消息的开头。
-        4. 如果 max_token_budget 仍然超出，则继续裁剪剩余的对话组，直到满足预算。
+        3. 如果 max_token_budget 仍然超出，则继续裁剪剩余的对话组，直到满足预算。
         """
 
         trimmed = payloads
-
-        # 首先根据 max_payloads 进行裁剪
-        if (
-            self.max_payloads is not None
-            and self.max_payloads > 0
-            and len(trimmed) > self.max_payloads
-        ):
-            trimmed = self._trim_by_payloads(trimmed, self.max_payloads)
 
         # 然后根据 max_token_budget 进行裁剪
         if (
@@ -418,6 +450,111 @@ class LLMContextManager:
             trimmed = self._trim_by_tokens(trimmed, max_token_budget, token_counter)
 
         return trimmed
+
+    async def prepare_payloads_for_model(
+        self,
+        payloads: list[LLMPayload],
+        model: ModelEntry,
+        *,
+        request: LLMRequest | None = None,
+    ) -> list[LLMPayload]:
+        """在发送前按模型上下文限制执行压缩与裁剪。"""
+
+        prepared = await self._maybe_compress_payloads(payloads, model, request=request)
+
+        budget = self._compute_effective_context_budget(model)
+        model_identifier = model.get("model_identifier")
+        if budget is None or not isinstance(model_identifier, str) or not model_identifier:
+            return prepared
+
+        try:
+            if count_payload_tokens(prepared, model_identifier=model_identifier) <= budget:
+                return prepared
+        except RuntimeError:
+            return prepared
+
+        def token_counter(items: list[LLMPayload]) -> int:
+            try:
+                return count_payload_tokens(items, model_identifier=model_identifier)
+            except RuntimeError:
+                return 0
+
+        return self.maybe_trim(
+            prepared,
+            max_token_budget=budget,
+            token_counter=token_counter,
+        )
+
+    def _compute_effective_context_budget(self, model: ModelEntry) -> int | None:
+        """计算在上下文保留策略生效后的有效 token 预算。"""
+
+        max_context = model.get("max_context")
+        if not isinstance(max_context, int) or max_context <= 0:
+            return None
+
+        extra_params = model.get("extra_params")
+        if not isinstance(extra_params, dict):
+            extra_params = {}
+
+        reserve_tokens = extra_params.get("context_reserve_tokens")
+        fixed_reserve = reserve_tokens if isinstance(reserve_tokens, int) and reserve_tokens > 0 else 0
+
+        reserve_ratio = extra_params.get("context_reserve_ratio")
+        ratio = max(0.0, float(reserve_ratio)) if isinstance(reserve_ratio, (int, float)) else 0.0
+        ratio_reserve = int(math.floor(max_context * ratio))
+
+        effective_budget = max_context - max(fixed_reserve, ratio_reserve)
+        return effective_budget if effective_budget > 0 else 1
+
+    async def _maybe_compress_payloads(
+        self,
+        payloads: list[LLMPayload],
+        model: ModelEntry,
+        *,
+        request: LLMRequest | None = None,
+    ) -> list[LLMPayload]:
+        """在发送前根据模型上下文占用率决定是否压缩历史对话。"""
+
+        if not self.context_compression_handler or request is None:
+            return payloads
+
+        model_identifier = model.get("model_identifier")
+        max_context = model.get("max_context")
+        if (
+            not isinstance(model_identifier, str)
+            or not model_identifier
+            or not isinstance(max_context, int)
+            or max_context <= 0
+        ):
+            return payloads
+
+        try:
+            total_tokens = count_payload_tokens(payloads, model_identifier=model_identifier)
+        except RuntimeError:
+            return payloads
+
+        compression_trigger = max(1, int(math.floor(max_context * CONTEXT_COMPRESSION_TRIGGER_RATIO)))
+        if total_tokens < compression_trigger:
+            return payloads
+
+        pinned, tail = self._split_pinned_prefix(payloads)
+        if not tail:
+            return payloads
+        try:
+            logger.info(f"触发上下文压缩: total_tokens={total_tokens}, model_name={model.get('model_identifier')}, request_name={request.request_name}")
+            summary_payloads = await self.context_compression_handler(
+                request,
+                payloads,
+                model,
+            )
+        except Exception as exc:
+            logger.warning(f"上下文压缩失败，跳过压缩并继续原请求: {exc}")
+            return payloads
+
+        if not summary_payloads:
+            return payloads
+
+        return pinned + summary_payloads
 
     def _trim_by_tokens(
         self,
@@ -444,56 +581,7 @@ class LLMContextManager:
                 break
             dropped_groups.append(kept_groups.pop(0))
 
-        remaining_payloads = self._flatten_groups(kept_groups)
-
-        # 如果提供了 compression_hook，则在裁剪掉一批对话组后，调用该 hook 生成压缩后的消息，并将其插入剩余消息的开头
-        hook_payloads = self._apply_compression_hook(dropped_groups, remaining_payloads)
-        if hook_payloads:
-            combined = pinned + hook_payloads + remaining_payloads
-            while len(kept_groups) > 1 and token_counter(combined) > token_budget:
-                kept_groups.pop(0)
-                remaining_payloads = self._flatten_groups(kept_groups)
-                combined = pinned + hook_payloads + remaining_payloads
-            return combined
-
-        return pinned + remaining_payloads
-
-    def _trim_by_payloads(
-        self, payloads: list[LLMPayload], max_payloads: int
-    ) -> list[LLMPayload]:
-        """
-        根据 max_payloads 对 payloads 进行裁剪
-        """
-        pinned, tail = self._split_pinned_prefix(payloads)
-        groups = self._build_qa_groups(tail)
-        if not groups:
-            return payloads
-
-        kept_groups = list(groups)
-        dropped_groups: list[list[LLMPayload]] = []
-
-        # 先尝试直接裁剪对话组，保留 pinned 和尽可能多的对话组，直到满足 max_payloads 约束
-        while (
-            len(kept_groups) > 1
-            and self._payload_len(pinned, kept_groups) > max_payloads
-        ):
-            dropped_groups.append(kept_groups.pop(0))
-
-        remaining_payloads = self._flatten_groups(kept_groups)
-
-        # 如果提供了 compression_hook，则在裁剪掉一批对话组后，调用该 hook 生成压缩后的消息，并将其插入剩余消息的开头
-        hook_payloads = self._apply_compression_hook(dropped_groups, remaining_payloads)
-        if hook_payloads:
-            remaining_payloads = self._flatten_groups(kept_groups)
-
-        # 最后检查一次总长度，如果仍然超出 max_payloads，则继续裁剪剩余的对话组，直到满足约束
-        while len(kept_groups) > 1 and (
-            len(pinned) + len(hook_payloads) + len(remaining_payloads) > max_payloads
-        ):
-            kept_groups.pop(0)
-            remaining_payloads = self._flatten_groups(kept_groups)
-
-        return pinned + hook_payloads + remaining_payloads
+        return pinned + self._flatten_groups(kept_groups)
 
     def _split_pinned_prefix(
         self, payloads: list[LLMPayload]
@@ -538,24 +626,6 @@ class LLMContextManager:
 
         return groups
 
-    def _apply_compression_hook(
-        self,
-        dropped_groups: list[list[LLMPayload]],
-        remaining_payloads: list[LLMPayload],
-    ) -> list[LLMPayload]:
-        """调用压缩 hook 生成压缩后的消息"""
-        if not self.compression_hook or not dropped_groups:
-            return []
-        return self.compression_hook(dropped_groups, remaining_payloads)
-
     def _flatten_groups(self, groups: list[list[LLMPayload]]) -> list[LLMPayload]:
         """将分组扁平化为单一列表"""
         return [payload for group in groups for payload in group]
-
-    def _payload_len(
-        self, pinned: list[LLMPayload], groups: list[list[LLMPayload]]
-    ) -> int:
-        """
-        计算有效负载的总长度，包括 pinned 消息和对话组消息
-        """
-        return len(pinned) + sum(len(group) for group in groups)

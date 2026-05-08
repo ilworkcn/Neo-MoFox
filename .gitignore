@@ -35,6 +35,7 @@ env.bak/
 .idea/
 *.sublime-workspace
 *.sublime-project
+.github/prompts/*
 
 # OS files
 .DS_Store
@@ -102,4 +103,3 @@ skill/*
 !plugins/perm_plugin/
 !plugins/utility_commands/
 !plugins/skill_manager/
-

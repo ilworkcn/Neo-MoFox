@@ -135,6 +135,10 @@ class ModelInfoSection(SectionBase):
         default=0.0,
         description="每百万 token 输入价格",
     )
+    cache_hit_price_in: float | None = Field(
+        default=None,
+        description="每百万 token 缓存命中输入价格；未配置时回退到 price_in",
+    )
     price_out: float = Field(
         default=0.0,
         description="每百万 token 输出价格",
@@ -450,6 +454,7 @@ class ModelConfig(ConfigBase):
                 - timeout: float - 超时时间（秒）
                 - retry_interval: float - 重试间隔（秒）
                 - price_in: float - 输入价格
+                - cache_hit_price_in: float - 缓存命中输入价格
                 - price_out: float - 输出价格
                 - temperature: float - 温度参数
                 - max_tokens: int - 最大 token 数
@@ -510,6 +515,7 @@ class ModelConfig(ConfigBase):
                 "timeout": float(provider.timeout),
                 "retry_interval": float(provider.retry_interval),
                 "price_in": model_info.price_in,
+                "cache_hit_price_in": model_info.cache_hit_price_in if model_info.cache_hit_price_in is not None else model_info.price_in,
                 "price_out": model_info.price_out,
                 "temperature": task_config.temperature,
                 "max_tokens": task_config.max_tokens,
@@ -589,6 +595,7 @@ class ModelConfig(ConfigBase):
             "timeout": float(provider.timeout),
             "retry_interval": float(provider.retry_interval),
             "price_in": model_info.price_in,
+            "cache_hit_price_in": model_info.cache_hit_price_in if model_info.cache_hit_price_in is not None else model_info.price_in,
             "price_out": model_info.price_out,
             "temperature": temperature if temperature is not None else 0.7,
             "max_tokens": max_tokens if max_tokens is not None else 800,

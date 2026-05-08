@@ -45,6 +45,15 @@ from .monitor import (
 	get_global_collector,
 )
 
+from .stats import (
+    LLMStatsCollector,
+    LLMRequestRecord,
+    LLMStatsConfig,
+    init_llm_stats,
+    get_llm_stats_collector,
+    close_llm_stats_db,
+)
+
 from .exceptions import (
 	LLMError,
 	LLMContextError,
@@ -95,6 +104,13 @@ __all__ = [
 	"MetricsCollector",
 	"RequestTimer",
 	"get_global_collector",
+	# 统计相关
+	"LLMStatsCollector",
+	"LLMRequestRecord",
+	"LLMStatsConfig",
+	"init_llm_stats",
+	"get_llm_stats_collector",
+	"close_llm_stats_db",
 	# 异常相关
 	"LLMError",
 	"LLMContextError",

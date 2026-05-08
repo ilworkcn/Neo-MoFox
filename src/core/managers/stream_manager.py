@@ -260,7 +260,10 @@ class StreamManager:
         chat_stream.last_active_time = stream_record.last_active_time
 
         # 加载上下文
-        chat_stream.context = await self.load_stream_context(stream_id, max_messages=get_core_config().chat.max_context_size)
+        chat_stream.context = await self.load_stream_context(
+            stream_id,
+            max_messages=get_core_config().chat.max_history_messages,
+        )
 
         logger.debug(f"从数据库构建流: {stream_id}")
 
@@ -312,7 +315,11 @@ class StreamManager:
         context = StreamContext(
             stream_id=stream_id,
             chat_type=stream_record.chat_type,
-            max_context_size=max_messages if max_messages else get_core_config().chat.max_context_size,  # 仅用于内存限制
+            max_history_messages=(
+                max_messages
+                if max_messages is not None
+                else get_core_config().chat.max_history_messages
+            ),
             history_messages=history_messages,
         )
 

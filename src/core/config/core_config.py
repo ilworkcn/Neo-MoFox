@@ -3,11 +3,12 @@
 定义 core 层所需的配置项，使用 kernel/config 的配置系统。
 """
 
+from pathlib import Path
 from typing import Literal
 
 from src.kernel.config import ConfigBase, SectionBase, config_section, Field
 
-CORE_VERSION = "1.1.0-rc"
+CORE_VERSION = "1.2.0-alpha"
 
 class CoreConfig(ConfigBase):
     """Core 层配置类
@@ -195,13 +196,13 @@ class CoreConfig(ConfigBase):
             choices=["focus", "normal", "proactive", "priority"],
             hint="决定 Bot 的响应策略",
         )
-        max_context_size: int = Field(
+        max_history_messages: int = Field(
             default=20,
-            description="每个聊天流的最大上下文消息数",
-            label="最大上下文数",
+            description="每个聊天流在内存中保留的最大历史消息数",
+            label="最大历史消息数",
             tag="performance",
             input_type="slider",
-            hint="保留在记忆中的消息数量",
+            hint="保留在运行态历史中的消息数量",
         )
         image_recognition_prompt: str = Field(
             default="",
@@ -213,6 +214,17 @@ class CoreConfig(ConfigBase):
             placeholder="请描述这张图片的内容...",
             hint="留空使用默认提示词",
         )
+
+        @property
+        def max_context_size(self) -> int:
+            """兼容旧代码读取，返回历史消息保留上限。"""
+            return self.max_history_messages
+
+        @max_context_size.setter
+        def max_context_size(self, value: int) -> None:
+            """兼容旧代码写入，更新历史消息保留上限。"""
+            self.max_history_messages = value
+
     chat: ChatSection = Field(default_factory=ChatSection)
 
     @config_section("llm")
@@ -233,6 +245,35 @@ class CoreConfig(ConfigBase):
         )
 
     llm: LLMSection = Field(default_factory=LLMSection)
+
+    @config_section("llm_stats")
+    class LLMStatsSection(SectionBase):
+        """LLM 统计配置节。"""
+
+        enabled: bool = Field(
+            default=True,
+            description="是否启用 LLM 请求统计",
+            label="启用统计",
+            tag="ai",
+            input_type="switch",
+        )
+        db_path: str = Field(
+            default="data/llm_stats/llm_stats.db",
+            description="LLM 统计 SQLite 数据库路径",
+            label="统计数据库路径",
+            tag="file",
+            input_type="text",
+            placeholder="data/llm_stats/llm_stats.db",
+        )
+        max_records: int = Field(
+            default=100_000,
+            description="保留的最大请求记录数，0 表示不限制",
+            label="最大记录数",
+            tag="performance",
+            input_type="number",
+        )
+
+    llm_stats: LLMStatsSection = Field(default_factory=LLMStatsSection)
 
     @config_section("personality")
     class PersonalitySection(SectionBase):
@@ -746,6 +787,27 @@ def _inject_kernel_llm_policy(config: CoreConfig) -> None:
     set_default_policy_factory(lambda: create_policy(config.llm.default_policy))
 
 
+def _migrate_legacy_chat_context_config(config_path: Path) -> None:
+    """迁移旧的 chat.max_context_size 到新的历史上下文字段。"""
+    import tomllib
+
+    with config_path.open("rb") as file:
+        raw_config = tomllib.load(file)
+
+    chat_config = raw_config.get("chat")
+    if not isinstance(chat_config, dict) or "max_context_size" not in chat_config:
+        return
+
+    legacy_value = chat_config.pop("max_context_size")
+    chat_config.setdefault("max_history_messages", legacy_value)
+
+    from src.kernel.config.core import _merge_with_model_defaults, _render_toml_with_signature
+
+    migrated_config = _merge_with_model_defaults(CoreConfig, raw_config)
+    toml_content = _render_toml_with_signature(CoreConfig, migrated_config)
+    config_path.write_text(toml_content, encoding="utf-8")
+
+
 def get_core_config() -> CoreConfig:
     """获取全局 Core 配置实例
 
@@ -786,8 +848,6 @@ def init_core_config(config_path: str) -> CoreConfig:
     """
     global _global_config
 
-    from pathlib import Path
-
     path = Path(config_path)
 
     # 确保配置文件存在
@@ -804,6 +864,7 @@ def init_core_config(config_path: str) -> CoreConfig:
         toml_content = _render_toml_with_signature(CoreConfig, default_config)
         path.write_text(toml_content, encoding="utf-8")
 
+    _migrate_legacy_chat_context_config(path)
     _global_config = CoreConfig.load(config_path, auto_update=True)
     _inject_kernel_llm_policy(_global_config)
 

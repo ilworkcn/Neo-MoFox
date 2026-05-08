@@ -120,71 +120,6 @@ class ChatStreams(Base):
     )
 
 
-class LLMUsage(Base):
-    """LLM使用记录模型"""
-
-    __tablename__ = "llm_usage"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-
-    # 模型信息
-    model_name: Mapped[str] = mapped_column(
-        get_string_field(100),
-        nullable=False,
-        comment="模型名称"
-    )
-    model_assign_name: Mapped[str] = mapped_column(
-        get_string_field(100),
-        comment="模型分配名称"
-    )
-    model_api_provider: Mapped[str] = mapped_column(
-        get_string_field(100),
-        comment="API提供商"
-    )
-
-    # 请求信息
-    user_id: Mapped[str] = mapped_column(
-        get_string_field(50),
-        nullable=False,
-        comment="用户ID"
-    )
-    request_type: Mapped[str] = mapped_column(
-        get_string_field(50),
-        nullable=False,
-        comment="请求类型"
-    )
-    endpoint: Mapped[str] = mapped_column(
-        Text,
-        nullable=False,
-        comment="API端点"
-    )
-
-    # Token 统计
-    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
-    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
-    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
-
-    # 成本与性能
-    cost: Mapped[float] = mapped_column(Float, nullable=False)
-    time_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
-
-    # 状态
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    timestamp: Mapped[datetime.datetime] = mapped_column(
-        DateTime,
-        nullable=False,
-        index=True,
-        default=datetime.datetime.now
-    )
-
-    __table_args__ = (
-        Index("idx_llmusage_timestamp", "timestamp"),
-        Index("idx_llmusage_model_name", "model_name"),
-        Index("idx_llmusage_user_timestamp", "user_id", "timestamp"),
-        Index("idx_llmusage_status_timestamp", "status", "timestamp"),
-    )
-
-
 class Messages(Base):
     """消息模型 - 短期上下文存储"""
 
@@ -751,4 +686,3 @@ class CommandPermissions(Base):
             unique=True,
         ),
     )
-

@@ -307,7 +307,12 @@ async def run_chat_stream(
                             time.time(),
                             len(context.unread_messages),
                         )
-                        logger.debug(f"[驱动器] stream={stream_id[:8]}, 进入 Stop 状态 (time={result.time})，销毁生成器")
+                        logger.debug(
+                            f"[驱动器] stream={stream_id[:8]}, 进入 Stop 状态 "
+                            f"(time={result.time}, "
+                            f"direct_wake={result.direct_message_wake_enabled}, "
+                            f"probability={result.direct_message_wake_probability:.2f})，销毁生成器"
+                        )
                         manager._chatter_genes.pop(stream_id, None)
                         
                     manager._stats["total_process_cycles"] += 1

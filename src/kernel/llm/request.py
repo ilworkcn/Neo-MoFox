@@ -12,7 +12,7 @@ LLMRequest 支持：
 from __future__ import annotations
 
 import asyncio
-import math
+import time
 from dataclasses import dataclass, field
 from typing import Any, Self
 
@@ -29,7 +29,6 @@ from .policy.base import Policy
 from .response import LLMResponse
 from .roles import ROLE
 from .types import ModelEntry, ModelSet, RequestType
-from .token_counter import count_payload_tokens
 
 
 logger = get_logger("kernel.llm.request", display="LLM 请求")
@@ -82,19 +81,24 @@ def _normalize_client_create_result(
     list[dict[str, Any]] | None,
     Any,
     str | list[ReasoningText] | None,
+    dict[str, Any] | None,
 ]:
-    """兼容 provider client 的 3 元组与 4 元组返回格式。"""
+    """兼容 provider client 的 3/4/5 元组返回格式。"""
+    if len(result) == 5:
+        message, tool_calls, stream_iter, reasoning_content, usage = result
+        return message, tool_calls, stream_iter, reasoning_content, usage
+
     if len(result) == 4:
         message, tool_calls, stream_iter, reasoning_content = result
-        return message, tool_calls, stream_iter, reasoning_content
+        return message, tool_calls, stream_iter, reasoning_content, None
 
     if len(result) == 3:
         message, tool_calls, stream_iter = result
-        return message, tool_calls, stream_iter, None
+        return message, tool_calls, stream_iter, None, None
 
     raise ValueError(
-        "client.create 必须返回长度为 3 或 4 的元组："
-        "(message, tool_calls, stream_iter[, reasoning_content])"
+        "client.create 必须返回长度为 3/4/5 的元组："
+        "(message, tool_calls, stream_iter[, reasoning_content[, usage]])"
     )
 
 
@@ -114,6 +118,7 @@ class LLMRequest:
 
     model_set: ModelSet
     request_name: str = ""
+    meta_data: dict[str, Any] = field(default_factory=dict)
 
     payloads: list[LLMPayload] = field(default_factory=list)
     policy: Policy | None = None
@@ -131,6 +136,10 @@ class LLMRequest:
             self.clients = ModelClientRegistry()
         if self.context_manager is None:
             self.context_manager = LLMContextManager()
+        if self.meta_data is None:
+            self.meta_data = {}
+        elif not isinstance(self.meta_data, dict):
+            self.meta_data = dict(self.meta_data)
 
     def add_payload(self, payload: LLMPayload, position=None) -> Self:
         """
@@ -161,91 +170,6 @@ class LLMRequest:
             self.payloads.append(payload)
         return self
 
-    def _compute_effective_context_budget(self, model: ModelEntry) -> int | None:
-        """计算在考虑上下文保留策略后的有效上下文预算。
-
-        1. 从 model.max_context 获取模型的最大上下文长度。
-        2. 从 model.extra_params 中获取 context_reserve_tokens 和 context_reserve_ratio。
-        3. 计算固定保留和比例保留，取两者的最大值作为总保留。
-        4. 有效预算 = max_context - reserve，确保至少为 1。
-        """
-        # 验证 max_context
-        max_context = model.get("max_context")
-        if not isinstance(max_context, int) or max_context <= 0:
-            return None
-
-        # 验证 extra_params
-        extra_params = model.get("extra_params")
-        if not isinstance(extra_params, dict):
-            extra_params = {}
-
-        # 计算保留的上下文长度
-        reserve_tokens = extra_params.get("context_reserve_tokens")
-        fixed_reserve = (
-            reserve_tokens
-            if isinstance(reserve_tokens, int) and reserve_tokens > 0
-            else 0
-        )
-
-        # 计算比例保留的上下文长度
-        reserve_ratio = extra_params.get("context_reserve_ratio")
-        ratio = 0.0
-        if isinstance(reserve_ratio, (int, float)):
-            ratio = max(0.0, float(reserve_ratio))
-        ratio_reserve = int(math.floor(max_context * ratio))
-
-        # 取固定保留和比例保留的最大值作为总保留
-        reserve = max(fixed_reserve, ratio_reserve)
-
-        # 计算有效预算
-        effective_budget = max_context - reserve
-        return effective_budget if effective_budget > 0 else 1
-
-    def _maybe_trim_payloads_for_model(
-        self, payloads: list[LLMPayload], model: ModelEntry
-    ) -> list[LLMPayload]:
-        """
-        根据模型的上下文限制和保留策略，裁剪 payloads 以适应当前模型。
-        """
-        if not self.context_manager:
-            return payloads
-        
-        budget = self._compute_effective_context_budget(model)
-        model_identifier = model.get("model_identifier")
-
-        # 如果无法计算有效预算，或者 model_identifier 无效，则直接使用 context_manager 的默认裁剪逻辑（基于 max_payloads）。
-        if (
-            budget is None
-            or not isinstance(model_identifier, str)
-            or not model_identifier
-        ):
-            return self.context_manager.maybe_trim(payloads)
-
-        try:
-            # 首先快速检查当前 payloads 是否已经在预算内，如果是，则直接返回（避免不必要的裁剪和 token 计数）。
-            if (
-                count_payload_tokens(payloads, model_identifier=model_identifier)
-                <= budget
-            ):
-                return self.context_manager.maybe_trim(payloads)
-        except RuntimeError:
-            return self.context_manager.maybe_trim(payloads)
-
-        def token_counter(items: list[LLMPayload]) -> int:
-            """
-            计算给定 payloads 的 token 数量。
-            """
-            try:
-                return count_payload_tokens(items, model_identifier=model_identifier)
-            except RuntimeError:
-                return 0
-
-        return self.context_manager.maybe_trim(
-            payloads,
-            max_token_budget=budget,
-            token_counter=token_counter,
-        )
-
     async def send(
         self, auto_append_response: bool = True, *, stream: bool = True
     ) -> LLMResponse:
@@ -259,6 +183,7 @@ class LLMRequest:
             LLMResponse: 包含响应消息和工具调用信息的对象。
         """
         model_set = _validate_model_set(self.model_set)
+        request_started_at = time.perf_counter()
 
         # TOOL_RESULT payload 规范化（确保 provider 端可读）
         payloads = [_normalize_tool_result_payload(p) for p in self.payloads]
@@ -288,7 +213,13 @@ class LLMRequest:
 
             # 根据当前模型的上下文限制和保留策略，裁剪 payloads 以适应当前模型
             # 注意：裁剪结果仅用于本次请求，不回写 self.payloads，避免重试时基于已裁剪的结果再裁剪
-            trimmed_payloads = self._maybe_trim_payloads_for_model(payloads, model)
+            trimmed_payloads = list(payloads)
+            if self.context_manager is not None:
+                trimmed_payloads = await self.context_manager.prepare_payloads_for_model(
+                    trimmed_payloads,
+                    model,
+                    request=self,
+                )
 
             # 严格上下文校验：不允许带着不完整/不合法的 tool 链路发起请求。
             # 该错误属于“本地逻辑错误”，不应进入重试链。
@@ -317,18 +248,22 @@ class LLMRequest:
                         isinstance(timeout_seconds, (int, float))
                         and timeout_seconds > 0
                     ):
-                        message, tool_calls, stream_iter, reasoning_content = _normalize_client_create_result(
+                        message, tool_calls, stream_iter, reasoning_content, usage = _normalize_client_create_result(
                             await asyncio.wait_for(
                                 create_task,
                                 timeout=float(timeout_seconds),
                             )
                         )
                     else:
-                        message, tool_calls, stream_iter, reasoning_content = _normalize_client_create_result(
+                        message, tool_calls, stream_iter, reasoning_content, usage = _normalize_client_create_result(
                             await create_task
                         )
 
                 reasoning_text, reasoning_parts = _split_reasoning_result(reasoning_content)
+
+                # 发送成功后，将本次实际发出的 payload 写回当前 request，
+                # 让后续复用同一 request 的链路与调试视图保持一致。
+                self.payloads = list(trimmed_payloads)
 
                 resp = LLMResponse(
                     _stream=stream_iter,
@@ -358,7 +293,18 @@ class LLMRequest:
                     ]
 
                 # 记录成功指标
-                if self.enable_metrics:
+                if self.enable_metrics and not stream:
+                    _record_llm_stats(
+                        model=model,
+                        model_identifier=model_identifier,
+                        request_name=self.request_name,
+                        meta_data=self.meta_data,
+                        latency=timer.elapsed,
+                        usage=usage,
+                        success=True,
+                        stream=False,
+                        retry_count=retry_count,
+                    )
                     metrics = RequestMetrics(
                         model_name=model_identifier,
                         request_name=self.request_name,
@@ -369,6 +315,19 @@ class LLMRequest:
                         model_index=step.meta.get("model_index", 0) if step.meta else 0,
                     )
                     get_global_collector().record_request(metrics)
+                elif self.enable_metrics and stream:
+                    resp._stream_stats_recorder = lambda final_usage, final_latency: _record_llm_stats(
+                        model=model,
+                        model_identifier=model_identifier,
+                        request_name=self.request_name,
+                        meta_data=self.meta_data,
+                        latency=final_latency,
+                        usage=final_usage,
+                        success=True,
+                        stream=True,
+                        retry_count=retry_count,
+                    )
+                    resp._stream_started_at = request_started_at
 
                 session.record_success(latency=timer.elapsed)
                 return resp
@@ -416,6 +375,18 @@ class LLMRequest:
                     )
 
                 # 记录失败指标
+                if self.enable_metrics:
+                    _record_llm_stats(
+                        model=model,
+                        model_identifier=model_identifier,
+                        request_name=self.request_name,
+                        meta_data=self.meta_data,
+                        latency=timer.elapsed,
+                        usage=None,
+                        success=False,
+                        stream=stream,
+                        retry_count=retry_count,
+                    )
                 if self.enable_metrics:
                     metrics = RequestMetrics(
                         model_name=model_identifier,
@@ -505,6 +476,7 @@ def _validate_model_entry(model: dict[str, Any]) -> ModelEntry:
 
     model.setdefault("tool_call_compat", False)
     model.setdefault("max_context", 0)
+    model.setdefault("cache_hit_price_in", model.get("price_in", 0.0))
 
     return model  # type: ignore[return-value]
 
@@ -518,3 +490,74 @@ def _validate_model_set(model_set: Any) -> ModelSet:
     if not all(isinstance(x, dict) for x in model_set):
         raise LLMConfigurationError("model_set 必须是 list[dict]")
     return [_validate_model_entry(x) for x in model_set]
+
+
+def _record_llm_stats(
+    *,
+    model: ModelEntry,
+    model_identifier: str,
+    request_name: str,
+    meta_data: dict[str, Any],
+    latency: float,
+    usage: dict[str, Any] | None,
+    success: bool,
+    stream: bool,
+    retry_count: int,
+) -> None:
+    """将请求统计写入 LLM 统计模块（非阻塞）。"""
+    try:
+        from src.kernel.llm.stats import LLMRequestRecord, get_llm_stats_collector
+
+        collector = get_llm_stats_collector()
+        if not collector.enabled:
+            return
+
+        usage_data = usage or {}
+        cost = _calculate_request_cost(model=model, usage=usage_data)
+        record = LLMRequestRecord(
+            model_name=model.get("model_name", model_identifier),
+            model_identifier=model_identifier,
+            api_provider=str(model.get("api_provider", "")),
+            request_name=request_name,
+            stream_id=meta_data.get("stream_id"),
+            prompt_tokens=usage_data.get("prompt_tokens", 0),
+            completion_tokens=usage_data.get("completion_tokens", 0),
+            total_tokens=usage_data.get("total_tokens", 0),
+            cache_hit_tokens=usage_data.get("cache_hit_tokens", 0),
+            cache_miss_tokens=usage_data.get("cache_miss_tokens", 0),
+            cache_write_tokens=usage_data.get("cache_write_tokens", 0),
+            cost=cost,
+            latency=latency,
+            success=success,
+            stream=stream,
+            retry_count=retry_count,
+        )
+
+        import asyncio
+        asyncio.ensure_future(collector.record(record))
+    except Exception:
+        pass
+
+
+def _calculate_request_cost(*, model: ModelEntry, usage: dict[str, Any]) -> float:
+    """根据模型单价与 usage 估算请求成本。"""
+    prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+    cache_hit_tokens = int(usage.get("cache_hit_tokens", 0) or 0)
+    completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+    cache_miss_tokens = int(usage.get("cache_miss_tokens", 0) or 0)
+    price_in = float(model.get("price_in", 0.0) or 0.0)
+    cache_hit_price_raw = model.get("cache_hit_price_in", price_in)
+    cache_hit_price_in = price_in if cache_hit_price_raw is None else float(cache_hit_price_raw)
+    price_out = float(model.get("price_out", 0.0) or 0.0)
+    if cache_hit_tokens > 0 or cache_miss_tokens > 0:
+        billable_prompt_tokens = (
+            cache_miss_tokens
+            if cache_miss_tokens > 0
+            else max(prompt_tokens - cache_hit_tokens, 0)
+        )
+    else:
+        billable_prompt_tokens = prompt_tokens
+
+    input_cost = billable_prompt_tokens * price_in + cache_hit_tokens * cache_hit_price_in
+    output_cost = completion_tokens * price_out
+    return round((input_cost + output_cost) / 1_000_000, 8)

@@ -186,6 +186,22 @@ def test_captured_request_to_full_includes_rendered_payload() -> None:
     assert detail["rendered"]["messages"][0]["blocks"][0]["text"] == "hello"
 
 
+def test_captured_request_summary_includes_request_name() -> None:
+    """摘要接口应暴露 request_name，供前端缓存探针按同类请求分组。"""
+    record = CapturedRequest(
+        id=2,
+        ts=0.0,
+        api_name="chat.completions.create",
+        model="demo-model",
+        params={"messages": [{"role": "user", "content": "hello"}], "tools": []},
+        metadata={"api_provider": "OpenAI", "request_name": "actor"},
+    )
+
+    summary = record.to_summary()
+
+    assert summary["request_name"] == "actor"
+
+
 def test_request_inspector_imports_raw_request_json() -> None:
     """导入原始请求体 JSON 后应进入既有渲染链路。"""
     inspector = RequestInspector()

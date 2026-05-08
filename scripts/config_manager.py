@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+from typing import Any
 import tomli
 import tomli_w
 import os
@@ -11,7 +12,7 @@ class ConfigManager:
         self.root.title("模型配置管理器")
         self.root.geometry("800x600")
         
-        self.config_data = None
+        self.config_data: dict[str, Any] = {}
         self.current_file = None
         self.last_file_path = self.load_last_file_path()
         
@@ -124,7 +125,7 @@ class ConfigManager:
         # Treeview for models
         self.models_tree = ttk.Treeview(
             self.models_frame,
-            columns=("name", "identifier", "provider", "max_context", "tool_call_compat", "price_in", "price_out"),
+            columns=("name", "identifier", "provider", "max_context", "tool_call_compat", "price_in", "cache_hit_price_in", "price_out"),
             show="headings"
         )
         self.models_tree.heading("name", text="名称")
@@ -133,6 +134,7 @@ class ConfigManager:
         self.models_tree.heading("max_context", text="最大上下文")
         self.models_tree.heading("tool_call_compat", text="Tool兼容")
         self.models_tree.heading("price_in", text="输入价格")
+        self.models_tree.heading("cache_hit_price_in", text="缓存命中输入价格")
         self.models_tree.heading("price_out", text="输出价格")
         # 配置错误标签样式
         self.models_tree.tag_configure('error', foreground='red')  # 整行标红
@@ -488,10 +490,11 @@ class ConfigManager:
                 max_context = model.get("max_context", 32768)
                 tool_call_compat = model.get("tool_call_compat", False)
                 price_in = model.get("price_in", 0)
+                cache_hit_price_in = model.get("cache_hit_price_in", "")
                 price_out = model.get("price_out", 0)
                 
                 item = self.models_tree.insert("", tk.END, values=(
-                    name, identifier, provider, max_context, "是" if tool_call_compat else "否", price_in, price_out
+                    name, identifier, provider, max_context, "是" if tool_call_compat else "否", price_in, cache_hit_price_in, price_out
                 ))
         
         # 更新模型任务
@@ -650,25 +653,29 @@ class ConfigManager:
         price_in_entry.insert(0, "0")
         price_in_entry.grid(row=3, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
         
-        ttk.Label(dialog, text="输出价格:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.E)
+        ttk.Label(dialog, text="缓存命中输入价格:").grid(row=4, column=0, padx=5, pady=5, sticky=tk.E)
+        cache_hit_price_in_entry = ttk.Entry(dialog)
+        cache_hit_price_in_entry.grid(row=4, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+
+        ttk.Label(dialog, text="输出价格:").grid(row=5, column=0, padx=5, pady=5, sticky=tk.E)
         price_out_entry = ttk.Entry(dialog)
         price_out_entry.insert(0, "0")
-        price_out_entry.grid(row=4, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+        price_out_entry.grid(row=5, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
 
-        ttk.Label(dialog, text="最大上下文Token:").grid(row=5, column=0, padx=5, pady=5, sticky=tk.E)
+        ttk.Label(dialog, text="最大上下文Token:").grid(row=6, column=0, padx=5, pady=5, sticky=tk.E)
         max_context_entry = ttk.Entry(dialog)
         max_context_entry.insert(0, "32768")
-        max_context_entry.grid(row=5, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+        max_context_entry.grid(row=6, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
         
         force_stream_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(dialog, text="强制流式模式", variable=force_stream_var).grid(row=6, column=0, columnspan=2, pady=5, sticky=tk.W)
+        ttk.Checkbutton(dialog, text="强制流式模式", variable=force_stream_var).grid(row=7, column=0, columnspan=2, pady=5, sticky=tk.W)
 
         tool_call_compat_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(dialog, text="启用Tool Call兼容模式", variable=tool_call_compat_var).grid(row=7, column=0, columnspan=2, pady=5, sticky=tk.W)
+        ttk.Checkbutton(dialog, text="启用Tool Call兼容模式", variable=tool_call_compat_var).grid(row=8, column=0, columnspan=2, pady=5, sticky=tk.W)
         
         # Enhanced extra params section
         extra_params_frame = ttk.LabelFrame(dialog, text="额外参数 (TOML格式)", padding=5)
-        extra_params_frame.grid(row=8, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W+tk.E+tk.N+tk.S)
+        extra_params_frame.grid(row=9, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W+tk.E+tk.N+tk.S)
         
         # Text widget with syntax highlighting
         extra_params_text = tk.Text(extra_params_frame, height=6, width=50, wrap=tk.NONE)
@@ -714,6 +721,10 @@ class ConfigManager:
                     provider_var.set(model.get("api_provider", ""))
                     price_in_entry.delete(0, tk.END)
                     price_in_entry.insert(0, str(model.get("price_in", 0)))
+                    cache_hit_price_in_entry.delete(0, tk.END)
+                    cache_hit_price_in = model.get("cache_hit_price_in", None)
+                    if cache_hit_price_in is not None:
+                        cache_hit_price_in_entry.insert(0, str(cache_hit_price_in))
                     price_out_entry.delete(0, tk.END)
                     price_out_entry.insert(0, str(model.get("price_out", 0)))
                     max_context_entry.delete(0, tk.END)
@@ -728,7 +739,7 @@ class ConfigManager:
         
         # Buttons
         btn_frame = ttk.Frame(dialog)
-        btn_frame.grid(row=9, column=0, columnspan=2, pady=10)
+        btn_frame.grid(row=10, column=0, columnspan=2, pady=10)
         
         def save_model():
             try:
@@ -758,6 +769,12 @@ class ConfigManager:
                 "max_context": max_context,
                 "tool_call_compat": bool(tool_call_compat_var.get()),
             })
+
+            cache_hit_price_text = cache_hit_price_in_entry.get().strip()
+            if cache_hit_price_text:
+                model["cache_hit_price_in"] = float(cache_hit_price_text)
+            else:
+                model.pop("cache_hit_price_in", None)
             
             if force_stream_var.get():
                 model["force_stream_mode"] = True

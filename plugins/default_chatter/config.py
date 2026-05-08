@@ -86,6 +86,18 @@ class DefaultChatterConfig(BaseConfig):
             tag="performance",
             hint="有效范围为 0.0 到 1.0。"
         )
+        native_multimodal: bool = Field(
+            default=False,
+            description=(
+                "原生多模态模式。启用后，图片直接以 base64 形式打包进 LLM payload，"
+                "由主模型在对话上下文中理解图片内容，跳过框架的 VLM 文字识别环节，"
+                "避免空转浪费 token；表情包仍走 VLM 识别以利用哈希缓存。"
+                "需确保 actor 任务对应的模型支持多模态输入。"
+            ),
+            label="原生多模态",
+            tag="ai",
+            hint="启用前请确认 actor 模型支持图片输入"
+        )
         theme_guide: ThemeGuideSection = Field(
             default_factory=ThemeGuideSection,
             description="按聊天类型区分的额外提示词",

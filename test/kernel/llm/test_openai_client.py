@@ -382,6 +382,71 @@ class TestSchemaNormalization:
         assert "reason" not in required
 
 
+class TestExtractUsage:
+    """测试 usage 统计字段提取。"""
+
+    def test_extract_usage_supports_raw_response_dict(self):
+        """测试兼容顶层返回为原始 JSON dict 的响应。"""
+        from src.kernel.llm.model_client.openai_client import _extract_usage
+
+        response = {
+            "id": "019bdaa55225ef854b320e9b838f77ce",
+            "object": "chat.completion",
+            "model": "Pro/zai-org/GLM-4.7",
+            "usage": {
+                "prompt_tokens": 15,
+                "completion_tokens": 1540,
+                "total_tokens": 1555,
+                "completion_tokens_details": {"reasoning_tokens": 1190},
+                "prompt_tokens_details": {"cached_tokens": 0},
+                "prompt_cache_hit_tokens": 0,
+                "prompt_cache_miss_tokens": 15,
+            },
+        }
+
+        result = _extract_usage(response)
+
+        assert result["prompt_tokens"] == 15
+        assert result["completion_tokens"] == 1540
+        assert result["total_tokens"] == 1555
+        assert result["cache_hit_tokens"] == 0
+        assert result["cache_miss_tokens"] == 15
+
+    def test_extract_usage_supports_dict_details(self):
+        """测试兼容供应商返回 dict 形式的 prompt_tokens_details。"""
+        from src.kernel.llm.model_client.openai_client import _extract_usage_from_obj
+
+        usage = {
+            "prompt_tokens": 300,
+            "completion_tokens": 20,
+            "total_tokens": 320,
+            "prompt_tokens_details": {"cached_tokens": 120},
+        }
+
+        result = _extract_usage_from_obj(usage)
+
+        assert result["prompt_tokens"] == 300
+        assert result["completion_tokens"] == 20
+        assert result["total_tokens"] == 320
+        assert result["cache_hit_tokens"] == 120
+        assert result["cache_miss_tokens"] == 180
+
+    def test_extract_usage_supports_input_tokens_details_alias(self):
+        """测试兼容 input_tokens_details.cached_tokens 别名。"""
+        from src.kernel.llm.model_client.openai_client import _extract_usage_from_obj
+
+        class Usage:
+            prompt_tokens = 90
+            completion_tokens = 10
+            total_tokens = 100
+            input_tokens_details = {"cached_tokens": 30}
+
+        result = _extract_usage_from_obj(Usage())
+
+        assert result["cache_hit_tokens"] == 30
+        assert result["cache_miss_tokens"] == 60
+
+
 class TestOpenAIChatClient:
     """测试OpenAIChatClient类。"""
 

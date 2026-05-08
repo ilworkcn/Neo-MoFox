@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Generator
 from typing import Any
 
 import pytest
+from unittest.mock import patch
 
 from src.kernel.llm.exceptions import (
     LLMConfigurationError,
@@ -23,6 +24,8 @@ from src.kernel.llm.policy import (
     create_policy,
     set_default_policy_factory,
 )
+from src.kernel.llm.context import LLMContextManager
+from src.kernel.llm import request as request_module
 from src.kernel.llm.request import LLMRequest
 from src.kernel.llm.roles import ROLE
 
@@ -74,6 +77,43 @@ class MockChatClient:
             return None, None, stream_gen()
         else:
             return "Success response!", None, None
+
+
+class TrackingChatClient(MockChatClient):
+    """记录每次 create 调用参数的测试客户端。"""
+
+    def __init__(self, responses: list[Any] | None = None) -> None:
+        super().__init__(responses=responses)
+        self.calls: list[dict[str, Any]] = []
+
+    async def create(
+        self,
+        *,
+        model_name: str,
+        payloads: list[LLMPayload],
+        tools: list[LLMUsable],
+        request_name: str,
+        model_set: Any,
+        stream: bool,
+    ) -> tuple[str | None, list[dict[str, Any]] | None, AsyncIterator[StreamEvent] | None]:
+        self.calls.append(
+            {
+                "model_name": model_name,
+                "payloads": list(payloads),
+                "tools": list(tools),
+                "request_name": request_name,
+                "model_set": dict(model_set),
+                "stream": stream,
+            }
+        )
+        return await super().create(
+            model_name=model_name,
+            payloads=payloads,
+            tools=tools,
+            request_name=request_name,
+            model_set=model_set,
+            stream=stream,
+        )
 
 
 # ============================================================================
@@ -510,7 +550,7 @@ class TestLLMRequestSend:
             request.add_payload(LLMPayload(ROLE.ASSISTANT, Text(f"a{idx}")))
 
         monkeypatch.setattr(
-            "src.kernel.llm.request.count_payload_tokens",
+            "src.kernel.llm.context.count_payload_tokens",
             lambda payloads, model_identifier: len(payloads) * 30,
         )
 
@@ -667,6 +707,125 @@ class TestLLMRequestSend:
         assert elapsed >= 0.9  # Allow small tolerance
 
     @pytest.mark.asyncio
+    async def test_send_compresses_context_when_token_usage_reaches_threshold(
+        self, mock_model_set: list[dict[str, Any]]
+    ) -> None:
+        """Test that send performs context compression when token usage reaches 95% threshold."""
+        from src.core.utils.context_compression import default_chat_context_compression_handler
+
+        class CompressionTool:
+            @classmethod
+            def to_schema(cls) -> dict[str, Any]:
+                return {"name": "compression_tool"}
+
+        threshold_model_set = [{**mock_model_set[0], "max_context": 60, "extra_params": {}}]
+        request = LLMRequest(
+            threshold_model_set,
+            "test_request",
+            context_manager=LLMContextManager(
+                context_compression_handler=default_chat_context_compression_handler
+            ),
+        )
+        request.add_payload(LLMPayload(ROLE.SYSTEM, Text("sys")))
+        request.add_payload(LLMPayload(ROLE.TOOL, CompressionTool))
+        request.add_payload(LLMPayload(ROLE.USER, Text("q1")))
+        request.add_payload(LLMPayload(ROLE.ASSISTANT, Text("a1")))
+        request.add_payload(LLMPayload(ROLE.USER, Text("q2")))
+        request.add_payload(LLMPayload(ROLE.ASSISTANT, Text("a2")))
+        request.add_payload(LLMPayload(ROLE.USER, Text("q3")))
+        request.add_payload(LLMPayload(ROLE.ASSISTANT, Text("a3")))
+
+        client = TrackingChatClient(
+            responses=[
+                ("<analysis>ignored</analysis><summary>压缩后的历史</summary>", None, None),
+                ("Final answer", None, None),
+            ]
+        )
+        request.clients.openai = client
+
+        with patch(
+            "src.kernel.llm.context.count_payload_tokens",
+            side_effect=lambda items, model_identifier=None: len(items) * 10,
+        ):
+            response = await request.send(stream=False)
+
+        assert response.message == "Final answer"
+        assert len(client.calls) == 2
+        assert client.calls[0]["request_name"] == "test_request:context_compression"
+        assert client.calls[0]["model_set"]["timeout"] == 120.0
+        assert len(client.calls[0]["tools"]) == 1
+
+        compression_prompt = client.calls[0]["payloads"][-1]
+        assert compression_prompt.role == ROLE.USER
+        assert "创建一个迄今为止对话的详细摘要" in compression_prompt.content[0].text
+
+        compression_payload_texts = [
+            part.text
+            for payload in client.calls[0]["payloads"]
+            for part in payload.content
+            if isinstance(part, Text)
+        ]
+        assert "sys" in compression_payload_texts
+        assert "q1" in compression_payload_texts
+        assert "q2" in compression_payload_texts
+        assert "q3" in compression_payload_texts
+
+        final_payload_texts = [
+            part.text
+            for payload in client.calls[1]["payloads"]
+            for part in payload.content
+            if isinstance(part, Text)
+        ]
+        assert any("压缩后的历史" in text for text in final_payload_texts)
+        assert "q1" not in final_payload_texts
+        assert "q2" not in final_payload_texts
+        assert "q3" not in final_payload_texts
+
+        request_payload_texts = [
+            part.text
+            for payload in request.payloads
+            for part in payload.content
+            if isinstance(part, Text)
+        ]
+        assert any("压缩后的历史" in text for text in request_payload_texts)
+        assert "q1" not in request_payload_texts
+        assert "q2" not in request_payload_texts
+        assert "q3" not in request_payload_texts
+
+    @pytest.mark.asyncio
+    async def test_send_skips_compression_before_token_threshold(
+        self, mock_model_set: list[dict[str, Any]]
+    ) -> None:
+        """Test that send does not compress before token usage reaches 95% threshold."""
+        from src.core.utils.context_compression import default_chat_context_compression_handler
+
+        threshold_model_set = [{**mock_model_set[0], "max_context": 100, "extra_params": {}}]
+        request = LLMRequest(
+            threshold_model_set,
+            "test_request",
+            context_manager=LLMContextManager(
+                context_compression_handler=default_chat_context_compression_handler
+            ),
+        )
+        request.add_payload(LLMPayload(ROLE.USER, Text("q1")))
+        request.add_payload(LLMPayload(ROLE.ASSISTANT, Text("a1")))
+        request.add_payload(LLMPayload(ROLE.USER, Text("q2")))
+        request.add_payload(LLMPayload(ROLE.ASSISTANT, Text("a2")))
+
+        client = TrackingChatClient(responses=[("Final answer", None, None)])
+        request.clients.openai = client
+
+        with patch(
+            "src.kernel.llm.context.count_payload_tokens",
+            side_effect=lambda items, model_identifier=None: len(items) * 10,
+        ):
+            response = await request.send(stream=False)
+
+        assert response.message == "Final answer"
+        assert len(client.calls) == 1
+        assert client.calls[0]["request_name"] == "test_request"
+
+    @pytest.mark.asyncio
     async def test_send_metrics_collection(
         self, mock_model_set: list[dict[str, Any]]
     ) -> None:
@@ -713,6 +872,110 @@ class TestLLMRequestSend:
         # No metrics should be recorded
         history = collector.get_recent_history(limit=10)
         assert len(history) == 0
+
+    def test_init_accepts_meta_data(
+        self, mock_model_set: list[dict[str, Any]]
+    ) -> None:
+        """Test that request keeps caller-provided meta_data intact."""
+        request = LLMRequest(
+            mock_model_set,
+            "test_request",
+            meta_data={"stream_id": "stream-456", "trace_id": "trace-1"},
+        )
+
+        assert request.meta_data == {"stream_id": "stream-456", "trace_id": "trace-1"}
+
+    def test_calculate_request_cost_prefers_cache_miss_tokens(
+        self, mock_model_set: list[dict[str, Any]]
+    ) -> None:
+        """Test that request cost supports a dedicated cache-hit input price."""
+        model = dict(mock_model_set[0])
+        model["cache_hit_price_in"] = 0.00001
+
+        cost = request_module._calculate_request_cost(
+            model=model,
+            usage={
+                "prompt_tokens": 1000,
+                "completion_tokens": 500,
+                "cache_hit_tokens": 700,
+                "cache_miss_tokens": 300,
+            },
+        )
+
+        expected = round((300 * 0.00003 + 700 * 0.00001 + 500 * 0.00006) / 1_000_000, 8)
+        assert cost == expected
+
+    def test_calculate_request_cost_falls_back_to_normal_input_price(
+        self, mock_model_set: list[dict[str, Any]]
+    ) -> None:
+        """Test that cache-hit input price falls back to price_in when omitted."""
+        cost = request_module._calculate_request_cost(
+            model=mock_model_set[0],
+            usage={
+                "prompt_tokens": 1000,
+                "completion_tokens": 500,
+                "cache_hit_tokens": 700,
+                "cache_miss_tokens": 300,
+            },
+        )
+
+        expected = round((1000 * 0.00003 + 500 * 0.00006) / 1_000_000, 8)
+        assert cost == expected
+
+    @pytest.mark.asyncio
+    async def test_stream_stats_record_after_response_consumed(
+        self, mock_model_set: list[dict[str, Any]]
+    ) -> None:
+        """Test that stream usage stats are recorded after the response is fully consumed."""
+
+        class StreamUsageClient:
+            async def create(
+                self,
+                *,
+                model_name: str,
+                payloads: list[LLMPayload],
+                tools: list[LLMUsable],
+                request_name: str,
+                model_set: Any,
+                stream: bool,
+            ) -> tuple[str | None, list[dict[str, Any]] | None, AsyncIterator[StreamEvent] | None, str | None, dict[str, Any] | None]:
+                del model_name, payloads, tools, request_name, model_set
+
+                async def stream_gen() -> AsyncIterator[StreamEvent]:
+                    yield StreamEvent(text_delta="hello")
+                    if stream:
+                        yield StreamEvent(
+                            usage={
+                                "prompt_tokens": 120,
+                                "completion_tokens": 30,
+                                "total_tokens": 150,
+                                "cache_hit_tokens": 80,
+                                "cache_miss_tokens": 40,
+                            }
+                        )
+
+                return None, None, stream_gen(), None, None
+
+        request = LLMRequest(mock_model_set[:1], "stream_stats", meta_data={"stream_id": "stream-1"})
+        request.add_payload(LLMPayload(ROLE.USER, Text("Hello")))
+        request.clients.openai = StreamUsageClient()
+
+        captured: list[dict[str, Any]] = []
+
+        def fake_record(**kwargs: Any) -> None:
+            captured.append(kwargs)
+
+        with patch("src.kernel.llm.request._record_llm_stats", side_effect=fake_record):
+            response = await request.send(stream=True)
+            assert captured == []
+
+            text = await response
+
+        assert text == "hello"
+        assert len(captured) == 1
+        assert captured[0]["stream"] is True
+        assert captured[0]["usage"]["total_tokens"] == 150
+        assert captured[0]["meta_data"]["stream_id"] == "stream-1"
 
     @pytest.mark.asyncio
     async def test_send_invalid_model_identifier(

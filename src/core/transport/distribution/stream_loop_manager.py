@@ -294,6 +294,13 @@ class StreamLoopManager:
         Returns:
             bool: 是否实际执行了重启
         """
+        context = await self._get_stream_context(stream_id)
+        if context and getattr(context, "is_context_compressing", False):
+            logger.debug(
+                f"[管理器] stream={stream_id[:8]}, 上下文压缩进行中，跳过 WatchDog 重启"
+            )
+            return False
+
         now = time.monotonic()
         next_allowed_at = self._restart_next_allowed_at.get(stream_id, 0.0)
 
@@ -431,11 +438,20 @@ class StreamLoopManager:
         )
         return False
 
-    @staticmethod
-    def _message_mentions_bot(message: Message) -> bool:
+    def _message_mentions_bot(self, message: Message) -> bool:
         """判断消息是否显式 @ 了当前 Bot。"""
         raw_data = message.raw_data
         self_id = raw_data.get("self_id") if isinstance(raw_data, dict) else None
+
+        if self_id is None:
+            try:
+                from src.core.managers import get_stream_manager
+
+                chat_stream = get_stream_manager()._streams.get(message.stream_id)
+                if chat_stream is not None and chat_stream.bot_id:
+                    self_id = chat_stream.bot_id
+            except Exception:
+                self_id = None
 
         at_users = message.extra.get("at_users", [])
         if self_id is not None and isinstance(at_users, list):
@@ -525,6 +541,11 @@ class StreamLoopManager:
                 context,
                 unread_count_at_yield,
             ):
+                logger.debug(
+                    f"[Stop 唤醒] stream={stream_id[:8]}, "
+                    f"在冷却结束前被直接消息唤醒 "
+                    f"(unread_delta={max(0, unread_count_now - unread_count_at_yield)})"
+                )
                 self._pending_wait_resume_events[stream_id] = WaitResumeEvent(
                     source="message",
                     wait_time=wait_time,

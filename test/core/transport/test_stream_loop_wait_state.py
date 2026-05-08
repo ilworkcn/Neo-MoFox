@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 from typing import cast
 
 from src.core.models.message import Message
@@ -103,6 +104,48 @@ def test_wait_state_check_stop_direct_message_wakes_bot_mention(
             processed_plain_text="@<Neo:10001> hello",
             chat_type="group",
             raw_data={"self_id": "10001"},
+            at_users=[{"nickname": "Neo", "user_id": "10001"}],
+        )
+    ]
+
+    assert manager._wait_state_check(stream_id, context) is True
+
+
+def test_wait_state_check_stop_direct_message_wakes_bot_mention_without_raw_self_id(
+    monkeypatch,
+) -> None:
+    """raw_data 缺少 self_id 时，应回退到流上的 bot_id 判断 @Bot。"""
+    manager = StreamLoopManager()
+    stream_id = "stream-stop-at-wake-fallback"
+
+    manager._wait_states[stream_id] = (
+        Stop(
+            time=3600.0,
+            direct_message_wake_enabled=True,
+            direct_message_wake_probability=1.0,
+        ),
+        time.time(),
+        0,
+    )
+    monkeypatch.setattr(
+        "src.core.transport.distribution.stream_loop_manager.random.random",
+        lambda: 0.0,
+    )
+    monkeypatch.setattr(
+        "src.core.managers.get_stream_manager",
+        lambda: SimpleNamespace(
+            _streams={stream_id: SimpleNamespace(bot_id="10001")}
+        ),
+    )
+
+    context = StreamContext(stream_id=stream_id, chat_type="group")
+    context.unread_messages = [
+        Message(
+            content="@<Neo:10001> hello",
+            processed_plain_text="@<Neo:10001> hello",
+            chat_type="group",
+            stream_id=stream_id,
+            raw_data=None,
             at_users=[{"nickname": "Neo", "user_id": "10001"}],
         )
     ]

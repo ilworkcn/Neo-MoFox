@@ -140,7 +140,7 @@ request = LLMRequest(
     request_name="my_request",
     policy=RoundRobinPolicy(),
     enable_metrics=True,
-    context_manager=LLMContextManager(max_payloads=40)
+    context_manager=LLMContextManager()
 )
 ```
 
@@ -189,7 +189,7 @@ class MyContextManager(LLMContextManager):
 
 request = LLMRequest(
     model_set=models,
-    context_manager=MyContextManager(max_payloads=40)
+    context_manager=MyContextManager()
 )
 ```
 

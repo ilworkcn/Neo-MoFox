@@ -108,7 +108,12 @@ class TestBaseAdapter:
             mock_task_info = MagicMock()
             mock_task_info.task_id = "test_task_id"
             mock_tm_instance = MagicMock()
-            mock_tm_instance.create_task.return_value = mock_task_info
+
+            def _create_task(_coro, **_kwargs):
+                assert adapter._running is True
+                return mock_task_info
+
+            mock_tm_instance.create_task.side_effect = _create_task
             mock_tm.return_value = mock_tm_instance
 
             # Mock 父类 start
