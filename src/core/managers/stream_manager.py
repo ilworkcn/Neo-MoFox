@@ -127,6 +127,32 @@ class StreamManager:
 
         logger.info("StreamManager 初始化完成")
 
+    async def _ensure_stream_bot_identity(self, chat_stream: "ChatStream") -> None:
+        """确保 ChatStream 持有当前平台对应的 Bot 身份信息。"""
+        if chat_stream.bot_id and chat_stream.bot_nickname:
+            return
+
+        if not chat_stream.platform:
+            return
+
+        try:
+            from src.core.managers.adapter_manager import get_adapter_manager
+
+            bot_info = await get_adapter_manager().get_bot_info_by_platform(
+                chat_stream.platform
+            )
+            if not bot_info:
+                return
+
+            if not chat_stream.bot_id:
+                chat_stream.bot_id = str(bot_info.get("bot_id", "") or "")
+            if not chat_stream.bot_nickname:
+                chat_stream.bot_nickname = str(bot_info.get("bot_name", "") or "")
+        except Exception as e:
+            logger.warning(
+                f"回填 Bot 信息失败: platform={chat_stream.platform}, error={e}"
+            )
+
     # ==================== Stream Creation & Retrieval ====================
 
     async def get_or_create_stream(
@@ -181,6 +207,7 @@ class StreamManager:
             # 检查，避免等待锁期间已被其他协程创建
             existed = self._streams.get(stream_id)
             if existed is not None:
+                await self._ensure_stream_bot_identity(existed)
                 logger.debug(f"获取已存在的流实例: {stream_id}")
                 return existed
 
@@ -225,6 +252,8 @@ class StreamManager:
                     chat_type=chat_type,
                 )
 
+            await self._ensure_stream_bot_identity(chat_stream)
+
             # 存储到全局单例字典
             self._streams[stream_id] = chat_stream
 
@@ -256,6 +285,7 @@ class StreamManager:
             chat_type=stream_record.chat_type,
             stream_name=stream_record.group_name or "",
         )
+        await self._ensure_stream_bot_identity(chat_stream)
         chat_stream.create_time = stream_record.created_at
         chat_stream.last_active_time = stream_record.last_active_time
 
@@ -634,6 +664,8 @@ class StreamManager:
             stream = await self.build_stream_from_database(stream_id)
             if stream:
                 self._streams[stream_id] = stream
+        elif not (stream.bot_id and stream.bot_nickname):
+            await self._ensure_stream_bot_identity(stream)
 
         if stream:
             stream.update_active_time()
@@ -754,7 +786,6 @@ class StreamManager:
             ChatStream: 新创建的流对象
         """
         from src.core.models.stream import ChatStream
-        from src.core.managers.adapter_manager import get_adapter_manager
         from src.core.utils.user_query_helper import get_user_query_helper
 
         # 生成 stream_id
@@ -792,16 +823,6 @@ class StreamManager:
 
         await self._streams_crud.create(stream_data)
 
-        bot_id = ""
-        bot_nickname = ""
-        try:
-            bot_info = await get_adapter_manager().get_bot_info_by_platform(platform)
-            if bot_info:
-                bot_id = str(bot_info.get("bot_id", "") or "")
-                bot_nickname = str(bot_info.get("bot_name", "") or "")
-        except Exception as e:
-            logger.warning(f"获取 Bot 信息失败，将使用空值: platform={platform}, error={e}")
-
         # stream_name：由调用方按聊天类型传入（群聊=群名，私聊=xxx的私聊）
         stream_name = group_name or ""
 
@@ -810,10 +831,9 @@ class StreamManager:
             stream_id=stream_id,
             platform=platform,
             chat_type=chat_type,
-            bot_id=bot_id,
-            bot_nickname=bot_nickname,
             stream_name=stream_name,
         )
+        await self._ensure_stream_bot_identity(chat_stream)
         chat_stream.create_time = now
         chat_stream.last_active_time = now
 

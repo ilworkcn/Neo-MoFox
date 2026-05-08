@@ -55,6 +55,40 @@ async def test_get_or_create_stream_returns_cached_instance_without_db(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_get_or_create_stream_backfills_cached_bot_identity(monkeypatch) -> None:
+    """缓存中的旧流若 bot 信息为空，应在返回前自动回填。"""
+    from src.core.managers.stream_manager import StreamManager
+
+    manager = StreamManager()
+    stream_id = "stream-cached-bot-backfill"
+    cached_stream = SimpleNamespace(
+        stream_id=stream_id,
+        platform="qq",
+        bot_id="",
+        bot_nickname="",
+        context=SimpleNamespace(),
+    )
+    manager._streams[stream_id] = cached_stream
+
+    adapter_manager = SimpleNamespace(
+        get_bot_info_by_platform=AsyncMock(
+            return_value={"bot_id": "10001", "bot_name": "TestBot"}
+        )
+    )
+    monkeypatch.setattr(
+        "src.core.managers.adapter_manager.get_adapter_manager",
+        lambda: adapter_manager,
+    )
+
+    result = await manager.get_or_create_stream(stream_id=stream_id, platform="qq")
+
+    assert result is cached_stream
+    assert cached_stream.bot_id == "10001"
+    assert cached_stream.bot_nickname == "TestBot"
+    adapter_manager.get_bot_info_by_platform.assert_awaited_once_with("qq")
+
+
+@pytest.mark.asyncio
 async def test_create_new_stream_includes_bot_info(monkeypatch) -> None:
     """创建新流时应从适配器获取 bot 信息并保存到 ChatStream。"""
     from src.core.managers.stream_manager import StreamManager
@@ -89,6 +123,46 @@ async def test_create_new_stream_includes_bot_info(monkeypatch) -> None:
 
     assert stream.bot_id == "10001"
     assert stream.bot_nickname == "TestBot"
+    adapter_manager.get_bot_info_by_platform.assert_awaited_once_with("qq")
+
+
+@pytest.mark.asyncio
+async def test_build_stream_from_database_includes_bot_info(monkeypatch) -> None:
+    """从数据库恢复流时，应补齐 bot_id 和 bot_nickname。"""
+    from src.core.managers.stream_manager import StreamManager
+
+    manager = StreamManager()
+    manager._streams_crud.get_by = AsyncMock(
+        return_value=SimpleNamespace(
+            stream_id="stream-db-001",
+            platform="qq",
+            chat_type="group",
+            group_name="Test Group",
+            created_at=100.0,
+            last_active_time=120.0,
+        )
+    )
+    manager.load_stream_context = AsyncMock(return_value=SimpleNamespace())  # type: ignore[method-assign]
+
+    adapter_manager = SimpleNamespace(
+        get_bot_info_by_platform=AsyncMock(
+            return_value={"bot_id": "10001", "bot_name": "MoFox"}
+        )
+    )
+    monkeypatch.setattr(
+        "src.core.managers.adapter_manager.get_adapter_manager",
+        lambda: adapter_manager,
+    )
+    monkeypatch.setattr(
+        "src.core.managers.stream_manager.get_core_config",
+        lambda: SimpleNamespace(chat=SimpleNamespace(max_history_messages=100)),
+    )
+
+    stream = await manager.build_stream_from_database("stream-db-001")
+
+    assert stream is not None
+    assert stream.bot_id == "10001"
+    assert stream.bot_nickname == "MoFox"
     adapter_manager.get_bot_info_by_platform.assert_awaited_once_with("qq")
 
 
