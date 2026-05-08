@@ -480,6 +480,7 @@ class CapturedRequest:
             "api_name": self.api_name,
             "model": self.model,
             "api_provider": str(self.metadata.get("api_provider", "-")),
+            "request_name": str(self.metadata.get("request_name", "")),
             "estimated_input_tokens": self.metadata.get("estimated_input_tokens"),
             "msg_count": msg_count,
             "tool_count": tool_count,
@@ -1231,7 +1232,7 @@ let activeId = null;
 let autoScroll = true;
 let viewMode = 'pretty';
 let fullCache = {};
-const CACHE_PROBE_WINDOW = 8;
+const CACHE_PROBE_WINDOW = 50;
 
 function connectSSE() {
   const es = new EventSource('/_inspector/api/stream');
@@ -1309,16 +1310,22 @@ async function selectItem(id) {
   activeId = id;
   document.querySelectorAll('.req-item').forEach(el => el.classList.toggle('active', +el.dataset.id === id));
   detailTitle.textContent = '加载中…';
-  await ensureRequestDetails([id, ...getRecentProbeIds(id)]);
+  await ensureRequestDetails([id, ...getProbeCandidateIds(id)]);
   renderActiveDetail();
 }
 
-function getRecentProbeIds(id) {
+function getProbeCandidateIds(id) {
   const currentIndex = requests.findIndex(item => item.id === id);
   if (currentIndex <= 0) {
     return [];
   }
-  return requests.slice(Math.max(0, currentIndex - CACHE_PROBE_WINDOW), currentIndex).map(item => item.id);
+  const currentRecord = requests[currentIndex] || {};
+  const currentGroup = getCacheProbeGroupKey(currentRecord, null);
+  return requests
+    .slice(0, currentIndex)
+    .filter(item => getCacheProbeGroupKey(item, null) === currentGroup)
+    .slice(-CACHE_PROBE_WINDOW)
+    .map(item => item.id);
 }
 
 async function ensureRequestDetails(ids) {
@@ -1447,7 +1454,7 @@ function buildCacheProbeStates(messages) {
   const currentRecord = requests.find(item => item.id === activeId) || {};
   const currentGroup = getCacheProbeGroupKey(currentRecord, currentData);
   const currentFingerprints = messages.map(message => fingerprintMessageForCacheProbe(message));
-  const candidates = getRecentProbeIds(activeId)
+  const candidates = getProbeCandidateIds(activeId)
     .map(reqId => ({ record: requests.find(item => item.id === reqId) || {}, data: fullCache[reqId] || null }))
     .filter(entry => entry.data && getCacheProbeGroupKey(entry.record, entry.data) === currentGroup)
     .map(entry => (entry.data.rendered && Array.isArray(entry.data.rendered.messages) ? entry.data.rendered.messages : []))
@@ -1472,7 +1479,7 @@ function buildCacheProbeStates(messages) {
     if (prefixBreak) {
       return { hit: false, label: '前缀在此断开' };
     }
-    return { hit: false, label: candidates.length ? '最近样本未命中' : '无对照样本' };
+    return { hit: false, label: candidates.length ? '历史样本未命中' : '无对照样本' };
   });
 }
 
@@ -1491,7 +1498,7 @@ function hasMatchingPrefix(candidateFingerprints, currentFingerprints, endIndex)
 function getCacheProbeGroupKey(record, data) {
   const metadata = data && data.metadata ? data.metadata : {};
   const provider = metadata.api_provider || record.api_provider || '-';
-  const requestName = metadata.request_name || '';
+  const requestName = metadata.request_name || record.request_name || '';
   return [record.api_name || '', provider, record.model || '', requestName].join('|');
 }
 

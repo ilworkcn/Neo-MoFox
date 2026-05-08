@@ -721,23 +721,7 @@ class DefaultChatter(BaseChatter):
                 (logger_override or logger).debug(f"已提取 {len(images)} 张图片")
         else:
             content_list = [Text(formatted_text)]
-
-        if response.payloads and response.payloads[-1].role == ROLE.USER:
-            last_payload = response.payloads[-1]
-            if (
-                last_payload.content
-                and isinstance(last_payload.content[-1], Text)
-                and isinstance(content_list[0], Text)
-            ):
-                existing_text = last_payload.content[-1].text
-                last_payload.content[-1] = Text(
-                    f"{existing_text}\n{content_list[0].text}"
-                )
-                last_payload.content.extend(content_list[1:])
-            else:
-                last_payload.content.extend(content_list)
-        else:
-            response.add_payload(LLMPayload(ROLE.USER, content_list))
+        response.add_payload(LLMPayload(ROLE.USER, content_list))
 
     async def sub_agent(
         self,

@@ -49,7 +49,7 @@ class RegisteredReminderSource:
     bucket: str
     names: tuple[str, ...] | None
     wrap_with_system_tag: bool
-    last_rendered_texts: tuple[str, ...] = ()
+    last_rendered: tuple[RegisteredReminder, ...] = ()
 
 
 @dataclass(slots=True)
@@ -105,7 +105,8 @@ class LLMContextManager:
         else:
             updated.append(payload)
 
-        updated = self._apply_reminders(updated)
+        if payload.role == ROLE.USER:
+            updated = self._apply_reminders(updated)
         trimmed = self.maybe_trim(updated)
 
         # strict：不做自动修复，但要尽早暴露“非尾部”的链路错误。
@@ -303,9 +304,9 @@ class LLMContextManager:
     def _apply_reminders(self, payloads: list[LLMPayload]) -> list[LLMPayload]:
         """将 reminder 注入目标 USER 消息首段。
 
-        reminder 会作为 USER 前缀存在，因此每次都需要先剥离旧的 reminder 前缀，
-        再按当前 fixed / dynamic 的目标位置重新注入，避免 dynamic reminder 在内容变化
-        或最后一条 USER 变化时发生累积叠加。
+        fixed reminder 固定挂在首个 USER 前缀；dynamic reminder 只在当前目标 USER
+        前缀上做局部替换，不改写其它历史 USER，避免已经发送过的前缀被重写而导致
+        邻接请求的缓存链提前断开。
         """
 
         updated = list(payloads)
@@ -313,26 +314,7 @@ class LLMContextManager:
         if not user_indices:
             return updated
 
-        resolved_reminders, strip_texts = self._resolve_reminders()
-        strip_set = set(strip_texts)
-
-        if strip_set:
-            for user_index in user_indices:
-                user_payload = updated[user_index]
-                prefix_end = 0
-                while prefix_end < len(user_payload.content):
-                    part = user_payload.content[prefix_end]
-                    if not isinstance(part, Text) or part.text not in strip_set:
-                        break
-                    prefix_end += 1
-
-                if prefix_end <= 0:
-                    continue
-
-                updated[user_index] = LLMPayload(
-                    ROLE.USER,
-                    list(user_payload.content[prefix_end:]),
-                )
+        resolved_reminders, strip_texts_by_type = self._resolve_reminders()
 
         if not resolved_reminders:
             self._injected_reminder_texts = set()
@@ -361,30 +343,61 @@ class LLMContextManager:
 
         for user_index, prefix_parts in new_parts.items():
             user_payload = updated[user_index]
-            rebuilt = list(prefix_parts) + list(user_payload.content)
+            content_parts = list(user_payload.content)
+            target_strip_set: set[str] = set()
+            if user_index == first_user_index:
+                target_strip_set.update(
+                    strip_texts_by_type[SystemReminderInsertType.FIXED]
+                )
+            if user_index == last_user_index:
+                target_strip_set.update(
+                    strip_texts_by_type[SystemReminderInsertType.FIXED]
+                )
+                target_strip_set.update(
+                    strip_texts_by_type[SystemReminderInsertType.DYNAMIC]
+                )
+
+            if target_strip_set:
+                prefix_end = 0
+                while prefix_end < len(content_parts):
+                    part = content_parts[prefix_end]
+                    if not isinstance(part, Text) or part.text not in target_strip_set:
+                        break
+                    prefix_end += 1
+                if prefix_end > 0:
+                    content_parts = content_parts[prefix_end:]
+
+            rebuilt = list(prefix_parts) + content_parts
             updated[user_index] = LLMPayload(ROLE.USER, rebuilt)
         self._injected_reminder_texts = {reminder.text for reminder in resolved_reminders}
 
         return updated
 
-    def _resolve_reminders(self) -> tuple[list[RegisteredReminder], list[str]]:
+    def _resolve_reminders(
+        self,
+    ) -> tuple[list[RegisteredReminder], dict[SystemReminderInsertType, list[str]]]:
         """Resolve direct reminders and bucket-backed reminders into current renderable texts."""
 
         resolved: list[RegisteredReminder] = []
-        strip_texts: list[str] = []
+        strip_texts_by_type: dict[SystemReminderInsertType, list[str]] = {
+            SystemReminderInsertType.FIXED: [],
+            SystemReminderInsertType.DYNAMIC: [],
+        }
 
         if self._reminders:
             resolved.extend(self._reminders)
-            strip_texts.extend(item.text for item in self._reminders)
+            for item in self._reminders:
+                strip_texts_by_type[item.insert_type].append(item.text)
 
         if self._reminder_sources:
             from src.core.prompt import get_system_reminder_store
 
             store = get_system_reminder_store()
             for source in self._reminder_sources:
-                strip_texts.extend(source.last_rendered_texts)
+                for previous in source.last_rendered:
+                    strip_texts_by_type[previous.insert_type].append(previous.text)
                 items = store.get_items(source.bucket, names=source.names)
-                current_texts: list[str] = []
+                current_items: list[RegisteredReminder] = []
                 for item in items:
                     text = item.render()
                     if source.wrap_with_system_tag:
@@ -393,17 +406,20 @@ class LLMContextManager:
                             f"{text}\n"
                             "</system_reminder>"
                         )
-                    current_texts.append(text)
-                    resolved.append(
-                        RegisteredReminder(
-                            text=text,
-                            insert_type=item.insert_type,
-                        )
+                    reminder = RegisteredReminder(
+                        text=text,
+                        insert_type=item.insert_type,
                     )
-                source.last_rendered_texts = tuple(current_texts)
-                strip_texts.extend(current_texts)
+                    current_items.append(reminder)
+                    resolved.append(reminder)
+                source.last_rendered = tuple(current_items)
+                for current in current_items:
+                    strip_texts_by_type[current.insert_type].append(current.text)
 
-        deduped_strip_texts = list(dict.fromkeys(strip_texts))
+        deduped_strip_texts = {
+            insert_type: list(dict.fromkeys(texts))
+            for insert_type, texts in strip_texts_by_type.items()
+        }
         return resolved, deduped_strip_texts
 
     def maybe_trim(

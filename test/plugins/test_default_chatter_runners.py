@@ -16,8 +16,11 @@ import pytest
 
 from plugins.default_chatter.plugin import DefaultChatter
 from plugins.default_chatter.runners import run_enhanced
+from src.app.plugin_system.api.llm_api import create_llm_request
 from src.core.components.base import Stop, Wait, WaitResumeEvent, Success
+from src.core.prompt.system_reminder import get_system_reminder_store, reset_system_reminder_store
 from src.kernel.llm import ROLE
+from src.kernel.llm.payload import LLMPayload, Text
 
 
 @dataclass
@@ -205,6 +208,59 @@ class _FakeChatterWithUnreadSequence(_FakeChatterAllowUser):
         batch = self._unread_batches[self._fetch_index]
         self._fetch_index += 1
         return "", batch
+
+
+def test_upsert_pending_unread_payload_keeps_fixed_reminder_on_first_user_only() -> None:
+    """pending unread 合并必须经过 context manager，避免 fixed reminder 泄漏到中间 USER。"""
+
+    reset_system_reminder_store()
+    store = get_system_reminder_store()
+    store.set("actor", "booku_memory", "Booku Memory 命令手册")
+
+    request = create_llm_request(
+        model_set=[
+            {
+                "api_provider": "openai",
+                "base_url": "https://api.openai.com/v1",
+                "model_identifier": "test-model",
+                "api_key": "sk-test-key",
+                "client_type": "openai",
+                "max_retry": 1,
+                "timeout": 5.0,
+                "retry_interval": 0.0,
+                "price_in": 0.0,
+                "cache_hit_price_in": 0.0,
+                "price_out": 0.0,
+                "temperature": 0.0,
+                "max_tokens": 1024,
+                "max_context": 8192,
+                "tool_call_compat": False,
+                "extra_params": {},
+            }
+        ],
+        request_name="chat_test",
+        with_reminder="actor",
+    )
+
+    DefaultChatter._upsert_pending_unread_payload(request, "第一条")
+    request.add_payload(LLMPayload(ROLE.ASSISTANT, Text("收到一")))
+    DefaultChatter._upsert_pending_unread_payload(request, "第二条")
+    request.add_payload(LLMPayload(ROLE.ASSISTANT, Text("收到二")))
+    DefaultChatter._upsert_pending_unread_payload(request, "第三条")
+
+    user_payloads = [payload for payload in request.payloads if payload.role == ROLE.USER]
+    assert len(user_payloads) == 3
+    assert isinstance(user_payloads[0].content[0], Text)
+    assert user_payloads[0].content[0].text == "<system_reminder>\n[booku_memory]\nBooku Memory 命令手册\n</system_reminder>"
+
+    for payload in user_payloads[1:]:
+        assert all(
+            not isinstance(part, Text)
+            or part.text != "<system_reminder>\n[booku_memory]\nBooku Memory 命令手册\n</system_reminder>"
+            for part in payload.content
+        )
+
+    reset_system_reminder_store()
 
 
 @pytest.mark.asyncio
