@@ -142,7 +142,7 @@ async def test_memory_command_requires_person_id_for_person_create(
         )
     )
 
-    assert ok is False
+    assert ok is True
     assert isinstance(payload, dict)
     assert payload.get("ok") is False
     first = payload.get("results", [])[0]
@@ -161,7 +161,7 @@ async def test_memory_command_search_requires_complete_tag_triplet(
     tool = BookuMemoryCommandTool(plugin=cast(Any, _DummyPlugin()))
     ok, payload = await tool.execute(command="search -query 复盘 -core_tags 复盘")
 
-    assert ok is False
+    assert ok is True
     assert isinstance(payload, dict)
     assert payload.get("ok") is False
     first = payload.get("results", [])[0]
@@ -192,6 +192,26 @@ async def test_memory_command_search_without_tags_is_allowed(
 
 
 @pytest.mark.asyncio
+async def test_memory_command_read_missing_id_returns_tool_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """read 缺少 id 时应只返回工具结果，不应被上层视为执行失败。"""
+
+    fake_service = _FakeService()
+    monkeypatch.setattr("plugins.booku_memory.agent.tools._service", lambda _plugin: fake_service)
+
+    tool = BookuMemoryCommandTool(plugin=cast(Any, _DummyPlugin()))
+    ok, payload = await tool.execute(command="read")
+
+    assert ok is True
+    assert isinstance(payload, dict)
+    assert payload.get("ok") is False
+    first = payload.get("results", [])[0]
+    assert "read 命令需要提供 -id 或 -ids" in str(first.get("error", ""))
+    assert fake_service.calls == []
+
+
+@pytest.mark.asyncio
 async def test_memory_command_create_requires_complete_tag_triplet(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -205,7 +225,7 @@ async def test_memory_command_create_requires_complete_tag_triplet(
         command="create -type event -title 年会 -content 内容 -core_tags 年会 -diffusion_tags 公司"
     )
 
-    assert ok is False
+    assert ok is True
     assert isinstance(payload, dict)
     assert payload.get("ok") is False
     first = payload.get("results", [])[0]
@@ -225,7 +245,7 @@ async def test_memory_command_update_rejects_partial_tag_triplet(
     tool = BookuMemoryCommandTool(plugin=cast(Any, _DummyPlugin()))
     ok, payload = await tool.execute(command="update -id mem-1 -core_tags 已归档")
 
-    assert ok is False
+    assert ok is True
     assert isinstance(payload, dict)
     assert payload.get("ok") is False
     first = payload.get("results", [])[0]
@@ -245,8 +265,9 @@ async def test_memory_command_stops_on_first_failed_segment(monkeypatch: pytest.
         command="read -ids m1 && unknown -x 1 && delete -id m1"
     )
 
-    assert ok is False
+    assert ok is True
     assert isinstance(payload, dict)
+    assert payload.get("ok") is False
     assert payload.get("executed") == 2
     # 只执行了 read，第二段报错后 short-circuit
     assert [name for name, _ in fake_service.calls] == ["read"]
