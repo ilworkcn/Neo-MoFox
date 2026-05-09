@@ -125,6 +125,81 @@ async def test_cleanup_unregisters_dynamic_tools_and_states() -> None:
     assert manager._tool_signatures == set()
 
 
+def test_cache_server_metadata_keeps_instructions() -> None:
+    """连接元数据应缓存 server instructions，供上层提示词使用。"""
+    manager = MCPManager()
+    manager._sessions["filesystem"] = MagicMock()
+
+    manager._cache_server_metadata(
+        "filesystem",
+        SimpleNamespace(
+            instructions="只读工作区",
+            serverInfo=SimpleNamespace(name="Filesystem", version="1.0"),
+        ),
+    )
+
+    metadata = manager.get_connected_server_metadata()
+
+    assert len(metadata) == 1
+    assert metadata[0].server_name == "filesystem"
+    assert metadata[0].instructions == "只读工作区"
+    assert metadata[0].server_label == "Filesystem 1.0"
+
+
+def test_cache_server_metadata_prefers_configured_instructions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """手动配置的 instructions 应覆盖服务器 initialize 返回值。"""
+    manager = MCPManager()
+    manager._sessions["filesystem"] = MagicMock()
+    monkeypatch.setattr(
+        "src.core.config.get_mcp_config",
+        lambda: MCPConfig(
+            mcp=MCPConfig.MCPSection(
+                stdio_servers={
+                    "filesystem": {
+                        "command": "npx",
+                        "instructions": "仅允许查看指定目录",
+                    }
+                }
+            )
+        ),
+    )
+
+    manager._cache_server_metadata(
+        "filesystem",
+        SimpleNamespace(
+            instructions="服务端原始说明",
+            serverInfo=SimpleNamespace(name="Filesystem", version="1.0"),
+        ),
+    )
+
+    metadata = manager.get_connected_server_metadata()
+
+    assert len(metadata) == 1
+    assert metadata[0].instructions == "仅允许查看指定目录"
+
+
+@pytest.mark.asyncio
+async def test_get_tool_classes_for_servers_filters_by_server_name() -> None:
+    """应能按 MCP 服务器名筛出动态工具类。"""
+    manager = MCPManager()
+    session = MagicMock()
+    session.list_tools = AsyncMock(
+        return_value=SimpleNamespace(tools=[make_tool("lookup"), make_tool("search")])
+    )
+
+    await manager._discover_tools("demo", session)
+
+    tool_classes = manager.get_tool_classes_for_servers(["demo"])
+
+    assert len(tool_classes) == 2
+    assert {tool_cls.to_schema()["function"]["name"] for tool_cls in tool_classes} == {
+        "mcp-demo-lookup",
+        "mcp-demo-search",
+    }
+
+
 @pytest.mark.asyncio
 async def test_cleanup_ignores_transport_exception_group() -> None:
     """MCP 传输关闭异常不应导致 Bot 关闭失败。"""

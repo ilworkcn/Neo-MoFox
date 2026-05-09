@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 from src.core.components.types import ChatType
 from src.app.plugin_system.api.log_api import get_logger
@@ -28,7 +28,9 @@ from src.core.components.base import (
 from src.core.models.stream import ChatStream
 from src.core.models.message import MessageType
 from src.core.components.base.action import BaseAction
+from src.core.components.base.agent import BaseAgent
 from src.core.components.loader import register_plugin
+from src.core.components.utils import parse_function_signature
 from src.core.config import get_core_config
 from src.core.prompt import get_prompt_manager
 from src.core.models.message import Message
@@ -42,6 +44,11 @@ from .decision_agent import decide_should_respond
 from .multimodal import build_multimodal_content, extract_images_from_messages
 from .prompt_builder import DefaultChatterPromptBuilder
 from .runners import run_enhanced
+from .sub_agent_collaboration import (
+    FIXED_SUB_AGENT_SYSTEM_PROMPT,
+    get_active_sub_agent_name,
+    get_sub_agent_collaboration_manager,
+)
 from .type_defs import LLMConversationState, LLMResponseLike, SubAgentDecision
 
 logger = get_logger("default_chatter")
@@ -169,6 +176,8 @@ MoFox项目的目的是探究AI在真实人类社会中社交互动的能力，�
 Tool：通常是你在对话中用来查询信息或执行特定功能时调用的工具，例如查询天气、计算器等。你可以调用 tool 来获取这些信息或功能。这类工具通常会返回一些结果信息，因此当你调用tool并收到返回结果后，你应该根据结果信息继续进行合理的回复或进一步执行其他工具。
 
 Agent：通常是你在对话中需要调用的AI智能体，类似于你的助手，例如执行复杂任务、处理多轮对话等。你可以调用 agent 来完成这些任务。这类工具通常和Tool一样会返回一些结果信息，因此当你调用agent并收到返回结果后，你应该根据结果信息继续进行合理的回复或进一步执行其他工具。
+
+{sub_agent_collaboration_extra}
 
 # 思考链条
 
@@ -507,6 +516,97 @@ class StopConversationAction(BaseAction):
         return True, f"对话已结束，将在 {minutes} 分钟后允许新对话"
 
 
+class _SubAgentManagementUsable(BaseAgent):
+    """default chatter 子代理管理工具基类。"""
+
+    schema_name: str = ""
+    chatter_allow: list[str] = ["default_chatter"]
+
+    @classmethod
+    def to_schema(cls) -> dict[str, Any]:
+        """以精确工具名暴露 schema，避免 agent- 前缀。"""
+        return parse_function_signature(cls.execute, cls.schema_name, cls.agent_description)
+
+
+class CreateAgentUsable(_SubAgentManagementUsable):
+    """创建一个新的子代理。"""
+
+    agent_name = "create_agent"
+    schema_name = "create_agent"
+    agent_description = "创建一个新的子代理，并把指定的普通工具与 MCP 服务器能力委托给它。"
+
+    async def execute(
+        self,
+        name: str,
+        system_prompt: str,
+        tools: list[str] | None = None,
+        mcp: list[str] | None = None,
+        allow_create_sub_agent: bool = False,
+    ) -> tuple[bool, dict[str, Any]]:
+        """创建子代理。
+
+        Args:
+            name: 子代理的唯一标识名
+            system_prompt: 追加到固定系统提示词末尾的任务描述与约束
+            tools: 分配给子代理的普通工具名列表，只填工具名即可
+            mcp: 分配给子代理的 MCP 服务器名列表，只填 MCP 名即可
+            allow_create_sub_agent: 是否继续授予 create_agent/get_agent/kill_agent
+        """
+        chatter = DefaultChatter(self.stream_id, self.plugin)
+        return await chatter.create_managed_sub_agent(
+            name=name,
+            system_prompt=system_prompt,
+            tools=tools or [],
+            mcp=mcp or [],
+            allow_create_sub_agent=allow_create_sub_agent,
+        )
+
+
+class GetAgentUsable(_SubAgentManagementUsable):
+    """与已存在的子代理交互。"""
+
+    agent_name = "get_agent"
+    schema_name = "get_agent"
+    agent_description = "查看子代理最近的活动记录，并可附带一条新的问题或指令驱动它继续执行。"
+
+    async def execute(
+        self,
+        name: str,
+        message_limit: int = 10,
+        question: str = "",
+    ) -> tuple[bool, dict[str, Any]]:
+        """获取子代理状态或向其发送新指令。
+
+        Args:
+            name: 子代理标识名
+            message_limit: 最近活动记录条数，0 表示全部
+            question: 要发送给子代理的问题或指令，留空则只查看状态
+        """
+        chatter = DefaultChatter(self.stream_id, self.plugin)
+        return await chatter.query_managed_sub_agent(
+            name=name,
+            message_limit=message_limit,
+            question=question,
+        )
+
+
+class KillAgentUsable(_SubAgentManagementUsable):
+    """销毁一个子代理。"""
+
+    agent_name = "kill_agent"
+    schema_name = "kill_agent"
+    agent_description = "销毁指定子代理；如果它创建过后代子代理，将级联一起销毁。"
+
+    async def execute(self, name: str) -> tuple[bool, dict[str, Any]]:
+        """销毁子代理。
+
+        Args:
+            name: 子代理标识名
+        """
+        chatter = DefaultChatter(self.stream_id, self.plugin)
+        return await chatter.kill_managed_sub_agent(name=name)
+
+
 # ─── Chatter ────────────────────────────────────────────────
 
 # 控制流标记名称，与 BaseAction.to_schema() 生成的 name 保持一致（含 action- 前缀）
@@ -664,12 +764,65 @@ class DefaultChatter(BaseChatter):
         plugin_config = getattr(self.plugin, "config", None)
         return DefaultChatterPromptBuilder.build_negative_behaviors_extra(plugin_config)
 
+    def _is_sub_agent_collaboration_enabled(self) -> bool:
+        """读取子代理协作模式开关。"""
+        plugin_config = getattr(self.plugin, "config", None)
+        plugin_section = getattr(plugin_config, "plugin", None)
+        return bool(
+            getattr(plugin_section, "enable_sub_agent_collaboration", False)
+        )
+
+    def _get_sub_agent_task_name(self) -> str:
+        """读取协作子代理使用的模型任务名。"""
+        plugin_config = getattr(self.plugin, "config", None)
+        plugin_section = getattr(plugin_config, "plugin", None)
+        task_name = str(getattr(plugin_section, "sub_agent_task_name", "actor") or "").strip()
+        return task_name or "actor"
+
+    @staticmethod
+    def _is_mcp_usable_class(usable_cls: type[LLMUsable]) -> bool:
+        """判断一个 usable 是否来源于 MCP 动态工具。"""
+        signature = getattr(usable_cls, "get_signature", lambda: None)()
+        if isinstance(signature, str) and signature.startswith("mcp_provider:tool:"):
+            return True
+
+        schema = usable_cls.to_schema()
+        function_name = schema.get("function", {}).get("name")
+        return isinstance(function_name, str) and function_name.startswith("mcp-")
+
+    @staticmethod
+    def _normalized_usable_names(usable_cls: type[LLMUsable]) -> set[str]:
+        """生成一个 usable 可匹配的名字集合。"""
+        schema = usable_cls.to_schema()
+        function_name = schema.get("function", {}).get("name")
+        names: set[str] = set()
+        if isinstance(function_name, str) and function_name:
+            names.add(function_name)
+            if "-" in function_name:
+                names.add(function_name.split("-", 1)[1])
+        return names
+
+    def _get_sub_agent_collaboration_usables(self) -> list[type[LLMUsable]]:
+        """返回主代理协作模式下注入的管理工具。"""
+        return [CreateAgentUsable, GetAgentUsable, KillAgentUsable]
+
+    def _build_sub_agent_collaboration_system_extra(self) -> str:
+        """构建子代理协作模式下追加到系统提示词的额外说明。"""
+        if not self._is_sub_agent_collaboration_enabled():
+            return ""
+
+        from src.core.managers.tool_manager import get_mcp_manager
+
+        metadata = get_mcp_manager().get_connected_server_metadata()
+        return DefaultChatterPromptBuilder.build_sub_agent_collaboration_extra(metadata)
+
     async def _build_system_prompt(self, chat_stream: ChatStream) -> str:
         """构建系统提示词"""
         plugin_config = self.plugin.config
         return await DefaultChatterPromptBuilder.build_system_prompt(
             plugin_config if isinstance(plugin_config, DefaultChatterConfig) else None,
             chat_stream,
+            extra=self._build_sub_agent_collaboration_system_extra(),
         )
 
     def _build_enhanced_history_text(self, chat_stream: ChatStream) -> str:
@@ -852,6 +1005,186 @@ class DefaultChatter(BaseChatter):
         """
         return await super().run_tool_call(calls, response, usable_map, trigger_msg)
 
+    async def inject_usables(self, request) -> Any:
+        """按模式注入可用工具；子代理协作开启时隐藏主代理 MCP 工具。"""
+        if not self._is_sub_agent_collaboration_enabled():
+            return await super().inject_usables(request)
+
+        from src.kernel.llm import LLMPayload, ROLE, ToolRegistry
+
+        usables = await self.get_llm_usables()
+        usables = await self.modify_llm_usables(usables)
+        filtered_usables = [
+            usable_cls
+            for usable_cls in usables
+            if not self._is_mcp_usable_class(usable_cls)
+        ]
+        filtered_usables.extend(self._get_sub_agent_collaboration_usables())
+
+        registry = ToolRegistry()
+        for usable_cls in filtered_usables:
+            registry.register(usable_cls)
+
+        if registry.get_all():
+            request.add_payload(LLMPayload(ROLE.TOOL, registry.get_all()))  # type: ignore[arg-type]
+
+        return registry
+
+    async def _resolve_sub_agent_usable_classes(
+        self,
+        tools: list[str],
+        mcp: list[str],
+        allow_create_sub_agent: bool,
+    ) -> tuple[list[type[LLMUsable]], list[str], list[str], list[str], list[str]]:
+        """解析子代理请求的普通工具与 MCP 能力。"""
+        requested_tools = [tool_name.strip() for tool_name in tools if tool_name.strip()]
+        requested_mcp = [mcp_name.strip() for mcp_name in mcp if mcp_name.strip()]
+
+        usables = await self.get_llm_usables()
+        usables = await self.modify_llm_usables(usables)
+
+        normal_usable_map: dict[str, type[LLMUsable]] = {}
+        for usable_cls in usables:
+            if self._is_mcp_usable_class(usable_cls):
+                continue
+            for alias_name in self._normalized_usable_names(usable_cls):
+                normal_usable_map.setdefault(alias_name, usable_cls)
+
+        resolved_usables: list[type[LLMUsable]] = []
+        resolved_tool_names: list[str] = []
+        invalid_tools: list[str] = []
+        seen_classes: set[type[LLMUsable]] = set()
+
+        for tool_name in requested_tools:
+            usable_cls = normal_usable_map.get(tool_name)
+            if usable_cls is None:
+                invalid_tools.append(tool_name)
+                continue
+            if usable_cls in seen_classes:
+                continue
+            seen_classes.add(usable_cls)
+            resolved_usables.append(usable_cls)
+            resolved_tool_names.append(tool_name)
+
+        from src.core.managers.tool_manager import get_mcp_manager
+
+        mcp_manager = get_mcp_manager()
+        connected_mcp_names = {
+            metadata.server_name for metadata in mcp_manager.get_connected_server_metadata()
+        }
+        invalid_mcp = [mcp_name for mcp_name in requested_mcp if mcp_name not in connected_mcp_names]
+        resolved_mcp_names = [mcp_name for mcp_name in requested_mcp if mcp_name in connected_mcp_names]
+
+        for usable_cls in mcp_manager.get_tool_classes_for_servers(resolved_mcp_names):
+            if usable_cls in seen_classes:
+                continue
+            seen_classes.add(usable_cls)
+            resolved_usables.append(usable_cls)
+
+        if allow_create_sub_agent:
+            for usable_cls in self._get_sub_agent_collaboration_usables():
+                if usable_cls in seen_classes:
+                    continue
+                seen_classes.add(usable_cls)
+                resolved_usables.append(usable_cls)
+
+        return (
+            resolved_usables,
+            resolved_tool_names,
+            resolved_mcp_names,
+            invalid_tools,
+            invalid_mcp,
+        )
+
+    @staticmethod
+    def _build_sub_agent_system_prompt(
+        system_prompt: str,
+        mcp_names: list[str],
+    ) -> str:
+        """拼接固定子代理系统提示词与委托提示。"""
+        sections = [FIXED_SUB_AGENT_SYSTEM_PROMPT.strip()]
+        if mcp_names:
+            sections.append(
+                "你被分配到了以下 MCP 服务器的能力：" + "、".join(mcp_names)
+            )
+        if system_prompt.strip():
+            sections.append(system_prompt.strip())
+        return "\n\n".join(section for section in sections if section)
+
+    async def create_managed_sub_agent(
+        self,
+        *,
+        name: str,
+        system_prompt: str,
+        tools: list[str],
+        mcp: list[str],
+        allow_create_sub_agent: bool,
+    ) -> tuple[bool, dict[str, Any]]:
+        """创建一个受管子代理。"""
+        usable_classes, resolved_tool_names, resolved_mcp_names, invalid_tools, invalid_mcp = (
+            await self._resolve_sub_agent_usable_classes(
+                tools=tools,
+                mcp=mcp,
+                allow_create_sub_agent=allow_create_sub_agent,
+            )
+        )
+        if invalid_tools or invalid_mcp:
+            return False, {
+                "invalid_tools": invalid_tools,
+                "invalid_mcp": invalid_mcp,
+                "name": name,
+            }
+
+        manager = get_sub_agent_collaboration_manager()
+        try:
+            snapshot = manager.create_agent(
+                chatter=self,
+                name=name,
+                system_prompt=self._build_sub_agent_system_prompt(
+                    system_prompt=system_prompt,
+                    mcp_names=resolved_mcp_names,
+                ),
+                usable_classes=usable_classes,
+                allowed_tool_names=resolved_tool_names,
+                allowed_mcp_names=resolved_mcp_names,
+                allow_create_sub_agent=allow_create_sub_agent,
+                enable_action_suspend=self._is_action_suspend_enabled(),
+                parent_name=get_active_sub_agent_name(),
+            )
+        except ValueError as error:
+            return False, {"error": str(error), "name": name}
+        return True, snapshot
+
+    async def query_managed_sub_agent(
+        self,
+        *,
+        name: str,
+        message_limit: int,
+        question: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        """查询或驱动一个受管子代理。"""
+        manager = get_sub_agent_collaboration_manager()
+        try:
+            snapshot = await manager.get_agent(
+                chatter=self,
+                name=name,
+                question=question,
+                message_limit=max(0, int(message_limit)),
+                enable_action_suspend=self._is_action_suspend_enabled(),
+            )
+        except ValueError as error:
+            return False, {"error": str(error), "name": name}
+        return True, snapshot
+
+    async def kill_managed_sub_agent(self, *, name: str) -> tuple[bool, dict[str, Any]]:
+        """销毁一个受管子代理。"""
+        manager = get_sub_agent_collaboration_manager()
+        try:
+            result = manager.kill_agent(stream_id=self.stream_id, name=name)
+        except ValueError as error:
+            return False, {"error": str(error), "name": name}
+        return True, result
+
 
 # ─── Plugin ─────────────────────────────────────────────────
 
@@ -892,6 +1225,7 @@ class DefaultChatterPlugin(BasePlugin):
                 "reply_style": optional(personality.reply_style),
                 "safety_guidelines": optional("\n".join(personality.safety_guidelines)),
                 "negative_behaviors": optional("\n".join(personality.negative_behaviors)),
+                "sub_agent_collaboration_extra": optional(""),
             },
         )
 

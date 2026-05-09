@@ -61,6 +61,17 @@ def test_build_action_suspend_guidance_supports_follow_up_mode() -> None:
     assert "pass_and_wait" in result
 
 
+def test_build_sub_agent_collaboration_extra_includes_server_instructions() -> None:
+    """子代理协作额外提示应包含 MCP 服务器 instructions。"""
+    result = DefaultChatterPromptBuilder.build_sub_agent_collaboration_extra(
+        [SimpleNamespace(server_name="filesystem", instructions="只读工作区")]
+    )
+
+    assert "create_agent" in result
+    assert "filesystem" in result
+    assert "只读工作区" in result
+
+
 def test_build_system_prompt_uses_private_theme(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

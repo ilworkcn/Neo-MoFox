@@ -48,7 +48,7 @@ class Wait:
 class WaitResumeEvent:
     """Wait/Stop 结束后由框架送回生成器的恢复事件。"""
 
-    source: Literal["message", "timer"]
+    source: Literal["message", "timer", "sub_agent"]
     wait_time: float | int | None = None
     unread_count: int = 0
 

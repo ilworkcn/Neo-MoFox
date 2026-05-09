@@ -138,6 +138,7 @@ class TestMCPConfig:
                         "command": "cmd",
                         "args": ["arg1"],
                         "env": {"KEY": "VALUE"},
+                        "instructions": "只读工作区",
                     },
                 },
             )
@@ -147,6 +148,7 @@ class TestMCPConfig:
         assert test_server["command"] == "cmd"
         assert test_server["args"] == ["arg1"]
         assert test_server["env"]["KEY"] == "VALUE"
+        assert test_server["instructions"] == "只读工作区"
 
     def test_access_sse_servers(self):
         """测试访问 SSE 服务器配置。"""

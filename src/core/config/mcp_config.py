@@ -25,26 +25,26 @@ class MCPConfig(ConfigBase):
         
         # Stdio servers: 字典结构
         # key: server name (e.g. "filesystem")
-        # value: { "command": "npx", "args": [...], "env": {...} }
+        # value: { "command": "npx", "args": [...], "env": {...}, "instructions": "..." }
         stdio_servers: dict[str, dict[str, Any]] = Field(
             default_factory=dict,
-            description="基于 Stdio 的 MCP 服务器配置。Key为服务名，Value包含 command, args, env。"
+            description="基于 Stdio 的 MCP 服务器配置。Key为服务名，Value包含 command, args, env，以及可选的 instructions。"
         )
 
         # SSE servers: 字典结构
         # key: server name
-        # value: url string 或 { "url": "...", "headers": {...}, "timeout": 5 }
+        # value: url string 或 { "url": "...", "headers": {...}, "timeout": 5, "instructions": "..." }
         sse_servers: dict[str, str | dict[str, Any]] = Field(
             default_factory=dict,
-            description="基于 SSE 的 MCP 服务器配置。Key为服务名，Value为URL或连接参数。"
+            description="基于 SSE 的 MCP 服务器配置。Key为服务名，Value为URL或连接参数，以及可选的 instructions。"
         )
 
         # Streamable HTTP servers: 字典结构
         # key: server name
-        # value: url string 或 { "url": "...", "headers": {...}, "timeout": 30 }
+        # value: url string 或 { "url": "...", "headers": {...}, "timeout": 30, "instructions": "..." }
         streamable_http_servers: dict[str, str | dict[str, Any]] = Field(
             default_factory=dict,
-            description="基于 Streamable HTTP 的 MCP 服务器配置。Key为服务名，Value为URL或连接参数。"
+            description="基于 Streamable HTTP 的 MCP 服务器配置。Key为服务名，Value为URL或连接参数，以及可选的 instructions。"
         )
 
     mcp: MCPSection = Field(default_factory=MCPSection)
