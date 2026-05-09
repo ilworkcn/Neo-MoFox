@@ -723,6 +723,7 @@ class TestOpenAIChatClient:
         mock_completion.choices = [MagicMock()]
         mock_completion.choices[0].message.content = "OK"
         mock_completion.choices[0].message.tool_calls = None
+        mock_completion.usage = None
 
         mock_chat = AsyncMock()
         mock_chat.completions.create = AsyncMock(return_value=mock_completion)
@@ -806,6 +807,7 @@ class TestOpenAIChatClient:
         mock_completion.choices = [MagicMock()]
         mock_completion.choices[0].message.content = "OK"
         mock_completion.choices[0].message.tool_calls = None
+        mock_completion.usage = None
 
         mock_chat = AsyncMock()
         mock_chat.completions.create = AsyncMock(return_value=mock_completion)
@@ -862,6 +864,7 @@ class TestOpenAIChatClient:
         mock_completion.choices = [MagicMock()]
         mock_completion.choices[0].message.content = "OK"
         mock_completion.choices[0].message.tool_calls = None
+        mock_completion.usage = None
 
         mock_chat = AsyncMock()
         mock_chat.completions.create = AsyncMock(return_value=mock_completion)
@@ -919,6 +922,7 @@ class TestOpenAIChatClient:
         mock_completion.choices = [MagicMock()]
         mock_completion.choices[0].message.content = "OK"
         mock_completion.choices[0].message.tool_calls = None
+        mock_completion.usage = None
 
         mock_chat = AsyncMock()
         mock_chat.completions.create = AsyncMock(return_value=mock_completion)
@@ -974,6 +978,7 @@ class TestOpenAIChatClient:
         mock_completion.choices[0].message.content = "最终回答"
         mock_completion.choices[0].message.reasoning_content = "中间思考"
         mock_completion.choices[0].message.tool_calls = None
+        mock_completion.usage = None
 
         mock_chat = AsyncMock()
         mock_chat.completions.create = AsyncMock(return_value=mock_completion)
