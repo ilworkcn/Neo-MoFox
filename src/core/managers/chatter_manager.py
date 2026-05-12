@@ -160,6 +160,10 @@ class ChatterManager:
 
         chatter_cls = self._select_chatter_class(chat_type, platform)
         if not chatter_cls:
+            logger.warning(
+                f"未找到兼容 Chatter: stream_id={stream_id}, "
+                f"chat_type={chat_type}, platform={platform}"
+            )
             return None
 
         plugin_name = self._get_plugin_name_from_chatter(chatter_cls)
@@ -176,6 +180,10 @@ class ChatterManager:
 
         chatter = chatter_cls(stream_id=stream_id, plugin=plugin)
         self.register_active_chatter(stream_id, chatter)
+        logger.info(
+            f"自动绑定 Chatter: stream_id={stream_id}, "
+            f"chatter={chatter.chatter_name}, chat_type={chat_type}, platform={platform}"
+        )
         return chatter
 
     def _select_chatter_class(
@@ -214,7 +222,17 @@ class ChatterManager:
             if best is None or (score, signature) > (best[0], best[1]):
                 best = (score, signature, chatter_cls)
 
-        return best[2] if best else None
+        if best is None:
+            logger.debug(
+                f"Chatter 自动选择无候选: chat_type={chat_type}, platform={platform}"
+            )
+            return None
+
+        logger.debug(
+            f"Chatter 自动选择候选: chat_type={chat_type}, platform={platform}, "
+            f"signature={best[1]}, score={best[0]}"
+        )
+        return best[2]
 
     @staticmethod
     def _normalize_chat_type(value: object) -> ChatType | None:

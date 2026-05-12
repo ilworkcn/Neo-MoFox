@@ -17,7 +17,13 @@ async def test_get_or_create_stream_concurrent_calls_create_once(monkeypatch) ->
 
     manager = StreamManager()
     stream_id = "stream-concurrent-001"
-    fake_stream = SimpleNamespace(stream_id=stream_id, context=SimpleNamespace())
+    fake_stream = SimpleNamespace(
+        stream_id=stream_id,
+        platform="qq",
+        bot_id="",
+        bot_nickname="",
+        context=SimpleNamespace(),
+    )
 
     manager._streams_crud.get_by = AsyncMock(return_value=None)
     manager._create_new_stream = AsyncMock(return_value=fake_stream)  # type: ignore[method-assign]
@@ -41,7 +47,13 @@ async def test_get_or_create_stream_returns_cached_instance_without_db(monkeypat
 
     manager = StreamManager()
     stream_id = "stream-cached-001"
-    cached_stream = SimpleNamespace(stream_id=stream_id, context=SimpleNamespace())
+    cached_stream = SimpleNamespace(
+        stream_id=stream_id,
+        platform="qq",
+        bot_id="bot-1",
+        bot_nickname="Bot",
+        context=SimpleNamespace(),
+    )
     manager._streams[stream_id] = cached_stream
 
     manager._streams_crud.get_by = AsyncMock(return_value=None)
@@ -214,11 +226,6 @@ async def test_db_message_to_runtime_fallback_to_content_when_plain_text_missing
     from src.core.managers.stream_manager import StreamManager
 
     manager = StreamManager()
-    manager.get_stream_info = AsyncMock(return_value={"chat_type": "private"})  # type: ignore[method-assign]
-    monkeypatch.setattr(
-        "src.core.managers.get_stream_manager",
-        lambda: manager,
-    )
 
     fake_person = SimpleNamespace(
         person_id="hash_qq_user_001",
@@ -259,11 +266,6 @@ async def test_db_message_to_runtime_uses_bot_name_for_bot_message(monkeypatch) 
     from src.core.managers.stream_manager import StreamManager
 
     manager = StreamManager()
-    manager.get_stream_info = AsyncMock(return_value={"chat_type": "private"})  # type: ignore[method-assign]
-    monkeypatch.setattr(
-        "src.core.managers.get_stream_manager",
-        lambda: manager,
-    )
 
     helper = SimpleNamespace(
         person_crud=SimpleNamespace(get_by=AsyncMock(return_value=None)),
@@ -301,6 +303,64 @@ async def test_db_message_to_runtime_uses_bot_name_for_bot_message(monkeypatch) 
     assert runtime_msg.sender_id == "10001"
     assert runtime_msg.sender_name == "MoFox"
     assert runtime_msg.sender_cardname == "MoFox"
+
+
+@pytest.mark.asyncio
+async def test_load_stream_context_does_not_query_stream_info_per_message(monkeypatch) -> None:
+    """冷加载历史消息时不应为每条消息重复查询流信息。"""
+    from src.core.managers.stream_manager import StreamManager
+
+    manager = StreamManager()
+    manager._streams_crud.get_by = AsyncMock(
+        return_value=SimpleNamespace(
+            stream_id="stream-context-001",
+            chat_type="private",
+            context_cleared_at=None,
+        )
+    )
+
+    records = [
+        SimpleNamespace(
+            message_id=f"db{i}",
+            stream_id="stream-context-001",
+            person_id=None,
+            time=float(i),
+            reply_to=None,
+            content=f"msg{i}",
+            processed_plain_text=f"msg{i}",
+            message_type="text",
+            platform="local_asr",
+        )
+        for i in range(3)
+    ]
+
+    class _FakeQuery:
+        def filter(self, **_kwargs):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def limit(self, _limit):
+            return self
+
+        async def all(self):
+            return records
+
+    monkeypatch.setattr(
+        "src.core.managers.stream_manager.QueryBuilder",
+        lambda _model: _FakeQuery(),
+    )
+    monkeypatch.setattr(
+        "src.core.managers.stream_manager.get_core_config",
+        lambda: SimpleNamespace(chat=SimpleNamespace(max_history_messages=60)),
+    )
+    manager.get_stream_info = AsyncMock(return_value={"chat_type": "private"})  # type: ignore[method-assign]
+
+    context = await manager.load_stream_context("stream-context-001", max_messages=60)
+
+    assert len(context.history_messages) == 3
+    manager.get_stream_info.assert_not_awaited()
 
 
 @pytest.mark.asyncio

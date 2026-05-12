@@ -413,6 +413,11 @@ class StreamLoopManager:
         """
         from src.core.config import get_core_config
 
+        allow_message_buffer = getattr(context, "allow_message_buffer", None)
+        if allow_message_buffer is False:
+            context.message_buffer_skip_count = 0
+            return True
+
         try:
             bot_cfg = get_core_config().bot
             buffer_window: float = bot_cfg.message_buffer_window

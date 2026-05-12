@@ -102,6 +102,33 @@ configs: list[type] = [MyPluginConfig]
 
 因此，**`manifest.name` 与 `plugin_name` 不一致会直接导致加载失败**。目录名理论上可以不同，但会增加相对导入、卸载清理、调试定位时的认知成本，不建议这样做。
 
+### 2.5 插件导入边界是强约束
+
+- 插件代码**禁止直接导入其他插件模块**，例如禁止在一个插件内写 `from plugins.other_plugin... import ...`。
+- 插件之间的能力依赖必须通过公开组件签名、Service、API 层或协议边界建立，不允许通过源码级直接 import 耦合。
+- 如果插件内部需要表达对外部配置或服务的最小形状，应在本插件内定义 `Protocol`、类型别名或本地抽象，不要直接引用其他插件中的实现类或配置类。
+- 插件导入自己内部模块时，**必须使用相对导入**：
+  - 同目录模块使用 `.xxx`
+  - 子目录模块使用 `.sub.xxx`
+  - 上级目录模块使用 `..xxx`
+- 插件内部禁止使用 `plugins.my_plugin...` 这类“导入自己”的绝对路径写法；这会放大包名耦合，也会让目录重命名和打包加载更脆弱。
+
+正确示例：
+
+```python
+from .config import MyPluginConfig
+from .service import MyService
+from .src.worker import Worker
+from ..protocol import ConfigLike
+```
+
+错误示例：
+
+```python
+from plugins.other_plugin.service import OtherService
+from plugins.my_plugin.config import MyPluginConfig
+```
+
 ## 3. 组件速查矩阵
 
 下面只列插件系统真实识别并自动注册的主要组件类型。

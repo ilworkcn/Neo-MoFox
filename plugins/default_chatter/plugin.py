@@ -518,21 +518,14 @@ class StopConversationAction(BaseAction):
 
 class _SubAgentManagementUsable(BaseAgent):
     """default chatter 子代理管理工具基类。"""
-
-    schema_name: str = ""
+    
     chatter_allow: list[str] = ["default_chatter"]
-
-    @classmethod
-    def to_schema(cls) -> dict[str, Any]:
-        """以精确工具名暴露 schema，避免 agent- 前缀。"""
-        return parse_function_signature(cls.execute, cls.schema_name, cls.agent_description)
 
 
 class CreateAgentUsable(_SubAgentManagementUsable):
     """创建一个新的子代理。"""
 
     agent_name = "create_agent"
-    schema_name = "create_agent"
     agent_description = "创建一个新的子代理，并把指定的普通工具与 MCP 服务器能力委托给它。"
 
     async def execute(
@@ -566,7 +559,6 @@ class GetAgentUsable(_SubAgentManagementUsable):
     """与已存在的子代理交互。"""
 
     agent_name = "get_agent"
-    schema_name = "get_agent"
     agent_description = "查看子代理最近的活动记录，并可附带一条新的问题或指令驱动它继续执行。"
 
     async def execute(
@@ -594,7 +586,6 @@ class KillAgentUsable(_SubAgentManagementUsable):
     """销毁一个子代理。"""
 
     agent_name = "kill_agent"
-    schema_name = "kill_agent"
     agent_description = "销毁指定子代理；如果它创建过后代子代理，将级联一起销毁。"
 
     async def execute(self, name: str) -> tuple[bool, dict[str, Any]]:

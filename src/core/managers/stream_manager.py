@@ -339,7 +339,12 @@ class StreamManager:
         # 转换为运行时 Message 对象
         history_messages = []
         for msg_record in reversed(messages_records):  # 按时间正序
-            history_messages.append(await self._db_message_to_runtime(msg_record))  # type: ignore    
+            history_messages.append(
+                await self._db_message_to_runtime(  # type: ignore[arg-type]
+                    msg_record,
+                    chat_type=stream_record.chat_type,
+                )
+            )
 
         # 创建 StreamContext
         context = StreamContext(
@@ -866,7 +871,12 @@ class StreamManager:
             self._stream_locks[stream_id] = asyncio.Lock()
         return self._stream_locks[stream_id]
 
-    async def _db_message_to_runtime(self, db_message: "Messages") -> "Message":
+    async def _db_message_to_runtime(
+        self,
+        db_message: "Messages",
+        *,
+        chat_type: str | None = None,
+    ) -> "Message":
         """将数据库消息转换为运行时消息。
 
         Args:
@@ -877,13 +887,10 @@ class StreamManager:
         """
         from src.core.models.message import Message, MessageType
         from src.core.utils.user_query_helper import get_user_query_helper
-        from src.core.managers import get_stream_manager
-
-        stream_info = await get_stream_manager().get_stream_info(db_message.stream_id)
-
         sender_id = "system"
         sender_name = "未知用户"
         sender_cardname = ""
+        sender_role: str | None = None
 
         if db_message.person_id:
             try:
@@ -906,6 +913,7 @@ class StreamManager:
 
         # person_id == "bot" 表示 Bot 发送的消息
         if db_message.person_id == "bot" and db_message.platform:
+            sender_role = "bot"
             try:
                 from src.core.managers.adapter_manager import get_adapter_manager
 
@@ -939,8 +947,9 @@ class StreamManager:
             sender_id=sender_id,
             sender_name=sender_name,
             sender_cardname=sender_cardname,
+            sender_role=sender_role,
             platform=db_message.platform or "",
-            chat_type=stream_info.get("chat_type", "private") if stream_info else "private",
+            chat_type=chat_type or "private",
             stream_id=db_message.stream_id,
             raw_data=None,
             extra={},

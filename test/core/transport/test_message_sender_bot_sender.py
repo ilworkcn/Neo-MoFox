@@ -51,6 +51,7 @@ async def test_send_message_overrides_sender_with_bot_info(monkeypatch: pytest.M
     assert message.sender_id == "bot-001"
     assert message.sender_name == "NeoBot"
     assert message.sender_cardname == "NeoBot"
+    assert message.sender_role == "bot"
     adapter.get_bot_info.assert_awaited_once()
     adapter._send_platform_message.assert_awaited_once()
     fake_stream_manager.get_or_create_stream.assert_awaited_once()

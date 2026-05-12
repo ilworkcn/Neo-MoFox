@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol, cast
 
-from plugins.skill_manager.models import SkillEntry
+from ..models import SkillEntry
 
 from src.app.plugin_system.api.send_api import send_text
 from src.app.plugin_system.base import BaseCommand, cmd_route
