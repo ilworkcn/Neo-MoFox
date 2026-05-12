@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 import src.kernel.storage as kernel_storage
@@ -351,3 +352,54 @@ async def test_napcat_cache_load_timeout_does_not_block(monkeypatch) -> None:
         for section_name, values in original_cache.items():
             napcat_utils._CACHE[section_name].clear()
             napcat_utils._CACHE[section_name].update(values)
+
+
+@pytest.mark.asyncio
+async def test_meta_event_handler_reconnects_when_heartbeat_times_out(monkeypatch) -> None:
+    """心跳超时时应触发适配器自动重连。"""
+
+    config = NapcatAdapterConfig.from_dict(
+        {
+            "plugin": {"enabled": True, "config_version": "2.0.0"},
+            "bot": {"qq_id": "123456789", "qq_nickname": "MoFoxBot"},
+            "napcat_server": {
+                "mode": "reverse",
+                "host": "localhost",
+                "port": 8095,
+                "access_token": "",
+            },
+            "features": {
+                "group_list_type": "blacklist",
+                "group_list": [],
+                "private_list_type": "blacklist",
+                "private_list": [],
+                "ban_user_id": [],
+                "enable_poke": True,
+                "ignore_non_self_poke": False,
+                "poke_debounce_seconds": 2.0,
+                "enable_emoji_like": True,
+                "enable_reply_at": True,
+                "reply_at_rate": 0.5,
+                "enable_video_processing": True,
+                "video_max_size_mb": 100,
+                "video_download_timeout": 60,
+            },
+        }
+    )
+    plugin = NapcatAdapterPlugin(config=config)
+    adapter = NapcatAdapter(core_sink=cast(Any, _FakeCoreSink()), plugin=plugin)
+    adapter.reconnect = AsyncMock()
+
+    handler = adapter.meta_event_handler
+    handler.last_heart_beat = 0.0
+    handler.interval = 0.01
+
+    monkeypatch.setattr(
+        "plugins.napcat_adapter.src.handlers.to_core.meta_event_handler.time.time",
+        lambda: 0.03,
+    )
+
+    await handler.check_heartbeat(123456789)
+
+    adapter.reconnect.assert_awaited_once()
+    assert handler._interval_checking is False

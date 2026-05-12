@@ -797,6 +797,13 @@ class DefaultChatter(BaseChatter):
         """返回主代理协作模式下注入的管理工具。"""
         return [CreateAgentUsable, GetAgentUsable, KillAgentUsable]
 
+    @staticmethod
+    def _get_deferred_mcp_usable_classes() -> set[type[LLMUsable]]:
+        """返回仅允许子代理使用的 MCP 工具类集合。"""
+        from src.core.managers.tool_manager import get_mcp_manager
+
+        return set(get_mcp_manager().get_deferred_tool_classes())
+
     def _build_sub_agent_collaboration_system_extra(self) -> str:
         """构建子代理协作模式下追加到系统提示词的额外说明。"""
         if not self._is_sub_agent_collaboration_enabled():
@@ -997,7 +1004,7 @@ class DefaultChatter(BaseChatter):
         return await super().run_tool_call(calls, response, usable_map, trigger_msg)
 
     async def inject_usables(self, request) -> Any:
-        """按模式注入可用工具；子代理协作开启时隐藏主代理 MCP 工具。"""
+        """按模式注入可用工具；子代理协作开启时隐藏 defer_loading 的 MCP 工具。"""
         if not self._is_sub_agent_collaboration_enabled():
             return await super().inject_usables(request)
 
@@ -1005,10 +1012,11 @@ class DefaultChatter(BaseChatter):
 
         usables = await self.get_llm_usables()
         usables = await self.modify_llm_usables(usables)
+        deferred_mcp_usables = self._get_deferred_mcp_usable_classes()
         filtered_usables = [
             usable_cls
             for usable_cls in usables
-            if not self._is_mcp_usable_class(usable_cls)
+            if usable_cls not in deferred_mcp_usables
         ]
         filtered_usables.extend(self._get_sub_agent_collaboration_usables())
 
