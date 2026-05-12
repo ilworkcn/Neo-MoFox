@@ -14,7 +14,7 @@ from src.core.components.registry import get_global_registry
 from src.core.components.state_manager import get_global_state_manager
 from src.core.components.types import ComponentState
 from src.core.config.mcp_config import MCPConfig
-from src.core.managers.tool_manager.mcp_manager import MCPManager
+from src.core.managers.tool_manager.mcp_manager import MCPManager, MCPServerMetadata
 from src.kernel.concurrency import get_task_manager
 
 
@@ -144,6 +144,7 @@ def test_cache_server_metadata_keeps_instructions() -> None:
     assert metadata[0].server_name == "filesystem"
     assert metadata[0].instructions == "只读工作区"
     assert metadata[0].server_label == "Filesystem 1.0"
+    assert metadata[0].defer_loading is True
 
 
 def test_cache_server_metadata_prefers_configured_instructions(
@@ -178,6 +179,76 @@ def test_cache_server_metadata_prefers_configured_instructions(
 
     assert len(metadata) == 1
     assert metadata[0].instructions == "仅允许查看指定目录"
+
+
+def test_cache_server_metadata_reads_defer_loading_from_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """连接元数据应缓存 defer_loading，供 actor 工具筛选使用。"""
+    manager = MCPManager()
+    manager._sessions["filesystem"] = MagicMock()
+    monkeypatch.setattr(
+        "src.core.config.get_mcp_config",
+        lambda: MCPConfig(
+            mcp=MCPConfig.MCPSection(
+                stdio_servers={
+                    "filesystem": {
+                        "command": "npx",
+                        "defer_loading": False,
+                    }
+                }
+            )
+        ),
+    )
+
+    manager._cache_server_metadata(
+        "filesystem",
+        SimpleNamespace(
+            instructions="服务端原始说明",
+            serverInfo=SimpleNamespace(name="Filesystem", version="1.0"),
+        ),
+    )
+
+    metadata = manager.get_connected_server_metadata()
+
+    assert len(metadata) == 1
+    assert metadata[0].defer_loading is False
+
+
+def test_get_deferred_tool_classes_filters_by_metadata() -> None:
+    """应只返回标记为 defer_loading 的 MCP 动态工具类。"""
+    manager = MCPManager()
+
+    class _DeferredTool:
+        @staticmethod
+        def to_schema() -> dict[str, dict[str, str]]:
+            return {"function": {"name": "mcp-deferred-lookup"}}
+
+    class _DirectTool:
+        @staticmethod
+        def to_schema() -> dict[str, dict[str, str]]:
+            return {"function": {"name": "mcp-direct-lookup"}}
+
+    manager._sessions["deferred"] = MagicMock()
+    manager._sessions["direct"] = MagicMock()
+    manager._server_metadata["deferred"] = MCPServerMetadata(
+        server_name="deferred",
+        instructions="",
+        server_label="deferred",
+        defer_loading=True,
+    )
+    manager._server_metadata["direct"] = MCPServerMetadata(
+        server_name="direct",
+        instructions="",
+        server_label="direct",
+        defer_loading=False,
+    )
+    manager._tool_classes_by_server["deferred"] = [_DeferredTool]
+    manager._tool_classes_by_server["direct"] = [_DirectTool]
+
+    tool_classes = manager.get_deferred_tool_classes()
+
+    assert tool_classes == [_DeferredTool]
 
 
 @pytest.mark.asyncio

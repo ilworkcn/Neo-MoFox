@@ -25,21 +25,42 @@ class DefaultChatterPromptBuilder:
         """构建子代理协作模式的额外系统提示段。"""
         lines = [
             "子代理协作：你可以通过 create_agent、get_agent、kill_agent 工具创建和管理子代理，帮助你完成明确的局部任务。",
-            "你已连接到以下 MCP 服务器，但你不能直接使用它们；如需使用，请通过 create_agent 将对应 MCP 能力委托给子代理。",
         ]
 
         if not server_metadata:
             lines.append("当前没有已连接的 MCP 服务器。")
             return "\n".join(lines)
 
-        for metadata in server_metadata:
-            server_name = str(
-                getattr(metadata, "server_name", None)
-                or getattr(metadata, "name", None)
-                or "unknown_mcp"
+        deferred_servers = [
+            metadata for metadata in server_metadata if bool(getattr(metadata, "defer_loading", True))
+        ]
+        direct_servers = [
+            metadata for metadata in server_metadata if not bool(getattr(metadata, "defer_loading", True))
+        ]
+
+        if deferred_servers:
+            lines.append(
+                "以下 MCP 服务器为延迟加载模式，你不能直接使用它们；如需使用，请通过 create_agent 将对应 MCP 能力委托给子代理。"
             )
-            instructions = str(getattr(metadata, "instructions", "") or "未提供 instructions")
-            lines.append(f"- {server_name}: {instructions}")
+            for metadata in deferred_servers:
+                server_name = str(
+                    getattr(metadata, "server_name", None)
+                    or getattr(metadata, "name", None)
+                    or "unknown_mcp"
+                )
+                instructions = str(getattr(metadata, "instructions", "") or "未提供 instructions")
+                lines.append(f"- {server_name}: {instructions}")
+
+        if direct_servers:
+            lines.append("以下 MCP 服务器已直接暴露给你，可按普通工具直接调用。")
+            for metadata in direct_servers:
+                server_name = str(
+                    getattr(metadata, "server_name", None)
+                    or getattr(metadata, "name", None)
+                    or "unknown_mcp"
+                )
+                instructions = str(getattr(metadata, "instructions", "") or "未提供 instructions")
+                lines.append(f"- {server_name}: {instructions}")
 
         return "\n".join(lines)
 

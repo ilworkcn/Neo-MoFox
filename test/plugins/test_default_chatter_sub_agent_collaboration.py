@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 from unittest.mock import AsyncMock
 
@@ -31,11 +32,11 @@ class _FakeRequest:
     """记录 payload 的最小 request。"""
 
     def __init__(self) -> None:
-        self.payloads: list[object] = []
+        self.payloads: list[Any] = []
         self.message: str = ""
-        self.call_list: list[object] = []
+        self.call_list: list[Any] = []
 
-    def add_payload(self, payload: object, position: object = None) -> None:
+    def add_payload(self, payload: Any, position: object = None) -> None:
         _ = position
         self.payloads.append(payload)
 
@@ -151,10 +152,10 @@ def test_sub_agent_decision_panel_tolerates_string_tool_args(
 
 
 @pytest.mark.asyncio
-async def test_inject_usables_hides_mcp_and_exposes_management_tools(
+async def test_inject_usables_hides_deferred_mcp_and_exposes_management_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """启用子代理协作后，主工具列表不应直接暴露 MCP。"""
+    """启用子代理协作后，仅 defer_loading 的 MCP 工具不应直接暴露。"""
     plugin = MagicMock()
     plugin.config = SimpleNamespace(
         plugin=SimpleNamespace(enable_sub_agent_collaboration=True)
@@ -170,6 +171,11 @@ async def test_inject_usables_hides_mcp_and_exposes_management_tools(
 
     monkeypatch.setattr(chatter, "get_llm_usables", _fake_get_llm_usables)
     monkeypatch.setattr(chatter, "modify_llm_usables", _fake_modify_llm_usables)
+    monkeypatch.setattr(
+        chatter,
+        "_get_deferred_mcp_usable_classes",
+        staticmethod(lambda: {_MCPTool}),
+    )
 
     registry = await chatter.inject_usables(request)
     tool_names = sorted(registry.get_all_names())
@@ -181,6 +187,37 @@ async def test_inject_usables_hides_mcp_and_exposes_management_tools(
     assert "get_agent" in tool_names
     assert "kill_agent" in tool_names
     assert "tool-mcp-demo-lookup" not in tool_names
+
+
+@pytest.mark.asyncio
+async def test_inject_usables_keeps_non_deferred_mcp_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未标记 defer_loading 的 MCP 工具应继续直接暴露给主 actor。"""
+    plugin = MagicMock()
+    plugin.config = SimpleNamespace(
+        plugin=SimpleNamespace(enable_sub_agent_collaboration=True)
+    )
+    chatter = DefaultChatter("stream-1", plugin)
+    request = _FakeRequest()
+
+    async def _fake_get_llm_usables():
+        return [_RegularTool, _MCPTool]
+
+    async def _fake_modify_llm_usables(usables):
+        return usables
+
+    monkeypatch.setattr(chatter, "get_llm_usables", _fake_get_llm_usables)
+    monkeypatch.setattr(chatter, "modify_llm_usables", _fake_modify_llm_usables)
+    monkeypatch.setattr(
+        chatter,
+        "_get_deferred_mcp_usable_classes",
+        staticmethod(set),
+    )
+
+    registry = await chatter.inject_usables(request)
+
+    assert "tool-mcp-demo-lookup" in sorted(registry.get_all_names())
 
 
 def test_sub_agent_manager_kills_children_cascade() -> None:

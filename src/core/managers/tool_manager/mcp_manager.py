@@ -16,7 +16,7 @@ from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 
-from src.core.config.mcp_config import MCPConfig
+from src.core.config.mcp_config import MCPConfig, is_mcp_server_defer_loading
 from src.core.managers.tool_manager.mcp_adapter import MCPToolAdapter
 from src.kernel.logger import get_logger
 
@@ -43,6 +43,7 @@ class MCPServerMetadata:
     server_name: str
     instructions: str
     server_label: str
+    defer_loading: bool
 
 
 class MCPManager:
@@ -285,18 +286,21 @@ class MCPManager:
         """缓存已连接 MCP 服务器的元数据。"""
         raw_instructions = getattr(initialize_result, "instructions", None)
         instructions = raw_instructions.strip() if isinstance(raw_instructions, str) else ""
+        defer_loading = True
 
         try:
             from src.core.config import get_mcp_config
 
             config = get_mcp_config().mcp
-            configured_instructions = _extract_configured_instructions(
+            configured_params = (
                 config.stdio_servers.get(name)
                 or config.sse_servers.get(name)
                 or config.streamable_http_servers.get(name)
             )
+            configured_instructions = _extract_configured_instructions(configured_params)
             if configured_instructions:
                 instructions = configured_instructions
+            defer_loading = is_mcp_server_defer_loading(configured_params)
         except Exception:
             pass
 
@@ -313,6 +317,7 @@ class MCPManager:
             server_name=name,
             instructions=instructions,
             server_label=server_label,
+            defer_loading=defer_loading,
         )
 
     async def _connect_session(self, name: str, transport: tuple[Any, ...]) -> None:
@@ -417,6 +422,15 @@ class MCPManager:
                 selected_tools.append(tool_cls)
 
         return selected_tools
+
+    def get_deferred_tool_classes(self) -> list[type[Any]]:
+        """返回配置为 defer_loading 的 MCP 动态工具类。"""
+        deferred_server_names = [
+            metadata.server_name
+            for metadata in self.get_connected_server_metadata()
+            if metadata.defer_loading
+        ]
+        return self.get_tool_classes_for_servers(deferred_server_names)
 
     async def call_tool(self, server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
         """调用 MCP 工具 (底层调用)。"""
