@@ -8,7 +8,7 @@ from typing import Literal
 
 from src.kernel.config import ConfigBase, SectionBase, config_section, Field
 
-CORE_VERSION = "1.2.0-alpha"
+CORE_VERSION = "1.2.0-alpha.1"
 
 class CoreConfig(ConfigBase):
     """Core 层配置类

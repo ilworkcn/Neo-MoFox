@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, AsyncGenerator, TypeGuard
@@ -95,6 +96,11 @@ def _is_timer_resume_event(event: WaitResumeEvent | None) -> bool:
     return event is not None and event.source == "timer"
 
 
+def _is_sub_agent_resume_event(event: WaitResumeEvent | None) -> bool:
+    """判断本轮是否由子代理后台完成主动恢复。"""
+    return event is not None and event.source == "sub_agent"
+
+
 def _append_suspend_payload_if_tool_result_tail(
     *,
     response: LLMResponseLike,
@@ -110,6 +116,67 @@ def _append_suspend_payload_if_tool_result_tail(
     logger.debug("已注入 SUSPEND 占位符（等待前闭合工具结果）")
 
 
+def _extract_latest_user_text(response: LLMConversationState) -> str:
+    """从当前请求上下文里提取最近一条 USER 文本。"""
+    payloads = getattr(response, "payloads", None) or []
+    for payload in reversed(payloads):
+        if str(getattr(payload, "role", "")) != str(ROLE.USER):
+            continue
+
+        text_parts: list[str] = []
+        for item in getattr(payload, "content", None) or []:
+            text = getattr(item, "text", None)
+            if isinstance(text, str) and text.strip():
+                text_parts.append(text)
+
+        if text_parts:
+            return "\n".join(text_parts)
+
+    return ""
+
+
+def _build_synthetic_trigger_message(chat_stream: ChatStream, prompt_text: str) -> Message:
+    """为主动恢复轮次构造最小触发消息，避免工具调用因缺少 message 被跳过。"""
+    return Message(
+        message_id=f"actor-{int(time.time() * 1000)}",
+        content=prompt_text,
+        processed_plain_text=prompt_text,
+        platform=str(getattr(chat_stream, "platform", "") or ""),
+        chat_type=str(getattr(chat_stream, "chat_type", "") or "private"),
+        stream_id=str(getattr(chat_stream, "stream_id", "") or ""),
+        sender_name="actor",
+    )
+
+
+def _pick_actor_trigger_message(
+    *,
+    chat_stream: ChatStream,
+    rt: _EnhancedWorkflowRuntime,
+) -> Message:
+    """为 actor 当前轮工具调用选择触发消息。"""
+    if rt.unreads:
+        return rt.unreads[-1]
+
+    context = getattr(chat_stream, "context", None)
+    if context is not None:
+        current_message = getattr(context, "current_message", None)
+        if current_message is not None:
+            return current_message
+
+        unread_messages = getattr(context, "unread_messages", None) or []
+        if unread_messages:
+            return unread_messages[-1]
+
+        history_messages = getattr(context, "history_messages", None) or []
+        if history_messages:
+            return history_messages[-1]
+
+    return _build_synthetic_trigger_message(
+        chat_stream,
+        _extract_latest_user_text(rt.response),
+    )
+
+
 def _build_wait_timeout_prompt(event: WaitResumeEvent) -> str:
     """构建 wait 定时到期后的主动恢复提示词。"""
     waited_text = (
@@ -123,6 +190,29 @@ def _build_wait_timeout_prompt(event: WaitResumeEvent) -> str:
         "如果现在不应继续，请再次调用 pass_and_wait；"
         "如果需要回复或执行动作，请直接使用相应工具。"
     )
+
+
+def _build_sub_agent_resume_prompt(_: WaitResumeEvent) -> str:
+    """构建子代理后台完成后的主动恢复提示词。"""
+    return (
+        "系统事件：有子代理已在后台完成一轮任务。"
+        "请查看动态 system reminder 中的子代理最新 assistant 动态，"
+        "并结合已有上下文决定下一步。"
+        "如果现在无需继续处理，请调用 pass_and_wait；"
+        "如果需要继续回复、委派或执行动作，请直接使用相应工具。"
+    )
+
+
+def _build_sub_agent_result_user_prompt(events: list[dict[str, Any]]) -> str:
+    """把子代理完成结果拼成一次性的 USER 消息。"""
+    lines = ["以下是子代理刚刚返回的结果，请基于这些结果继续处理："]
+    for event in events:
+        name = str(event.get("name", "unknown"))
+        status = str(event.get("status", "completed"))
+        content = str(event.get("content", "")).strip() or "(无文本结果)"
+        lines.append(f"[{name}] {status}")
+        lines.append(content)
+    return "\n".join(lines)
 
 
 def _build_actor_decision_panel(chat_stream: ChatStream, response: LLMResponseLike) -> str:
@@ -250,21 +340,43 @@ async def run_enhanced(
 
         # FSM 驱动：每次循环只推进一个相位（或 yield）
         if rt.phase == _ToolCallWorkflowPhase.WAIT_USER:
-            if _is_timer_resume_event(current_resume_event):
+            if _is_timer_resume_event(current_resume_event) or _is_sub_agent_resume_event(
+                current_resume_event
+            ):
                 assert current_resume_event is not None
                 rt.cross_round_seen_signatures.clear()
                 rt.plain_text_retry_count = 0
                 rt.unreads = []
                 rt.unread_msgs_to_flush = []
+                reminder_text = (
+                    _build_sub_agent_resume_prompt(current_resume_event)
+                    if _is_sub_agent_resume_event(current_resume_event)
+                    else _build_wait_timeout_prompt(current_resume_event)
+                )
+                if _is_sub_agent_resume_event(current_resume_event):
+                    from .sub_agent_collaboration import (
+                        get_sub_agent_collaboration_manager,
+                    )
+
+                    completed_events = get_sub_agent_collaboration_manager().drain_completed_events(
+                        chatter.stream_id
+                    )
+                    if completed_events:
+                        reminder_text = _build_sub_agent_result_user_prompt(completed_events)
+
                 chatter._upsert_pending_unread_payload(
                     response=rt.response,
-                    formatted_text=_build_wait_timeout_prompt(current_resume_event),
+                    formatted_text=reminder_text,
                 )
                 _transition(
                     rt=rt,
                     to_phase=_ToolCallWorkflowPhase.MODEL_TURN,
                     logger=logger,
-                    reason="wait timer elapsed",
+                    reason=(
+                        "sub-agent completed"
+                        if _is_sub_agent_resume_event(current_resume_event)
+                        else "wait timer elapsed"
+                    ),
                 )
                 continue
 
@@ -367,7 +479,10 @@ async def run_enhanced(
                 response=llm_response,
                 run_tool_call=chatter.run_tool_call,
                 usable_map=usable_map,
-                trigger_msg=rt.unreads[-1] if rt.unreads else None,
+                trigger_msg=_pick_actor_trigger_message(
+                    chat_stream=chat_stream,
+                    rt=rt,
+                ),
                 pass_call_name=pass_call_name,
                 stop_call_name=stop_call_name,
                 cross_round_seen_signatures=rt.cross_round_seen_signatures,

@@ -61,6 +61,11 @@ class StreamContext:
     last_message_time: float | None = None
     message_buffer_skip_count: int = 0
 
+    # Chatter 运行时流控制
+    # None 表示保持全局默认行为，由当前绑定的 chatter 按需覆盖。
+    tick_interval_override: float | None = None
+    allow_message_buffer: bool | None = None
+
     # 流循环任务引用
     stream_loop_task: asyncio.Task | None = field(default=None, repr=False)
 

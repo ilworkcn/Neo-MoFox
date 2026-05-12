@@ -63,6 +63,22 @@ async def _await_stream_step(
         ) from exc
 
 
+async def _get_stream_tick_interval(
+    stream_id: str,
+    get_context_func: Callable[[str], Awaitable["StreamContext | None"]],
+) -> float:
+    """返回当前聊天流的 tick 间隔，允许 chatter 覆盖全局默认值。"""
+
+    try:
+        context = await get_context_func(stream_id)
+        override = getattr(context, "tick_interval_override", None) if context else None
+        if override is not None and float(override) > 0:
+            return float(override)
+    except Exception:
+        pass
+    return float(get_core_config().bot.tick_interval)
+
+
 # ============================================================================
 # 异步生成器 — 核心循环逻辑
 # ============================================================================
@@ -99,8 +115,10 @@ async def conversation_loop(
                 tick_count=tick_count,
             )
 
-            # 3. 固定等待间隔
-            await asyncio.sleep(get_core_config().bot.tick_interval)
+            # 3. 等待间隔；允许 chatter 对自己的流覆盖全局 tick。
+            await asyncio.sleep(
+                await _get_stream_tick_interval(stream_id, get_context_func)
+            )
 
         except asyncio.CancelledError:
             logger.info(f"[生成器] stream={stream_id[:8]}, 被取消")
@@ -172,23 +190,25 @@ async def run_chat_stream(
                     # 处于等待中且未满足条件，跳过本次 Tick
                     continue
 
+                resume_event = _take_wait_resume_event(manager, stream_id)
+
                 # 2. 消息缓冲机制检查
                 # 若距上次收到消息未超过缓冲窗口，则跳过本次 Tick（等待用户连续消息合并），
                 # 但当连续跳过次数已达上限时强制继续，防止高压群聊导致 Bot 始终无法响应。
-                if not manager._message_buffer_check(stream_id, context):
+                if resume_event is None and not manager._message_buffer_check(stream_id, context):
                     continue
-                resume_event = _take_wait_resume_event(manager, stream_id)
 
                 # 3. 获取或创建 chatter_gene
                 chatter_gene = manager._chatter_genes.get(stream_id)
                 chatter_gene_just_created = False
                 
                 if not chatter_gene:
-                    # 如果没有生成器，只有在有未处理消息时才尝试创建
-                    if not context.unread_messages:
+                    # 如果没有生成器，只有在有未处理消息或外部恢复事件时才尝试创建
+                    if not context.unread_messages and resume_event is None:
                         continue
-                        
+
                     # 查找或绑定 Chatter
+                    chat_stream = None
                     chatter = chatter_manager.get_chatter_by_stream(stream_id)
                     if not chatter:
                         from src.core.managers import get_stream_manager
@@ -201,8 +221,10 @@ async def run_chat_stream(
                         chatter = chatter_manager.get_or_create_chatter_for_stream(
                             stream_id, chat_stream.chat_type, chat_stream.platform
                         )
-                    
+
                     if chatter:
+                        if chat_stream is not None:
+                            chatter.apply_stream_runtime_options(chat_stream)
                         logger.debug(f"[驱动器] stream={stream_id[:8]}, 创建新会话生成器")
                         
                         # 设置触发用户 ID (从最后一条未读消息)

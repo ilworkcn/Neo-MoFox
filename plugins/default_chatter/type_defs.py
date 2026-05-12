@@ -54,6 +54,8 @@ LLMConversationState: TypeAlias = LLMRequest | LLMResponseLike
 class DefaultChatterRuntime(Protocol):
     """default_chatter 运行流程依赖的最小 chatter 能力集合。"""
 
+    stream_id: str
+
     def create_request(
         self,
         task: str = "actor",

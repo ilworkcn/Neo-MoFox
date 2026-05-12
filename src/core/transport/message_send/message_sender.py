@@ -168,6 +168,7 @@ class MessageSender:
                 message.sender_name = bot_name
                 if not message.sender_cardname:
                     message.sender_cardname = bot_name
+            message.sender_role = "bot"
         except Exception as e:
             logger.warning(
                 f"获取 Bot sender 信息失败，保留原 sender: message_id={message.message_id}, error={e}"

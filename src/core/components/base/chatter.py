@@ -48,7 +48,7 @@ class Wait:
 class WaitResumeEvent:
     """Wait/Stop 结束后由框架送回生成器的恢复事件。"""
 
-    source: Literal["message", "timer"]
+    source: Literal["message", "timer", "sub_agent"]
     wait_time: float | int | None = None
     unread_count: int = 0
 
@@ -134,6 +134,10 @@ class BaseChatter(ABC):
     associated_platforms: list[str] = []
     chat_type: ChatType = ChatType.ALL
 
+    # 可选的聊天流运行时声明；不设置时保持框架默认行为。
+    stream_tick_interval: float | None = None
+    allow_message_buffer: bool | None = None
+
     # 组件级依赖（精确到组件签名）
     dependencies: list[str] = []  # 例如 ["other_plugin:service:memory"]
 
@@ -150,6 +154,20 @@ class BaseChatter(ABC):
         """
         self.stream_id = stream_id
         self.plugin = plugin
+
+    def apply_stream_runtime_options(self, chat_stream: Any) -> None:
+        """将 chatter 声明的流运行时选项写入当前聊天流。"""
+
+        context = getattr(chat_stream, "context", None)
+        if context is None:
+            return
+
+        tick_interval = self.stream_tick_interval
+        if tick_interval is not None and tick_interval > 0:
+            context.tick_interval_override = float(tick_interval)
+
+        if self.allow_message_buffer is not None:
+            context.allow_message_buffer = bool(self.allow_message_buffer)
 
     @classmethod
     def get_signature(cls) -> str | None:

@@ -72,6 +72,20 @@ class DefaultChatterConfig(BaseConfig):
             tag="ai",
             hint="关闭后，纯 Action 回合不会注入 __SUSPEND__，模型会继续基于 Action 回执决定下一步调用"
         )
+        enable_sub_agent_collaboration: bool = Field(
+            default=False,
+            description="是否启用 default chatter 的子代理协作模式。开启后主工具列表将隐藏 MCP 工具，并改为通过 create_agent/get_agent/kill_agent 把指定工具和 MCP 能力委托给子代理。",
+            label="启用子代理协作",
+            tag="ai",
+            hint="开启后主代理不能直接使用 MCP 工具，只能把它们分配给子代理"
+        )
+        sub_agent_task_name: str = Field(
+            default="actor",
+            description="子代理创建 LLM request 时使用的模型任务名，对应 config/model.toml 中的 task key。",
+            label="子代理任务名",
+            tag="ai",
+            hint="留空时回退为 actor；可配置为单独的子代理模型任务，例如 sub_agent_actor"
+        )
         enable_stop_direct_message_wake: bool = Field(
             default=False,
             description="是否允许私聊或 @Bot 消息按概率提前解除 stop 冷却。",

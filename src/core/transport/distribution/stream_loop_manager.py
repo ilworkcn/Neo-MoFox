@@ -284,6 +284,23 @@ class StreamLoopManager:
         """
         return await self.start_stream_loop(stream_id, force=True)
 
+    async def trigger_external_resume(
+        self,
+        stream_id: str,
+        event: "WaitResumeEvent",
+    ) -> bool:
+        """注入一个外部恢复事件，并确保对应流驱动器运行。"""
+        self._wait_states.pop(stream_id, None)
+        self._pending_wait_resume_events[stream_id] = event
+
+        if not self.is_running:
+            logger.warning(
+                f"[管理器] stream={stream_id[:8]}, StreamLoopManager 未运行，忽略外部恢复事件"
+            )
+            return False
+
+        return await self.start_stream_loop(stream_id)
+
     async def _restart_stream_loop_from_watchdog(self, stream_id: str, cooldown: float) -> bool:
         """处理 WatchDog 触发的重启请求（带节流与并发保护）。
 
@@ -396,6 +413,11 @@ class StreamLoopManager:
         """
         from src.core.config import get_core_config
 
+        allow_message_buffer = getattr(context, "allow_message_buffer", None)
+        if allow_message_buffer is False:
+            context.message_buffer_skip_count = 0
+            return True
+
         try:
             bot_cfg = get_core_config().bot
             buffer_window: float = bot_cfg.message_buffer_window
@@ -502,6 +524,12 @@ class StreamLoopManager:
             bool: 是否可以继续执行 (True: 满足条件或无等待, False: 仍在等待)
         """
         from src.core.components.base.chatter import Wait, WaitResumeEvent, Stop
+
+        # 外部恢复事件（例如子代理后台完成）可能先于本轮 Wait/Stop 状态落库。
+        # 这时需要优先消费 pending resume，避免新写入的 wait_state 把恢复信号永久挡住。
+        if stream_id in self._pending_wait_resume_events:
+            self._wait_states.pop(stream_id, None)
+            return True
 
         wait_state = self._wait_states.get(stream_id)
         if not wait_state:

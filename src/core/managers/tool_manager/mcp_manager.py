@@ -1,11 +1,13 @@
 """MCP Manager implementation.
 
-本模块提供 MCPManager 类，负责管理 MCP 服务器连接、工具发现和调用。
+本模块提供 MCPManager 类，负责管理 MCP 服务器连接、工具发现、
+server metadata 缓存和工具调用。
 """
 
 import asyncio
 import os
 from contextlib import AsyncExitStack
+from dataclasses import dataclass
 from typing import Any, Coroutine
 
 import httpx
@@ -14,11 +16,34 @@ from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 
-from src.core.config.mcp_config import MCPConfig
+from src.core.config.mcp_config import MCPConfig, is_mcp_server_defer_loading
 from src.core.managers.tool_manager.mcp_adapter import MCPToolAdapter
 from src.kernel.logger import get_logger
 
 logger = get_logger("mcp_manager")
+
+
+def _extract_configured_instructions(params: Any) -> str:
+    """从 MCP 服务配置中提取手动 instructions。"""
+    if not isinstance(params, dict):
+        return ""
+
+    for key in ("instructions", "instruction"):
+        value = params.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    return ""
+
+
+@dataclass(frozen=True, slots=True)
+class MCPServerMetadata:
+    """已连接 MCP 服务器的元数据快照。"""
+
+    server_name: str
+    instructions: str
+    server_label: str
+    defer_loading: bool
 
 
 class MCPManager:
@@ -42,6 +67,8 @@ class MCPManager:
         self._exit_stack = AsyncExitStack()
         self._adapters: dict[str, MCPToolAdapter] = {}
         self._tool_signatures: set[str] = set()
+        self._server_metadata: dict[str, MCPServerMetadata] = {}
+        self._tool_classes_by_server: dict[str, list[type[Any]]] = {}
         logger.info("MCP 管理器初始化")
 
     async def initialize(self) -> None:
@@ -255,13 +282,52 @@ class MCPManager:
             logger.error(f"连接 Streamable HTTP MCP 服务器失败 {name}: {e}")
             return False
 
+    def _cache_server_metadata(self, name: str, initialize_result: Any) -> None:
+        """缓存已连接 MCP 服务器的元数据。"""
+        raw_instructions = getattr(initialize_result, "instructions", None)
+        instructions = raw_instructions.strip() if isinstance(raw_instructions, str) else ""
+        defer_loading = True
+
+        try:
+            from src.core.config import get_mcp_config
+
+            config = get_mcp_config().mcp
+            configured_params = (
+                config.stdio_servers.get(name)
+                or config.sse_servers.get(name)
+                or config.streamable_http_servers.get(name)
+            )
+            configured_instructions = _extract_configured_instructions(configured_params)
+            if configured_instructions:
+                instructions = configured_instructions
+            defer_loading = is_mcp_server_defer_loading(configured_params)
+        except Exception:
+            pass
+
+        server_info = getattr(initialize_result, "serverInfo", None)
+        server_label = name
+        info_name = getattr(server_info, "name", None)
+        info_version = getattr(server_info, "version", None)
+        if isinstance(info_name, str) and info_name.strip():
+            server_label = info_name.strip()
+            if isinstance(info_version, str) and info_version.strip():
+                server_label = f"{server_label} {info_version.strip()}"
+
+        self._server_metadata[name] = MCPServerMetadata(
+            server_name=name,
+            instructions=instructions,
+            server_label=server_label,
+            defer_loading=defer_loading,
+        )
+
     async def _connect_session(self, name: str, transport: tuple[Any, ...]) -> None:
         """从 MCP 传输对象创建会话并发现工具。"""
         read, write = transport[0], transport[1]
         session = await self._exit_stack.enter_async_context(ClientSession(read, write))
 
-        await session.initialize()
+        initialize_result = await session.initialize()
         self._sessions[name] = session
+        self._cache_server_metadata(name, initialize_result)
         logger.info(f"已连接 MCP 服务器: {name}")
 
         await self._discover_tools(name, session)
@@ -321,12 +387,50 @@ class MCPManager:
                     registry.register(DynamicMCPTool, signature)
                     state_manager.set_state(signature, ComponentState.ACTIVE)
                     self._tool_signatures.add(signature)
+                    self._tool_classes_by_server.setdefault(server_name, []).append(
+                        DynamicMCPTool
+                    )
                     logger.info(f"已动态注册 MCP 工具: {signature}")
                 except ValueError as e:
                     logger.warning(f"注册 MCP 工具失败 ({signature}): {e}")
 
         except Exception as e:
             logger.error(f"从 {server_name} 获取工具列表失败: {e}")
+
+    def get_connected_server_metadata(self) -> list[MCPServerMetadata]:
+        """返回当前已连接 MCP 服务器的元数据列表。"""
+        return [
+            self._server_metadata[name]
+            for name in sorted(self._sessions)
+            if name in self._server_metadata
+        ]
+
+    def get_tool_classes_for_servers(
+        self,
+        server_names: list[str] | None = None,
+    ) -> list[type[Any]]:
+        """返回指定 MCP 服务器暴露出的动态工具类。"""
+        selected_server_names = server_names or list(self._tool_classes_by_server)
+        selected_tools: list[type[Any]] = []
+        seen_classes: set[type[Any]] = set()
+
+        for server_name in selected_server_names:
+            for tool_cls in self._tool_classes_by_server.get(server_name, []):
+                if tool_cls in seen_classes:
+                    continue
+                seen_classes.add(tool_cls)
+                selected_tools.append(tool_cls)
+
+        return selected_tools
+
+    def get_deferred_tool_classes(self) -> list[type[Any]]:
+        """返回配置为 defer_loading 的 MCP 动态工具类。"""
+        deferred_server_names = [
+            metadata.server_name
+            for metadata in self.get_connected_server_metadata()
+            if metadata.defer_loading
+        ]
+        return self.get_tool_classes_for_servers(deferred_server_names)
 
     async def call_tool(self, server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
         """调用 MCP 工具 (底层调用)。"""
@@ -360,6 +464,8 @@ class MCPManager:
             self._sessions.clear()
             self._adapters.clear()
             self._tool_signatures.clear()
+            self._server_metadata.clear()
+            self._tool_classes_by_server.clear()
         logger.info("MCP 管理器资源已清理")
 
 # 全局单例

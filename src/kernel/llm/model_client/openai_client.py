@@ -501,6 +501,26 @@ def _should_backfill_reasoning_content(messages: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _thinking_enabled(model_set: dict[str, Any]) -> bool:
+    """判断当前模型请求是否显式开启了 thinking 模式。"""
+    extra_params = model_set.get("extra_params")
+    if not isinstance(extra_params, dict):
+        return False
+
+    if extra_params.get("enable_thinking") is True:
+        return True
+
+    thinking = extra_params.get("thinking")
+    if thinking is True:
+        return True
+    if isinstance(thinking, dict):
+        enabled = thinking.get("enabled")
+        if enabled is not False:
+            return True
+
+    return False
+
+
 _USAGE_FIELD_MISSING = object()
 
 
@@ -920,9 +940,9 @@ class OpenAIChatClient:
             else:
                 params["extra_body"] = extra_body
 
-        # 若上下文中已存在带 reasoning_content 的 assistant 响应，
-        # 则为其余缺失字段的 assistant 历史统一回填，避免 follow-up 400。
-        if _should_backfill_reasoning_content(messages):
+        # thinking 模式下，或上下文中已存在 reasoning_content 时，
+        # 为缺失字段的 assistant 历史统一回填，避免 follow-up 400。
+        if _thinking_enabled(model_set) or _should_backfill_reasoning_content(messages):
             for msg in messages:
                 if (
                     msg.get("role") == "assistant"

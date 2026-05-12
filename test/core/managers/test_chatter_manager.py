@@ -33,6 +33,22 @@ class TestChatter(BaseChatter):
         return "Processed"
 
 
+class DefaultLikeChatter(BaseChatter):
+    """模拟通用 Chatter。"""
+
+    chatter_name = "default_like"
+    chat_type = ChatType.ALL
+    associated_platforms = []
+
+
+class LocalAsrChatter(BaseChatter):
+    """模拟 local_asr 专用 Chatter。"""
+
+    chatter_name = "local_asr"
+    chat_type = ChatType.PRIVATE
+    associated_platforms = ["local_asr"]
+
+
 class TestChatterManagerInit:
     """测试 ChatterManager 初始化。"""
     
@@ -268,12 +284,15 @@ class TestChatterManagerGetOrCreateChatterForStream:
         manager = ChatterManager()
         
         with patch.object(manager, '_select_chatter_class') as mock_select, \
+             patch.object(manager, '_get_plugin_name_from_chatter', return_value="test_plugin"), \
+             patch('src.core.managers.get_plugin_manager') as mock_get_plugin_manager, \
              patch.object(manager, 'register_active_chatter') as mock_register:
             
             mock_chatter_class = MagicMock()
             mock_chatter_instance = MagicMock(spec=TestChatter)
             mock_chatter_class.return_value = mock_chatter_instance
             mock_select.return_value = mock_chatter_class
+            mock_get_plugin_manager.return_value.get_plugin.return_value = MagicMock()
             
             result = manager.get_or_create_chatter_for_stream(
                 stream_id="stream_new",
@@ -298,6 +317,24 @@ class TestChatterManagerGetOrCreateChatterForStream:
             )
             
             assert result is None
+
+    def test_select_prefers_local_asr_private_chatter(self) -> None:
+        """local_asr 私聊应优先选择专用 Chatter。"""
+        manager = ChatterManager()
+
+        chatters = {
+            "default:chatter:default_like": DefaultLikeChatter,
+            "voice:chatter:local_asr": LocalAsrChatter,
+        }
+
+        with patch("src.core.managers.chatter_manager.get_global_registry") as mock_get_registry:
+            mock_registry = MagicMock()
+            mock_registry.get_by_type.return_value = chatters
+            mock_get_registry.return_value = mock_registry
+
+            result = manager._select_chatter_class("private", "local_asr")
+
+        assert result is LocalAsrChatter
 
 
 class TestChatterManagerEdgeCases:

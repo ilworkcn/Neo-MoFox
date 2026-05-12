@@ -61,6 +61,45 @@ def test_build_action_suspend_guidance_supports_follow_up_mode() -> None:
     assert "pass_and_wait" in result
 
 
+def test_build_sub_agent_collaboration_extra_includes_server_instructions() -> None:
+    """子代理协作额外提示应包含 MCP 服务器 instructions。"""
+    result = DefaultChatterPromptBuilder.build_sub_agent_collaboration_extra(
+        [
+            SimpleNamespace(
+                server_name="filesystem",
+                instructions="只读工作区",
+                defer_loading=True,
+            )
+        ]
+    )
+
+    assert "create_agent" in result
+    assert "filesystem" in result
+    assert "只读工作区" in result
+
+
+def test_build_sub_agent_collaboration_extra_marks_direct_servers() -> None:
+    """非 defer_loading 的 MCP 服务器应标记为可直接调用。"""
+    result = DefaultChatterPromptBuilder.build_sub_agent_collaboration_extra(
+        [
+            SimpleNamespace(
+                server_name="filesystem",
+                instructions="只读工作区",
+                defer_loading=True,
+            ),
+            SimpleNamespace(
+                server_name="web-search",
+                instructions="联网搜索",
+                defer_loading=False,
+            ),
+        ]
+    )
+
+    assert "延迟加载模式" in result
+    assert "已直接暴露给你" in result
+    assert "web-search" in result
+
+
 def test_build_system_prompt_uses_private_theme(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

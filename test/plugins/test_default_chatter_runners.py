@@ -28,6 +28,7 @@ class _FakePayload:
     """最小 payload。"""
 
     role: str
+    content: list[Any] | None = None
 
 
 class _FakeResponse:
@@ -46,7 +47,7 @@ class _FakeResponse:
         reasoning_content: str | None = None,
         model_set: list[dict[str, object]] | None = None,
     ) -> None:
-        self.payloads: list[_FakePayload] = [_FakePayload(r) for r in payload_roles]
+        self.payloads: list[_FakePayload] = [_FakePayload(r, []) for r in payload_roles]
         self.message: str = message
         self.reasoning_content: str | None = reasoning_content
         self.call_list: list[Any] = []
@@ -55,10 +56,11 @@ class _FakeResponse:
 
     def add_payload(self, payload: Any) -> None:
         role = getattr(payload, "role", None)
+        content = list(getattr(payload, "content", None) or [])
         if role == ROLE.SYSTEM:
-            self.payloads.insert(0, _FakePayload(str(role)))
+            self.payloads.insert(0, _FakePayload(str(role), content))
             return
-        self.payloads.append(_FakePayload(str(role)))
+        self.payloads.append(_FakePayload(str(role), content))
 
     async def send(self, *, stream: bool = False) -> "_FakeResponse":
         _ = stream
@@ -116,6 +118,7 @@ class _FakeChatter:
     def __init__(self, response: _FakeResponse) -> None:
         self._response = response
         self.create_request_calls: list[tuple[str, str | None]] = []
+        self.stream_id = "s1"
 
     def create_request(
         self,
@@ -188,10 +191,95 @@ class _FakeChatterAllowUser(_FakeChatter):
             native_multimodal,
             logger_override,
         )
-        response.add_payload(SimpleNamespace(role=ROLE.USER))
+        response.add_payload(
+            SimpleNamespace(role=ROLE.USER, content=[Text(formatted_text)])
+        )
 
     async def flush_unreads(self, _unread_messages: list[Any]) -> int:
         return 0
+
+
+@pytest.mark.asyncio
+async def test_run_enhanced_consumes_sub_agent_results_only_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """sub-agent 完成结果应转成一次性的 USER 消息，并在首次恢复后被消费。"""
+    class _CaptureChatter(_FakeChatterAllowUser):
+        def __init__(self, response: _FakeResponse) -> None:
+            super().__init__(response)
+            self.upsert_texts: list[str] = []
+
+        def _upsert_pending_unread_payload(
+            self,
+            response: Any,
+            formatted_text: str,
+            unread_msgs: list[Any] | None = None,
+            native_multimodal: bool = False,
+            logger_override: Any = None,
+        ) -> None:
+            _ = (unread_msgs, native_multimodal, logger_override)
+            self.upsert_texts.append(formatted_text)
+            response.add_payload(SimpleNamespace(role=ROLE.USER))
+
+    resp = _FakeResponse(payload_roles=[ROLE.USER], message="")
+
+    async def _send(*, stream: bool = False) -> _FakeResponse:
+        _ = stream
+        resp.send_count += 1
+        resp.call_list = [
+            SimpleNamespace(name="action-pass_and_wait", args={}, id="1")
+        ]
+        resp.message = ""
+        return resp
+
+    resp.send = _send  # type: ignore[method-assign]
+    chatter = _CaptureChatter(resp)
+    chat_stream = cast(Any, SimpleNamespace(stream_id="s1", stream_name="测试流"))
+    fake_logger = cast(Any, _FakeLogger())
+
+    class _FakeManager:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def drain_completed_events(self, stream_id: str) -> list[dict[str, Any]]:
+            assert stream_id == "s1"
+            self.calls += 1
+            if self.calls == 1:
+                return [
+                    {
+                        "name": "worker",
+                        "status": "completed",
+                        "content": "任务完成",
+                    }
+                ]
+            return []
+
+    fake_manager = _FakeManager()
+
+    monkeypatch.setattr(
+        "plugins.default_chatter.sub_agent_collaboration.get_sub_agent_collaboration_manager",
+        lambda: fake_manager,
+    )
+
+    gen = run_enhanced(
+        chatter=cast(Any, chatter),
+        chat_stream=chat_stream,
+        logger=fake_logger,
+        pass_call_name="action-pass_and_wait",
+        stop_call_name="action-stop_conversation",
+        suspend_text="__SUSPEND__",
+    )
+
+    first = await anext(gen)
+    assert isinstance(first, Wait)
+
+    second = await gen.asend(WaitResumeEvent(source="sub_agent"))
+    assert isinstance(second, Wait)
+    result_texts = [text for text in chatter.upsert_texts if "任务完成" in text]
+    assert result_texts == [
+        "以下是子代理刚刚返回的结果，请基于这些结果继续处理：\n[worker] completed\n任务完成"
+    ]
+    assert fake_manager.calls == 1
 
 
 class _FakeChatterWithUnreadSequence(_FakeChatterAllowUser):
@@ -603,6 +691,157 @@ async def test_run_enhanced_proactively_resumes_after_timed_wait() -> None:
     second = await gen.asend(WaitResumeEvent(source="timer", wait_time=5.0))
     assert isinstance(second, Stop)
     assert resp.send_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_enhanced_uses_synthetic_trigger_message_for_timer_resume_tool_calls() -> None:
+    """主动恢复轮次没有 unread 时，actor 也应给工具执行提供最小 Message。"""
+    resp = _FakeResponse(payload_roles=[ROLE.USER], message="")
+
+    async def _send(*, stream: bool = False) -> _FakeResponse:
+        _ = stream
+        resp.send_count += 1
+        resp.call_list = [
+            SimpleNamespace(
+                name="action-send_text",
+                args={"content": "继续处理"},
+                id="1",
+            )
+        ]
+        resp.message = ""
+        return resp
+
+    resp.send = _send  # type: ignore[method-assign]
+
+    class _CaptureTriggerChatter(_FakeChatterWithUnreadSequence):
+        def __init__(self, response: _FakeResponse) -> None:
+            super().__init__(response, unread_batches=[[], []])
+            self.trigger_messages: list[Any] = []
+
+        async def run_tool_call(
+            self,
+            calls: list[Any],
+            response: Any,
+            usable_map: Any,
+            trigger_msg: Any,
+        ) -> list[tuple[bool, bool]]:
+            _ = (calls, response, usable_map)
+            self.trigger_messages.append(trigger_msg)
+            return [(True, True)]
+
+    chatter = _CaptureTriggerChatter(resp)
+    chat_stream = cast(
+        Any,
+        SimpleNamespace(
+            stream_id="s1",
+            stream_name="测试流",
+            platform="qq",
+            chat_type="group",
+        ),
+    )
+    fake_logger = cast(Any, _FakeLogger())
+
+    gen = run_enhanced(
+        chatter=cast(Any, chatter),
+        chat_stream=chat_stream,
+        logger=fake_logger,
+        pass_call_name="action-pass_and_wait",
+        stop_call_name="action-stop_conversation",
+        suspend_text="__SUSPEND__",
+    )
+
+    first = await anext(gen)
+    assert isinstance(first, Wait)
+
+    second = await gen.asend(WaitResumeEvent(source="timer", wait_time=5.0))
+    assert isinstance(second, Wait)
+    assert len(chatter.trigger_messages) == 1
+
+    trigger_msg = chatter.trigger_messages[0]
+    assert trigger_msg is not None
+    assert getattr(trigger_msg, "stream_id") == "s1"
+    assert getattr(trigger_msg, "platform") == "qq"
+    assert getattr(trigger_msg, "chat_type") == "group"
+    assert "等待 5.0 秒已经结束" in str(getattr(trigger_msg, "processed_plain_text"))
+
+
+@pytest.mark.asyncio
+async def test_run_enhanced_prefers_real_stream_message_for_resume_tool_calls() -> None:
+    """主动恢复轮次应优先复用流里的真实消息，而不是过早退化为 synthetic message。"""
+    resp = _FakeResponse(payload_roles=[ROLE.USER], message="")
+
+    async def _send(*, stream: bool = False) -> _FakeResponse:
+        _ = stream
+        resp.send_count += 1
+        resp.call_list = [
+            SimpleNamespace(
+                name="action-send_text",
+                args={"content": "继续处理"},
+                id="1",
+            )
+        ]
+        resp.message = ""
+        return resp
+
+    resp.send = _send  # type: ignore[method-assign]
+
+    class _CaptureTriggerChatter(_FakeChatterWithUnreadSequence):
+        def __init__(self, response: _FakeResponse) -> None:
+            super().__init__(response, unread_batches=[[], []])
+            self.trigger_messages: list[Any] = []
+
+        async def run_tool_call(
+            self,
+            calls: list[Any],
+            response: Any,
+            usable_map: Any,
+            trigger_msg: Any,
+        ) -> list[tuple[bool, bool]]:
+            _ = (calls, response, usable_map)
+            self.trigger_messages.append(trigger_msg)
+            return [(True, True)]
+
+    chatter = _CaptureTriggerChatter(resp)
+    real_message = SimpleNamespace(
+        message_id="m-real",
+        processed_plain_text="原始用户消息",
+        content="原始用户消息",
+        platform="qq",
+        chat_type="group",
+        stream_id="s1",
+        extra={"group_id": "123"},
+    )
+    chat_stream = cast(
+        Any,
+        SimpleNamespace(
+            stream_id="s1",
+            stream_name="测试流",
+            platform="qq",
+            chat_type="group",
+            context=SimpleNamespace(
+                current_message=None,
+                unread_messages=[],
+                history_messages=[real_message],
+            ),
+        ),
+    )
+    fake_logger = cast(Any, _FakeLogger())
+
+    gen = run_enhanced(
+        chatter=cast(Any, chatter),
+        chat_stream=chat_stream,
+        logger=fake_logger,
+        pass_call_name="action-pass_and_wait",
+        stop_call_name="action-stop_conversation",
+        suspend_text="__SUSPEND__",
+    )
+
+    first = await anext(gen)
+    assert isinstance(first, Wait)
+
+    second = await gen.asend(WaitResumeEvent(source="sub_agent"))
+    assert isinstance(second, Wait)
+    assert chatter.trigger_messages == [real_message]
 
 
 @pytest.mark.asyncio

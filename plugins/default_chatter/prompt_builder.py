@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 from collections.abc import Callable
+from typing import Any
 
 from src.core.components.types import ChatType
 from src.core.config import get_core_config
@@ -16,6 +17,52 @@ from .config import DefaultChatterConfig
 
 class DefaultChatterPromptBuilder:
     """Default Chatter 提示词构建器。"""
+
+    @staticmethod
+    def build_sub_agent_collaboration_extra(
+        server_metadata: list[Any],
+    ) -> str:
+        """构建子代理协作模式的额外系统提示段。"""
+        lines = [
+            "子代理协作：你可以通过 create_agent、get_agent、kill_agent 工具创建和管理子代理，帮助你完成明确的局部任务。",
+        ]
+
+        if not server_metadata:
+            lines.append("当前没有已连接的 MCP 服务器。")
+            return "\n".join(lines)
+
+        deferred_servers = [
+            metadata for metadata in server_metadata if bool(getattr(metadata, "defer_loading", True))
+        ]
+        direct_servers = [
+            metadata for metadata in server_metadata if not bool(getattr(metadata, "defer_loading", True))
+        ]
+
+        if deferred_servers:
+            lines.append(
+                "以下 MCP 服务器为延迟加载模式，你不能直接使用它们；如需使用，请通过 create_agent 将对应 MCP 能力委托给子代理。"
+            )
+            for metadata in deferred_servers:
+                server_name = str(
+                    getattr(metadata, "server_name", None)
+                    or getattr(metadata, "name", None)
+                    or "unknown_mcp"
+                )
+                instructions = str(getattr(metadata, "instructions", "") or "未提供 instructions")
+                lines.append(f"- {server_name}: {instructions}")
+
+        if direct_servers:
+            lines.append("以下 MCP 服务器已直接暴露给你，可按普通工具直接调用。")
+            for metadata in direct_servers:
+                server_name = str(
+                    getattr(metadata, "server_name", None)
+                    or getattr(metadata, "name", None)
+                    or "unknown_mcp"
+                )
+                instructions = str(getattr(metadata, "instructions", "") or "未提供 instructions")
+                lines.append(f"- {server_name}: {instructions}")
+
+        return "\n".join(lines)
 
     @staticmethod
     def build_action_suspend_guidance(plugin_config: DefaultChatterConfig | None) -> str:
@@ -52,6 +99,7 @@ class DefaultChatterPromptBuilder:
     async def build_system_prompt(
         plugin_config: DefaultChatterConfig | None,
         chat_stream: ChatStream,
+        extra: str = "",
     ) -> str:
         """构建系统提示词。"""
         selected_theme_guide = ""
@@ -69,6 +117,7 @@ class DefaultChatterPromptBuilder:
         return await (
             tmpl.set("nickname", chat_stream.bot_nickname)
             .set("theme_guide", selected_theme_guide)
+            .set("sub_agent_collaboration_extra", extra)
             .set(
                 "action_suspend_guidance",
                 DefaultChatterPromptBuilder.build_action_suspend_guidance(plugin_config),

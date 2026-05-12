@@ -7,7 +7,12 @@ from typing import cast
 
 import pytest
 
-from src.core.config.mcp_config import MCPConfig, get_mcp_config, init_mcp_config
+from src.core.config.mcp_config import (
+    MCPConfig,
+    get_mcp_config,
+    init_mcp_config,
+    is_mcp_server_defer_loading,
+)
 
 
 class TestMCPSection:
@@ -138,6 +143,7 @@ class TestMCPConfig:
                         "command": "cmd",
                         "args": ["arg1"],
                         "env": {"KEY": "VALUE"},
+                        "instructions": "只读工作区",
                     },
                 },
             )
@@ -147,6 +153,7 @@ class TestMCPConfig:
         assert test_server["command"] == "cmd"
         assert test_server["args"] == ["arg1"]
         assert test_server["env"]["KEY"] == "VALUE"
+        assert test_server["instructions"] == "只读工作区"
 
     def test_access_sse_servers(self):
         """测试访问 SSE 服务器配置。"""
@@ -326,3 +333,16 @@ class TestMCPConfigScenarios:
 
         assert len(config.mcp.stdio_servers) == 2
         assert len(config.mcp.sse_servers) == 1
+
+
+class TestMCPDeferLoading:
+    """测试 defer_loading 配置解释。"""
+
+    def test_defer_loading_defaults_to_true(self) -> None:
+        """未配置 defer_loading 时默认仅对子代理暴露。"""
+        assert is_mcp_server_defer_loading("https://example.com/sse") is True
+        assert is_mcp_server_defer_loading({"url": "https://example.com/sse"}) is True
+
+    def test_defer_loading_reads_explicit_flag(self) -> None:
+        """显式关闭 defer_loading 时应允许主 actor 直接使用。"""
+        assert is_mcp_server_defer_loading({"url": "https://example.com/sse", "defer_loading": False}) is False

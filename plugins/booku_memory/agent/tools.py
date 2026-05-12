@@ -210,11 +210,29 @@ class BookuMemoryCommandTool(BaseTool):
 
         raw_command = (command or "").strip()
         if not raw_command:
-            return False, "command 不能为空"
+            return True, self._build_command_result(
+                ok=False,
+                executions=[
+                    {
+                        "command": "",
+                        "success": False,
+                        "error": "command 不能为空",
+                    }
+                ],
+            )
 
         segments = _split_segments(raw_command)
         if not segments:
-            return False, "未解析到可执行命令"
+            return True, self._build_command_result(
+                ok=False,
+                executions=[
+                    {
+                        "command": raw_command,
+                        "success": False,
+                        "error": "未解析到可执行命令",
+                    }
+                ],
+            )
 
         executions: list[dict[str, Any]] = []
         service: BookuMemoryService | None = None
@@ -229,16 +247,17 @@ class BookuMemoryCommandTool(BaseTool):
             except Exception as error:  # noqa: BLE001
                 logger.error(f"memory_command 执行失败: {error}", exc_info=True)
                 executions.append({"command": segment, "success": False, "error": str(error)})
-                return False, {
-                    "action": "memory_command",
-                    "ok": False,
-                    "executed": len(executions),
-                    "results": executions,
-                }
+                return True, self._build_command_result(ok=False, executions=executions)
 
-        return True, {
+        return True, self._build_command_result(ok=True, executions=executions)
+
+    @staticmethod
+    def _build_command_result(*, ok: bool, executions: list[dict[str, Any]]) -> dict[str, Any]:
+        """构造 memory_command 的统一结果对象。"""
+
+        return {
             "action": "memory_command",
-            "ok": True,
+            "ok": ok,
             "executed": len(executions),
             "results": executions,
         }
