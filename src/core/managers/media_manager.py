@@ -31,7 +31,6 @@ from src.kernel.llm.model_client.registry import ModelClientRegistry
 from src.core.prompt import PromptTemplate, get_prompt_manager
 from src.core.config import get_core_config
 from src.core.utils.base64_helper import base64_decode_to_bytes
-from src.kernel.concurrency import get_task_manager
 from src.kernel.scheduler import get_unified_scheduler, TriggerType
 from src.kernel.db.core.session import get_db_session
 from src.core.models.sql_alchemy import Images, ImageDescriptions
@@ -300,6 +299,10 @@ class MediaManager:
                 if cached_description:
                     logger.debug(f"从缓存获取{media_type}描述: {media_hash[:8]}...")
                     return cached_description
+
+            if not self._vlm_model_set:
+                logger.debug(f"VLM 模型不可用，跳过{media_type}识别")
+                return None
             
             # 保存到待识别文件夹
             pending_file_path = await self._save_to_pending(
@@ -535,10 +538,10 @@ class MediaManager:
 
             # 处理 base64 数据：提取纯净的 base64 内容
             clean_base64 = self._extract_clean_base64(base64_data)
+            mime_type = self._extract_image_mime_type(base64_data)
             
             # 使用标准的 data URL 格式（大多数 VLM API 都支持）
-            # 假设是 PNG 图片，如果需要可以根据实际情况调整
-            image_value = f"data:image/png;base64,{clean_base64}"
+            image_value = f"data:{mime_type};base64,{clean_base64}"
 
             # 添加 payload 并发送请求
             request.add_payload(LLMPayload(ROLE.USER, [Text(prompt), Image(image_value)]))
@@ -692,6 +695,15 @@ class MediaManager:
         data = data.replace("\n", "").replace("\r", "").replace(" ", "")
         
         return data
+
+    @staticmethod
+    def _extract_image_mime_type(data: str) -> str:
+        """从 data URL 中提取图片 MIME 类型。"""
+        if data.startswith("data:") and ";base64," in data:
+            mime_type = data.split(";", 1)[0][len("data:"):].strip().lower()
+            if mime_type.startswith("image/"):
+                return mime_type
+        return "image/png"
     
     async def _save_to_pending(
         self,
@@ -727,7 +739,7 @@ class MediaManager:
             file_path = self.pending_folder / filename
             
             # 写入文件
-            file_path.write_bytes(binary_data)
+            await asyncio.to_thread(file_path.write_bytes, binary_data)
             logger.debug(f"媒体已保存到待识别文件夹: {filename}")
             
             return file_path
@@ -750,7 +762,7 @@ class MediaManager:
             media_hash: 媒体哈希值
         """
         try:
-            if not source_path.exists():
+            if not await asyncio.to_thread(source_path.exists):
                 logger.debug(f"源文件不存在，跳过移动: {source_path.name}")
                 return
             
@@ -761,16 +773,17 @@ class MediaManager:
             target_path = target_folder / source_path.name
             
             # 如果目标文件已存在，删除源文件即可（去重）
-            if target_path.exists():
-                source_path.unlink()
+            if await asyncio.to_thread(target_path.exists):
+                await asyncio.to_thread(source_path.unlink)
                 logger.debug(f"目标文件已存在，删除源文件: {source_path.name}")
                 return
             
             # 移动文件
-            source_path.rename(target_path)
+            await asyncio.to_thread(source_path.rename, target_path)
             logger.debug(f"文件已移动到 {media_type} 文件夹: {target_path.name}")
         except Exception as e:
             logger.error(f"移动文件失败: {e}")
+
 
     @staticmethod
     def _compute_hash(data: str) -> str:

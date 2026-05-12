@@ -323,6 +323,20 @@ class TestMediaManagerSaveAndGetMediaInfo:
 
 class TestMediaManagerEdgeCases:
     """测试边界条件。"""
+
+    def test_extract_image_mime_type_prefers_data_url_value(self) -> None:
+        """data URL 中存在图片 MIME 时应优先使用真实类型。"""
+        mime_type = MediaManager._extract_image_mime_type(
+            "data:image/jpeg;base64,dGVzdA=="
+        )
+
+        assert mime_type == "image/jpeg"
+
+    def test_extract_image_mime_type_falls_back_to_png(self) -> None:
+        """无法提取图片 MIME 时保持原有 png 默认值。"""
+        mime_type = MediaManager._extract_image_mime_type("dGVzdA==")
+
+        assert mime_type == "image/png"
     
     @pytest.mark.asyncio
     async def test_recognize_empty_base64_data(self) -> None:
